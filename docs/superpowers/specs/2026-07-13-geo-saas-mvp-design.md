@@ -1,0 +1,188 @@
+# Multi-tenant GEO SaaS MVP Design
+
+Status: accepted for implementation
+
+Date: 2026-07-13
+
+## Product outcome
+
+Build a multi-tenant GEO operations product that can research, create, audit,
+schedule, publish, and measure content for multiple customers. Travel is the
+first vertical, not a hard-coded product boundary. Zhongtong International
+Travel Agency is the first seeded tenant.
+
+The first AI visibility targets are Doubao and Qwen. They are measured as
+independent answer systems; Google ranking is not used as a proxy for either.
+
+## MVP scope
+
+The MVP includes:
+
+1. Tenant, brand, contact, user, role, platform account, and policy management.
+2. Campaigns and versioned article assets for Toutiao, Sohu, and Ctrip Community.
+3. A deterministic pre-publication audit with evidence, blocking findings, and
+   policy thresholds.
+4. A content hash bound, tenant bound, platform bound, single-use, expiring
+   `PublicationGrant` created only from a passing audit.
+5. A transactional outbox, idempotent publisher worker, platform rate limits,
+   receipts, retries, dead-letter handling, and kill switches.
+6. Platform connector contracts plus dry-run connectors. Live connectors are
+   enabled only when a supported API or an explicitly configured browser
+   session is available and verified.
+7. Doubao and Qwen visibility probes with prompt sets, raw response evidence,
+   cited sources, brand/contact accuracy, hallucination, and competitor metrics.
+8. A Chinese operations console for customer setup, content review, audit,
+   publication operations, and visibility reporting.
+9. A Pi Agent orchestration service whose tools are exposed through MCP. The
+   deterministic audit and publication authorization remain domain services,
+   not model decisions.
+
+## Explicit non-goals
+
+- Circumventing platform authentication, CAPTCHAs, anti-bot controls, or terms.
+- Claiming a dry-run receipt is a live publication.
+- Bulk generation of near-duplicate pages or fabricated reviews, credentials,
+  prices, availability, sources, or guarantees.
+- Treating a crawl score, search position, or LLM answer as proof of causality.
+- Sharing credentials, data, grants, jobs, or evidence across tenants.
+
+## Architecture
+
+Use a pnpm TypeScript monorepo so Pi Agent, MCP tools, API schemas, workers, and
+the web console share typed contracts while remaining independently deployable.
+
+```text
+apps/web       React operations console
+apps/api       HTTP API, auth, tenant context, domain commands and queries
+apps/worker    outbox publication and visibility workers
+apps/mcp       MCP server exposing governed GEO tools to Pi Agent
+packages/db    PostgreSQL schema, migrations, RLS helpers and seed data
+packages/core  domain types, state machines, policies and audit engine
+packages/agent Pi Agent runtime, prompts and MCP tool bridge
+packages/connectors platform connector contracts and implementations
+packages/config shared environment validation
+```
+
+PostgreSQL is the production truth source. Every tenant-owned table contains a
+non-null `tenant_id`. API requests establish tenant context, and PostgreSQL RLS
+is the second isolation boundary. Background jobs carry tenant identity in the
+signed job payload and establish the same database context before work.
+
+## Core publication flow
+
+```text
+draft
+  -> content version frozen
+  -> audit requested
+  -> audit pass (report + evidence + content hash)
+  -> single-use PublicationGrant issued
+  -> publication job and outbox event committed atomically
+  -> worker claims job with lease
+  -> connector validates account, grant, hash and idempotency key
+  -> platform publish or dry-run
+  -> immutable receipt and evidence recorded
+  -> grant consumed
+  -> post-publication readback scheduled
+```
+
+Any content mutation invalidates prior audits and grants. A grant cannot cross
+tenant, asset version, platform, platform account, or policy revision. Expired,
+revoked, or consumed grants cannot enqueue another job.
+
+## State models
+
+Content assets: `draft -> ready_for_audit -> audited -> approved -> queued ->
+publishing -> published | failed | blocked | withdrawn`.
+
+Audit reports: `running -> passed | failed | errored`. Reports are immutable;
+reruns create a new report.
+
+Publication grants: `active -> consumed | expired | revoked`. Consumption is an
+atomic compare-and-set operation.
+
+Publication jobs: `pending -> leased -> succeeded | retry_wait | dead_letter |
+cancelled`. Retries use a stable idempotency key and bounded exponential delay.
+
+Campaign automation: `shadow -> supervised -> unattended -> paused | stopped`.
+Only passing operational health gates can promote a campaign to unattended.
+
+## Audit policy
+
+The deterministic audit checks at least:
+
+- Brand name and configured phone/WeChat contact accuracy.
+- Required source evidence for factual claims and time-sensitive offers.
+- Forbidden guarantees, fabricated qualifications, medical/financial promises,
+  and tenant-specific prohibited language.
+- Near-duplicate similarity within the tenant and campaign.
+- Platform title/body/link/image constraints.
+- GEO answer structure: direct answer, scoped details, entity clarity, evidence,
+  freshness, and useful next action.
+- Disclosure and provenance metadata for generated or materially transformed
+  content where policy requires it.
+
+Blocking findings prevent grant issuance. A model may suggest fixes but cannot
+waive a deterministic block.
+
+## Automation safety
+
+Unattended publishing is controlled independently per tenant, campaign,
+platform, account, and topic. Each scope has quotas, cooldowns, concurrency,
+error budgets, and a kill switch. Automatic pause triggers include:
+
+- Incorrect contact details or brand identity.
+- Duplicate-content threshold breach.
+- Platform authentication or risk-control challenge.
+- Elevated rejection/error rates.
+- Visibility probes showing harmful misinformation or negative amplification.
+- Missing or inconsistent post-publication readback.
+
+Browser automation, when explicitly enabled, runs in an isolated worker with an
+allowlisted origin, encrypted session secret, bounded navigation, screenshot
+evidence, redacted logs, and no CAPTCHA bypass. API connectors are preferred.
+
+## AI visibility evaluation
+
+Probe suites are versioned per industry and intent. The travel seed suite covers
+generic recommendations, location/origin needs, senior-friendly travel, first
+international trip guidance, brand facts, contact lookup, competitor comparison,
+and negative/hallucination checks.
+
+Each run records provider/model, prompt version, request/response timestamps, raw
+answer, citations or source URLs, brand mentions, answer position, contact facts,
+competitors, sentiment, hallucination findings, and evaluator version. Metrics
+include brand hit rate, contact accuracy, cited-domain share, competitor share,
+harmful error rate, indexing/readback latency, and platform publication health.
+
+Provider adapters must distinguish official API responses, browser-observed
+responses, and manually imported evidence. They must never label one as another.
+
+## Seed tenant
+
+The seed is versioned data rather than prompt text:
+
+- Legal/display name: Zhongtong International Travel Agency / 中通国际旅行社
+- 24-hour hotline: `4001133986`
+- WeChat contacts: `ZTGL3411`, `ZTGL6431`
+- Industry: travel
+- Default mode: shadow
+- Default connectors: dry-run
+
+## Delivery gates
+
+The MVP is complete only when a clean environment can:
+
+1. Start PostgreSQL, API, worker, MCP server, and web console from documented
+   commands.
+2. Authenticate an operator and demonstrate isolation between two seeded tenants.
+3. Create an article, fail a bad-contact audit, pass a corrected audit, issue a
+   grant, enqueue once, reject reuse, publish through all three dry-run
+   connectors, and persist distinct receipts.
+4. Run a versioned Doubao/Qwen probe suite through configured adapters or a
+   clearly labeled fixture adapter, then display evidence and metrics.
+5. Pause publication automatically when a configured circuit breaker trips.
+6. Pass unit, integration, RLS, API, worker idempotency, and browser smoke tests.
+
+Live platform publishing and live Doubao/Qwen calls require external accounts,
+credentials, and provider availability. The MVP must expose capability status
+and remain fully testable without misrepresenting fixture or dry-run execution.

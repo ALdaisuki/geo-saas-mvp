@@ -1,0 +1,172 @@
+import type {
+  ConnectorCapability,
+  ConnectorCapabilityReport,
+  EvidenceType,
+  ExecutionLevel,
+  Platform,
+} from "@geo/contracts";
+
+export type ConnectorPolicyErrorCode =
+  | "CAPABILITY_EVIDENCE_INSUFFICIENT"
+  | "EXECUTION_LEVEL_UNSUPPORTED"
+  | "UNATTENDED_REQUIRES_VERIFIED_API"
+  | "EXTERNAL_WRITE_DISABLED"
+  | "PREVIEW_CANNOT_CONFIRM_PUBLICATION";
+
+export class ConnectorPolicyError extends Error {
+  readonly code: ConnectorPolicyErrorCode;
+  readonly platform: Platform | undefined;
+  readonly executionLevel: ExecutionLevel | undefined;
+
+  constructor(
+    code: ConnectorPolicyErrorCode,
+    message: string,
+    options: { platform?: Platform; executionLevel?: ExecutionLevel } = {},
+  ) {
+    super(message);
+    this.name = "ConnectorPolicyError";
+    this.code = code;
+    this.platform = options.platform;
+    this.executionLevel = options.executionLevel;
+  }
+}
+
+export interface CapabilityUpgradeEvidence {
+  capability: "public_api" | "partner_api" | "browser_assisted";
+  evidenceType: EvidenceType;
+  evidenceRefs: readonly string[];
+  checkedAt: string;
+  articlePublishingVerified: boolean;
+  reconciliationVerified: boolean;
+}
+
+function assertTimestamp(value: string): void {
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new ConnectorPolicyError(
+      "CAPABILITY_EVIDENCE_INSUFFICIENT",
+      "Capability evidence must include a valid checkedAt timestamp",
+    );
+  }
+}
+
+export function buildCapabilityReport(
+  platform: Platform,
+  checkedAt: string,
+  evidence?: CapabilityUpgradeEvidence,
+): ConnectorCapabilityReport {
+  assertTimestamp(checkedAt);
+
+  if (evidence === undefined) {
+    return {
+      platform,
+      capability: "manual_only",
+      supportedExecutionLevels: ["dry_run", "assisted"],
+      checkedAt,
+      evidenceType: "preview",
+      evidenceRefs: [],
+      reason:
+        "No verified public or partner article-publishing API is configured; only preview and manual export are available.",
+    };
+  }
+
+  assertTimestamp(evidence.checkedAt);
+  if (evidence.checkedAt !== checkedAt || evidence.evidenceRefs.length === 0) {
+    throw new ConnectorPolicyError(
+      "CAPABILITY_EVIDENCE_INSUFFICIENT",
+      "Capability upgrades require non-empty evidence references from the current probe",
+      { platform },
+    );
+  }
+
+  if (!evidence.articlePublishingVerified) {
+    throw new ConnectorPolicyError(
+      "CAPABILITY_EVIDENCE_INSUFFICIENT",
+      "Evidence does not verify an article-publishing operation",
+      { platform },
+    );
+  }
+
+  if (evidence.capability === "browser_assisted") {
+    if (
+      !(["browser_screenshot", "platform_readback"] as readonly EvidenceType[]).includes(
+        evidence.evidenceType,
+      )
+    ) {
+      throw new ConnectorPolicyError(
+        "CAPABILITY_EVIDENCE_INSUFFICIENT",
+        "Browser-assisted capability requires authenticated browser or platform readback evidence",
+        { platform },
+      );
+    }
+    return {
+      platform,
+      capability: evidence.capability,
+      supportedExecutionLevels: ["dry_run", "assisted"],
+      checkedAt,
+      evidenceType: evidence.evidenceType,
+      evidenceRefs: [...evidence.evidenceRefs],
+      reason:
+        "Authenticated browser-assisted publishing was verified; unattended execution remains forbidden.",
+    };
+  }
+
+  if (
+    !evidence.reconciliationVerified ||
+    !(["api_response", "platform_readback"] as readonly EvidenceType[]).includes(
+      evidence.evidenceType,
+    )
+  ) {
+    throw new ConnectorPolicyError(
+      "CAPABILITY_EVIDENCE_INSUFFICIENT",
+      "API capability requires verified publishing and reconciliation evidence",
+      { platform },
+    );
+  }
+
+  return {
+    platform,
+    capability: evidence.capability,
+    supportedExecutionLevels: ["dry_run", "assisted", "unattended"],
+    checkedAt,
+    evidenceType: evidence.evidenceType,
+    evidenceRefs: [...evidence.evidenceRefs],
+    reason: `Verified ${evidence.capability === "public_api" ? "public" : "partner"} API publishing and reconciliation contract.`,
+  };
+}
+
+export function executionLevelsForCapability(
+  capability: ConnectorCapability,
+): readonly ExecutionLevel[] {
+  if (capability === "public_api" || capability === "partner_api") {
+    return ["dry_run", "assisted", "unattended"];
+  }
+  if (capability === "disabled") {
+    return ["dry_run"];
+  }
+  return ["dry_run", "assisted"];
+}
+
+export function assertExecutionAllowed(
+  report: ConnectorCapabilityReport,
+  executionLevel: ExecutionLevel,
+): void {
+  if (
+    executionLevel === "unattended" &&
+    report.capability !== "public_api" &&
+    report.capability !== "partner_api"
+  ) {
+    throw new ConnectorPolicyError(
+      "UNATTENDED_REQUIRES_VERIFIED_API",
+      `${report.platform} unattended publishing requires a verified public or partner API`,
+      { platform: report.platform, executionLevel },
+    );
+  }
+
+  if (!report.supportedExecutionLevels.includes(executionLevel)) {
+    throw new ConnectorPolicyError(
+      "EXECUTION_LEVEL_UNSUPPORTED",
+      `${report.platform} does not support execution level ${executionLevel}`,
+      { platform: report.platform, executionLevel },
+    );
+  }
+}

@@ -6,6 +6,7 @@ import { freezeDeep } from "./validation.js";
 export type PublicationEvent =
   | "dispatch_started"
   | "dispatch_confirmed"
+  | "dispatch_preview_completed"
   | "dispatch_retryable_failure"
   | "dispatch_permanent_failure"
   | "dispatch_uncertain"
@@ -28,6 +29,7 @@ export interface PublicationTransition {
 }
 
 const TERMINAL_STATES = new Set<PublicationJobState>([
+  "preview_completed",
   "confirmed",
   "permanent_failure",
   "cancelled",
@@ -43,6 +45,7 @@ const TRANSITIONS: Readonly<
     cancel: "cancelled",
   },
   dispatching: {
+    dispatch_preview_completed: "preview_completed",
     dispatch_confirmed: "confirmed",
     dispatch_retryable_failure: "retry_wait",
     dispatch_permanent_failure: "permanent_failure",

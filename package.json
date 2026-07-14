@@ -8,9 +8,23 @@
     "node": ">=24.0.0 <25",
     "pnpm": ">=10.0.0 <11"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@embedded-postgres/darwin-arm64",
+      "@embedded-postgres/darwin-x64",
+      "@embedded-postgres/linux-arm64",
+      "@embedded-postgres/linux-x64",
+      "@embedded-postgres/windows-x64",
+      "argon2"
+    ]
+  },
   "scripts": {
     "build": "pnpm -r --if-present build",
+    "db:bootstrap:operator": "pnpm --filter @geo/db bootstrap:operator",
+    "db:migrate": "pnpm --filter @geo/db migrate",
+    "db:seed": "pnpm --filter @geo/db seed",
     "dev": "pnpm -r --parallel --if-present dev",
+    "e2e": "pnpm --filter @geo/e2e test:e2e",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

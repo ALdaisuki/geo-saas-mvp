@@ -6,5 +6,6 @@
       "@geo/contracts": ["../contracts/src/index.ts"]
     },
     "rootDir": ".."
-  }
+  },
+  "exclude": []
 }

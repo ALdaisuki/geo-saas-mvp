@@ -1,0 +1,309 @@
+name: ${COMPOSE_PROJECT_NAME:-geo-saas}
+
+x-postgres-image: &postgres-image postgres:16.9-bookworm@sha256:253815cf7579ffa05e1673d92e78d37273e61be0e4414e9a1449337d7925be94
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-node-security: &node-security
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging: *default-logging
+
+x-db-tools: &db-tools
+  image: ${GEO_IMAGE_PREFIX:-geo-saas}-db-tools:${GEO_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: db-tools
+  restart: "no"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - backend
+  logging: *default-logging
+
+services:
+  postgres:
+    image: *postgres-image
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geo_saas}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-geo_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --quiet --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    logging: *default-logging
+
+  db-migrate:
+    <<: *db-tools
+    command:
+      - node
+      - dist/cli/migrate.js
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  db-bootstrap:
+    image: *postgres-image
+    restart: "no"
+    entrypoint:
+      - /bin/bash
+      - /bootstrap/bootstrap-login-roles.sh
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-geo_saas}
+      PGUSER: ${POSTGRES_ADMIN_USER:-geo_admin}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      GEO_API_DB_USER: ${GEO_API_DB_USER:-geo_api}
+      GEO_API_DB_PASSWORD: ${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}
+      GEO_WORKER_DB_USER: ${GEO_WORKER_DB_USER:-geo_worker}
+      GEO_WORKER_DB_PASSWORD: ${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}
+      GEO_IDENTITY_DB_USER: ${GEO_IDENTITY_DB_USER:-geo_identity_login}
+      GEO_IDENTITY_DB_PASSWORD: ${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
+    volumes:
+      - ./docs/ops/postgres/bootstrap-login-roles.sh:/bootstrap/bootstrap-login-roles.sh:ro
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    logging: *default-logging
+
+  db-bootstrap-operator:
+    <<: *db-tools
+    profiles:
+      - operator-bootstrap
+    command:
+      - node
+      - dist/cli/bootstrap-operator.js
+    environment:
+      - DATABASE_ADMIN_URL=postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      - GEO_BOOTSTRAP_TENANT_SLUG
+      - GEO_BOOTSTRAP_EMAIL
+      - GEO_BOOTSTRAP_DISPLAY_NAME
+      - GEO_BOOTSTRAP_PASSWORD
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+  db-seed:
+    <<: *db-tools
+    profiles:
+      - fixture-seed
+    command:
+      - node
+      - dist/cli/seed.js
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+  api:
+    <<: *node-security
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-api:${GEO_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - HOST=0.0.0.0
+      - API_PORT=4100
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DATABASE_URL=postgresql://${GEO_API_DB_USER:-geo_api}:${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      - DATABASE_IDENTITY_URL=postgresql://${GEO_IDENTITY_DB_USER:-geo_identity_login}:${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
+      - APP_ORIGIN=${APP_ORIGIN:?set APP_ORIGIN to the external HTTPS origin}
+      - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
+      # Bare form passes the secret only when it is present in the operator environment/.env.
+      - PLASTIC_PROMISE_MCP_AUTHORIZATION
+      - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
+      - AGENT_PROVIDER=${AGENT_PROVIDER:-fixture}
+      - AGENT_MODEL=${AGENT_MODEL:-fixture-geo-writer-v1}
+      - DOUBAO_ADAPTER=${DOUBAO_ADAPTER:-fixture}
+      - QWEN_ADAPTER=${QWEN_ADAPTER:-fixture}
+      - ENABLE_BROWSER_ASSISTED=false
+    volumes:
+      - evidence-data:/var/lib/geo/evidence
+    ports:
+      - ${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-4100}:4100
+      # agent-mcp shares this network namespace so its HTTP-only loopback API URL is accepted.
+      - ${BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-9021}:9021
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4100/health/ready').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - frontend
+      - backend
+
+  worker:
+    <<: *node-security
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-worker:${GEO_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    environment:
+      DISPATCHER_DATABASE_URL: postgresql://${GEO_WORKER_DB_USER:-geo_worker}:${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      RUNTIME_DATABASE_URL: postgresql://${GEO_WORKER_DB_USER:-geo_worker}:${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      WORKER_ACTOR_ID: ${WORKER_ACTOR_ID:?set WORKER_ACTOR_ID to a provisioned service actor UUID}
+      WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-25}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-60}
+      WORKER_MAX_ATTEMPTS: ${WORKER_MAX_ATTEMPTS:-5}
+      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-1000}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - --input-type=module
+        - -e
+        - >-
+          import { createDatabase } from '@geo/db';
+          import { sql } from 'kysely';
+          const urls = [process.env.DISPATCHER_DATABASE_URL, process.env.RUNTIME_DATABASE_URL];
+          if (urls.some((url) => !url)) process.exit(1);
+          const databases = urls.map((connectionString) => createDatabase({ connectionString, applicationName: 'geo-worker-health', maxConnections: 1 }));
+          try { await Promise.all(databases.map((database) => sql.raw('select 1').execute(database))); }
+          finally { await Promise.all(databases.map((database) => database.destroy())); }
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    networks:
+      - backend
+
+  agent-mcp:
+    <<: *node-security
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-agent-mcp:${GEO_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: agent-mcp
+    restart: unless-stopped
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "9021"
+      GEO_API_BASE_URL: http://127.0.0.1:4100
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1:9021,localhost:9021}
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-https://geo.example.com}
+      MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:9021/health/live').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    depends_on:
+      api:
+        condition: service_healthy
+    network_mode: service:api
+
+  web:
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-web:${GEO_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+      - /var/run:rw,noexec,nosuid,size=1m
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - ${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-4173}:8080
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://127.0.0.1:8080/healthz
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - frontend
+    logging: *default-logging
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  postgres-data:
+  evidence-data:

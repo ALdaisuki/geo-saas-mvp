@@ -14,13 +14,24 @@ import { assertSha256, assertUuid, freezeDeep, parseInstant } from "./validation
 export interface EvidenceSource {
   readonly id: string;
   readonly locator: string;
+  readonly contentHash: string;
   readonly observedAt: string;
+  readonly validUntil: string | null;
+}
+
+export interface VerifiedFact {
+  readonly id: string;
+  readonly brandId: string;
+  readonly text: string;
+  readonly evidenceSourceIds: readonly string[];
+  readonly validFrom: string;
   readonly validUntil: string | null;
 }
 
 export interface FactSnapshot {
   readonly tenantId: string;
   readonly capturedAt: string;
+  readonly facts: readonly VerifiedFact[];
   readonly sources: readonly EvidenceSource[];
 }
 
@@ -53,6 +64,7 @@ export interface PriorPublicationVariant {
 
 export interface EvaluatePublicationVariantInput {
   readonly tenantId: string;
+  readonly brandId: string;
   readonly variantId: string;
   readonly platform: Platform;
   readonly payload: PublicationVariantPayload;
@@ -154,7 +166,8 @@ function extractWechatCandidates(content: string): string[] {
       continue;
     }
     const tail = line.slice(keyword.index + keyword[0].length);
-    for (const match of tail.matchAll(WECHAT_TOKEN_PATTERN)) {
+    const sentence = tail.split(/[.!?。！？;]/u, 1)[0] ?? "";
+    for (const match of sentence.matchAll(WECHAT_TOKEN_PATTERN)) {
       if (!RESERVED_WECHAT_TOKENS.has(match[0].toLowerCase())) {
         values.add(match[0]);
       }
@@ -165,6 +178,21 @@ function extractWechatCandidates(content: string): string[] {
 
 function normalizedDuplicateText(value: string): string {
   return (value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join("");
+}
+
+function normalizedClaimText(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("zh-CN");
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  const normalizedLeft = [...new Set(left)].sort();
+  const normalizedRight = [...new Set(right)].sort();
+  return (
+    normalizedLeft.length === left.length &&
+    normalizedRight.length === right.length &&
+    normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((value, index) => value === normalizedRight[index])
+  );
 }
 
 function ngrams(value: string, size = 3): Set<string> {
@@ -299,6 +327,7 @@ export function evaluatePublicationVariant(
   input: EvaluatePublicationVariantInput,
 ): Readonly<AuditEvaluation> {
   assertUuid(input.tenantId, "tenantId");
+  assertUuid(input.brandId, "brandId");
   assertUuid(input.variantId, "variantId");
   validatePayload(input.payload);
   const limits = validatePolicy(input.policy, input.platform);
@@ -446,7 +475,23 @@ export function evaluatePublicationVariant(
         sourceId: source.id,
       },
     );
+    assertSha256(source.contentHash, `factSnapshot.sources.${source.id}.contentHash`);
     sourceById.set(source.id, source);
+  }
+  const factById = new Map<string, VerifiedFact>();
+  for (const fact of input.factSnapshot.facts) {
+    assertUuid(fact.id, "factSnapshot.facts.id");
+    assertUuid(fact.brandId, `factSnapshot.facts.${fact.id}.brandId`);
+    invariant(!factById.has(fact.id), "AUDIT_CONTEXT_DUPLICATE", "Duplicate fact ID", {
+      factId: fact.id,
+    });
+    invariant(
+      fact.text.trim().length > 0,
+      "AUDIT_CONTEXT_INVALID",
+      "Verified fact text is required",
+      { factId: fact.id },
+    );
+    factById.set(fact.id, fact);
   }
   if (input.payload.claims.length < input.policy.minClaims) {
     findings.push(
@@ -461,6 +506,97 @@ export function evaluatePublicationVariant(
   }
   for (const [claimIndex, claim] of input.payload.claims.entries()) {
     const claimPath = `payload.claims[${claimIndex}]`;
+    const verifiedFact = factById.get(claim.id);
+    if (verifiedFact === undefined) {
+      findings.push(
+        makeFinding(
+          input.policy,
+          "evidence.claim.unverified",
+          "Claim is not bound to a verified tenant fact",
+          `${claimPath}.id`,
+          [claim.id],
+        ),
+      );
+    } else {
+      if (verifiedFact.brandId !== input.brandId) {
+        findings.push(
+          makeFinding(
+            input.policy,
+            "evidence.claim.brand_mismatch",
+            "Verified fact belongs to a different brand",
+            `${claimPath}.id`,
+            [claim.id, verifiedFact.brandId, input.brandId],
+          ),
+        );
+      }
+      if (claim.text !== verifiedFact.text) {
+        findings.push(
+          makeFinding(
+            input.policy,
+            "evidence.claim.text_mismatch",
+            "Claim text differs from the verified fact",
+            `${claimPath}.text`,
+            [claim.id],
+          ),
+        );
+      }
+      if (!sameStringSet(claim.evidenceSourceIds, verifiedFact.evidenceSourceIds)) {
+        findings.push(
+          makeFinding(
+            input.policy,
+            "evidence.claim.sources_mismatch",
+            "Claim evidence differs from the verified fact",
+            `${claimPath}.evidenceSourceIds`,
+            [claim.id],
+          ),
+        );
+      }
+      const factValidFrom = parseInstant(
+        verifiedFact.validFrom,
+        `factSnapshot.facts.${claim.id}.validFrom`,
+      );
+      const factValidUntil =
+        verifiedFact.validUntil === null
+          ? null
+          : parseInstant(verifiedFact.validUntil, `factSnapshot.facts.${claim.id}.validUntil`);
+      const claimValidUntil =
+        claim.validUntil === null
+          ? null
+          : parseInstant(claim.validUntil, `${claimPath}.validUntil`);
+      if (factValidFrom > now || (factValidUntil !== null && factValidUntil <= now)) {
+        findings.push(
+          makeFinding(
+            input.policy,
+            "evidence.claim.fact_inactive",
+            "Verified fact is not active at audit time",
+            `${claimPath}.id`,
+            [claim.id],
+          ),
+        );
+      }
+      if (claimValidUntil !== factValidUntil) {
+        findings.push(
+          makeFinding(
+            input.policy,
+            "evidence.claim.validity_mismatch",
+            "Claim validity differs from the verified fact",
+            `${claimPath}.validUntil`,
+            [claim.id],
+          ),
+        );
+      }
+    }
+    if (!normalizedClaimText(content).includes(normalizedClaimText(claim.text))) {
+      findings.push(
+        makeFinding(
+          input.policy,
+          "evidence.claim.not_in_content",
+          "Verified claim text is absent from the final platform variant",
+          `${claimPath}.text`,
+          [claim.id],
+        ),
+      );
+    }
     if (
       claim.validUntil !== null &&
       parseInstant(claim.validUntil, `${claimPath}.validUntil`) <= now

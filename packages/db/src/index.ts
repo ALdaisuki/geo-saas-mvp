@@ -1,5 +1,12 @@
 export { createDatabase, type DatabaseOptions } from "./client.js";
 export {
+  bootstrapOperator,
+  loadBootstrapOperatorEnvironment,
+  type BootstrapOperatorEnvironment,
+  type BootstrapOperatorInput,
+  type BootstrapOperatorResult,
+} from "./bootstrap.js";
+export {
   setTenantContext,
   withTenantTransaction,
   type TenantTransaction,

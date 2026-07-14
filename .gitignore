@@ -12,4 +12,6 @@ Thumbs.db
 .idea/
 .vscode/
 .worktrees/
+.tmp/
+node-compile-cache/
 

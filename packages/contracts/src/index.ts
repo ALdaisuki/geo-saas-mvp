@@ -95,6 +95,7 @@ export const publicationJobStateSchema = z.enum([
   "retry_wait",
   "uncertain",
   "reconciling",
+  "preview_completed",
   "confirmed",
   "needs_review",
   "permanent_failure",

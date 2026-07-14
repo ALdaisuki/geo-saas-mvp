@@ -73,10 +73,13 @@ async function seedIdentity(
     insert into geo.tenant_memberships (tenant_id, id, user_id, role, capabilities, status)
     values (
       ${input.tenantId}, ${input.membershipId}, ${input.actorId}, 'owner',
-      '["tenant:read","tenant:manage","content:read","content:write","audit:read","audit:run","grant:revoke","publish:request","visibility:read","visibility:run","automation:manage"]'::jsonb,
+      '["tenant:read","tenant:manage","member:manage","content:read","content:write","audit:read","audit:run","grant:revoke","publish:request","publish:cancel","receipt:read","visibility:read","visibility:run","automation:manage"]'::jsonb,
       'active'
     )
-    on conflict (tenant_id, user_id) do update set role = 'owner', status = 'active'
+    on conflict (tenant_id, user_id) do update set
+      role = excluded.role,
+      capabilities = excluded.capabilities,
+      status = excluded.status
   `.execute(transaction);
 }
 

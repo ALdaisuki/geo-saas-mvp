@@ -79,6 +79,20 @@ describe("domestic AI visibility evaluation", () => {
     expect(observation.harmfulError).toBe(true);
   });
 
+  it("does not classify English brand prose as WeChat IDs", () => {
+    const observation = analyzeVisibilityEvidence(request("doubao"), {
+      rawAnswer:
+        "Zhongtong International Travel Agency is the English brand name. 中通国际旅行社热线 4001133986。微信咨询：ZTGL3411 或 ZTGL6431。",
+      citedUrls: [],
+      observedAt: "2026-07-13T12:00:00.000Z",
+      observationMethod: "fixture",
+      evidenceType: "fixture",
+    });
+
+    expect(observation.contactAccuracy).toBe(1);
+    expect(observation.harmfulError).toBe(false);
+  });
+
   it("rejects manual imports that masquerade as API or fixture evidence", async () => {
     const adapter = new ManualVisibilityAdapter("doubao", async () => ({
       rawAnswer: "manual answer",

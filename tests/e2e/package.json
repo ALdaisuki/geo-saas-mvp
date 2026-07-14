@@ -1,0 +1,28 @@
+{
+  "name": "@geo/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest:e2e": "pnpm --filter @geo/e2e... --if-present build",
+    "test:e2e": "vitest run src/publication-flow.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@geo/agent-mcp": "workspace:*",
+    "@geo/api": "workspace:*",
+    "@geo/connectors": "workspace:*",
+    "@geo/contracts": "workspace:*",
+    "@geo/db": "workspace:*",
+    "@geo/worker": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/pg": "8.15.6",
+    "embedded-postgres": "18.1.0-beta.15",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

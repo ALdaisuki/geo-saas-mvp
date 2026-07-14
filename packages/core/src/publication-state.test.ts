@@ -12,6 +12,13 @@ describe("publication state transitions", () => {
     expect(confirmed).toMatchObject({ to: "confirmed", terminal: true });
   });
 
+  it("records dry-run completion as an unconfirmed terminal preview", () => {
+    const dispatching = transitionPublicationState("queued", "dispatch_started");
+    const preview = transitionPublicationState(dispatching.to, "dispatch_preview_completed");
+
+    expect(preview).toMatchObject({ to: "preview_completed", terminal: true });
+  });
+
   it("forces an unknown dispatch outcome through reconciliation before retry", () => {
     const uncertain = transitionPublicationState("dispatching", "dispatch_uncertain");
 
@@ -39,7 +46,7 @@ describe("publication state transitions", () => {
     });
   });
 
-  it.each(["confirmed", "permanent_failure", "cancelled"] as const)(
+  it.each(["preview_completed", "confirmed", "permanent_failure", "cancelled"] as const)(
     "does not allow transitions out of terminal state %s",
     (state) => {
       expect(() => transitionPublicationState(state, "cancel")).toThrowError(

@@ -1,0 +1,94 @@
+import type {
+  CompletePublicationInput,
+  CompletePublicationResult,
+  ClaimedOutboxEvent,
+  ClaimOptions,
+  DispatcherStore,
+  PublicationWork,
+  RecordFailureInput,
+  RecordUncertainInput,
+  ResolveUncertainInput,
+  RetryOptions,
+  TenantContext,
+  TenantJobStore,
+} from "../src/types.js";
+
+export class FakeDispatcherStore implements DispatcherStore {
+  readonly events: ClaimedOutboxEvent[];
+  readonly acknowledged: string[] = [];
+  readonly retries: RetryOptions[] = [];
+  readonly #claimed = new Set<string>();
+
+  constructor(events: readonly ClaimedOutboxEvent[]) {
+    this.events = [...events];
+  }
+
+  async claim(options: ClaimOptions): Promise<readonly ClaimedOutboxEvent[]> {
+    const result: ClaimedOutboxEvent[] = [];
+    for (const event of this.events) {
+      if (result.length >= options.limit) break;
+      if (!this.#claimed.has(event.eventId)) {
+        this.#claimed.add(event.eventId);
+        result.push(event);
+      }
+    }
+    return result;
+  }
+
+  async acknowledge(eventId: string): Promise<boolean> {
+    this.acknowledged.push(eventId);
+    return true;
+  }
+
+  async retry(options: RetryOptions): Promise<boolean> {
+    this.retries.push(options);
+    return true;
+  }
+}
+
+export class FakeTenantJobStore implements TenantJobStore {
+  readonly works = new Map<string, PublicationWork>();
+  readonly completions: CompletePublicationInput[] = [];
+  readonly failures: RecordFailureInput[] = [];
+  readonly uncertainties: RecordUncertainInput[] = [];
+  readonly resolutions: ResolveUncertainInput[] = [];
+
+  async load(_context: TenantContext, jobId: string): Promise<PublicationWork | null> {
+    return this.works.get(jobId) ?? null;
+  }
+
+  async complete(input: CompletePublicationInput): Promise<CompletePublicationResult> {
+    const work = this.works.get(input.jobId);
+    if (work?.existingReceipt !== null && work?.existingReceipt !== undefined) {
+      return { alreadyCompleted: true, receipt: work.existingReceipt };
+    }
+    this.completions.push(input);
+    if (work !== undefined) {
+      work.job.state = "preview_completed";
+      work.existingReceipt = input.receipt;
+    }
+    return { alreadyCompleted: false, receipt: input.receipt };
+  }
+
+  async recordFailure(input: RecordFailureInput): Promise<void> {
+    this.failures.push(input);
+    const work = this.works.get(input.jobId);
+    if (work !== undefined) {
+      work.job.state = input.final ? "permanent_failure" : "retry_wait";
+    }
+  }
+
+  async recordUncertain(input: RecordUncertainInput): Promise<void> {
+    this.uncertainties.push(input);
+    const work = this.works.get(input.jobId);
+    if (work !== undefined) work.job.state = "uncertain";
+  }
+
+  async resolveUncertain(input: ResolveUncertainInput): Promise<void> {
+    this.resolutions.push(input);
+    const work = this.works.get(input.jobId);
+    if (work !== undefined) {
+      work.job.state = input.result.outcome === "not_published" ? "retry_wait" : "needs_review";
+    }
+  }
+}

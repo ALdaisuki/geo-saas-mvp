@@ -33,8 +33,18 @@ function containsValue(answer: string, value: string): boolean {
 
 function extractContactLikeTokens(answer: string): string[] {
   const phoneTokens = answer.match(/(?:\+?86[-\s]?)?(?:400[-\s]?\d{3}[-\s]?\d{4}|1\d{10})/g) ?? [];
-  const wechatTokens =
-    answer.match(/(?:微信(?:号|咨询)?[:：\s]*)?([A-Za-z][A-Za-z0-9_-]{5,19})/g) ?? [];
+  const wechatTokens: string[] = [];
+  const keywordPattern = /微信(?:号|咨询)?|wechat|wx|vx/i;
+  for (const line of answer.split(/\r?\n/u)) {
+    const keyword = keywordPattern.exec(line);
+    if (keyword === null) continue;
+    const tail = line.slice(keyword.index + keyword[0].length);
+    const sentence = tail.split(/[.!?。！？;]/u, 1)[0] ?? "";
+    for (const match of sentence.matchAll(/[A-Za-z][A-Za-z0-9_-]{5,19}/g)) {
+      const value = match[0].toLowerCase();
+      if (value !== "wechat" && value !== "weixin") wechatTokens.push(match[0]);
+    }
+  }
 
   return [...phoneTokens, ...wechatTokens].map(compactContact);
 }

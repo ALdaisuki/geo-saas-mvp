@@ -15,6 +15,8 @@ const variantId = "10000000-0000-4000-8000-000000000002";
 const channelAccountId = "10000000-0000-4000-8000-000000000003";
 const contactId = "10000000-0000-4000-8000-000000000004";
 const sourceId = "10000000-0000-4000-8000-000000000005";
+const factId = "10000000-0000-4000-8000-000000000006";
+const brandId = "10000000-0000-4000-8000-000000000009";
 const token = "test-only-publication-token-with-at-least-32-bytes";
 
 const contact: TenantContact = {
@@ -31,10 +33,21 @@ const contact: TenantContact = {
 const snapshot: FactSnapshot = {
   tenantId,
   capturedAt: "2026-07-13T11:00:00.000Z",
+  facts: [
+    {
+      id: factId,
+      brandId,
+      text: "Use the current itinerary",
+      evidenceSourceIds: [sourceId],
+      validFrom: "2026-07-13T09:00:00.000Z",
+      validUntil: null,
+    },
+  ],
   sources: [
     {
       id: sourceId,
       locator: "https://example.test/source",
+      contentHash: "b".repeat(64),
       observedAt: "2026-07-13T10:00:00.000Z",
       validUntil: null,
     },
@@ -68,7 +81,7 @@ const publicationPayload: PublicationVariantPayload = {
   media: [],
   claims: [
     {
-      id: "10000000-0000-4000-8000-000000000006",
+      id: factId,
       text: "Use the current itinerary",
       evidenceSourceIds: [sourceId],
       validUntil: null,
@@ -82,6 +95,7 @@ function passedAudit() {
   return auditPublicationVariant({
     artifactId: "10000000-0000-4000-8000-000000000007",
     tenantId,
+    brandId,
     variantId,
     channelAccountId,
     platform: "toutiao",

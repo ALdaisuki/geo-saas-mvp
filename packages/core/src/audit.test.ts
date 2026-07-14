@@ -14,10 +14,12 @@ const tenantId = "00000000-0000-4000-8000-000000000001";
 const variantId = "00000000-0000-4000-8000-000000000002";
 const channelAccountId = "00000000-0000-4000-8000-000000000003";
 const artifactId = "00000000-0000-4000-8000-000000000004";
+const brandId = "00000000-0000-4000-8000-000000000010";
 const phoneId = "00000000-0000-4000-8000-000000000005";
 const wechatOneId = "00000000-0000-4000-8000-000000000006";
 const wechatTwoId = "00000000-0000-4000-8000-000000000007";
 const sourceId = "00000000-0000-4000-8000-000000000008";
+const factId = "00000000-0000-4000-8000-000000000009";
 
 const createdAt = "2026-07-13T12:00:00.000Z";
 
@@ -57,10 +59,21 @@ const contacts: readonly TenantContact[] = [
 const factSnapshot: FactSnapshot = {
   tenantId,
   capturedAt: "2026-07-12T12:00:00.000Z",
+  facts: [
+    {
+      id: factId,
+      brandId,
+      text: "行程安排以签约前的最终行程单为准",
+      evidenceSourceIds: [sourceId],
+      validFrom: "2026-07-01T00:00:00.000Z",
+      validUntil: "2026-08-01T00:00:00.000Z",
+    },
+  ],
   sources: [
     {
       id: sourceId,
       locator: "https://example.test/evidence/itinerary",
+      contentHash: "a".repeat(64),
       observedAt: "2026-07-12T10:00:00.000Z",
       validUntil: "2026-08-01T00:00:00.000Z",
     },
@@ -98,13 +111,14 @@ function payload(overrides: Partial<PublicationVariantPayload> = {}): Publicatio
     bodyMarkdown: [
       "## 先看可核验的行程信息",
       "出发日期、交通安排和住宿标准应以签约前提供的最终行程单为准。本文把来源和有效期一起记录，方便读者复核，不用模糊宣传替代事实。",
+      "行程安排以签约前的最终行程单为准。",
       "## 再判断服务是否适合",
       "老人或第一次出境的游客，应重点确认步行强度、自由活动时长和退改条件。24小时热线：4001133986。微信咨询：ZTGL3411 或 ZTGL6431。",
     ].join("\n\n"),
     media: [],
     claims: [
       {
-        id: "00000000-0000-4000-8000-000000000009",
+        id: factId,
         text: "行程安排以签约前的最终行程单为准",
         evidenceSourceIds: [sourceId],
         validUntil: "2026-08-01T00:00:00.000Z",
@@ -128,6 +142,7 @@ function run(
   return auditPublicationVariant({
     artifactId,
     tenantId,
+    brandId,
     variantId,
     channelAccountId,
     platform: overrides.platform ?? "toutiao",
@@ -156,6 +171,20 @@ describe("publication variant audit", () => {
     expect(artifact.expiresAt).toBe("2026-07-13T12:15:00.000Z");
     expect(Object.isFrozen(artifact)).toBe(true);
     expect(Object.isFrozen(artifact.findings)).toBe(true);
+  });
+
+  it("does not treat prose after a WeChat sentence as additional contact IDs", () => {
+    const englishContactSentence = payload({
+      bodyMarkdown: payload().bodyMarkdown.replace(
+        "微信咨询：ZTGL3411 或 ZTGL6431。",
+        "WeChat: ZTGL3411 and ZTGL6431. The current itinerary remains the source of truth.",
+      ),
+    });
+
+    const artifact = run(englishContactSentence);
+
+    expect(artifact.status).toBe("passed");
+    expect(artifact.findings).toEqual([]);
   });
 
   it("blocks unapproved contact values and missing referenced contacts", () => {
@@ -223,6 +252,59 @@ describe("publication variant audit", () => {
         "evidence.source.stale",
         "evidence.source.unknown",
       ]),
+    );
+  });
+
+  it("blocks claims that are not exactly bound to a verified fact", () => {
+    const audited = run(
+      payload({
+        claims: [
+          {
+            id: factId,
+            text: "A fabricated replacement claim",
+            evidenceSourceIds: [sourceId],
+            validUntil: "2026-08-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    expect(ruleIds(audited)).toEqual(
+      expect.arrayContaining(["evidence.claim.text_mismatch", "evidence.claim.not_in_content"]),
+    );
+  });
+
+  it("blocks unknown, cross-brand, and evidence-mismatched fact bindings", () => {
+    const baseClaim = payload().claims[0];
+    const baseFact = factSnapshot.facts[0];
+    if (baseClaim === undefined || baseFact === undefined) {
+      throw new Error("Audit fixtures must contain a claim and a verified fact");
+    }
+    const unknown = run(
+      payload({
+        claims: [
+          {
+            ...baseClaim,
+            id: "00000000-0000-4000-8000-000000000099",
+          },
+        ],
+      }),
+    );
+    const mismatchedSnapshot: FactSnapshot = {
+      ...factSnapshot,
+      facts: [
+        {
+          ...baseFact,
+          brandId: "00000000-0000-4000-8000-000000000077",
+          evidenceSourceIds: ["00000000-0000-4000-8000-000000000078"],
+        },
+      ],
+    };
+    const mismatched = run(payload(), { factSnapshot: mismatchedSnapshot });
+
+    expect(ruleIds(unknown)).toContain("evidence.claim.unverified");
+    expect(ruleIds(mismatched)).toEqual(
+      expect.arrayContaining(["evidence.claim.brand_mismatch", "evidence.claim.sources_mismatch"]),
     );
   });
 

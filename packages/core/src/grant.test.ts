@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { PublicationVariantPayload, TenantContact } from "@geo/contracts";
 
-import { auditPublicationVariant, type AuditPolicy, type FactSnapshot } from "./audit.js";
+import {
+  auditPublicationVariant,
+  DEFAULT_AUDIT_POLICY,
+  type AuditPolicy,
+  type FactSnapshot,
+} from "./audit.js";
+import { renderCanonicalContent } from "./content-renderer.js";
 import { CoreInvariantError } from "./errors.js";
 import {
   consumePublicationGrant,
@@ -71,13 +77,25 @@ const policy: AuditPolicy = {
   duplicateThreshold: 0.9,
   minDuplicateCharacters: 20,
   prohibitedGuarantees: ["包过"],
+  contentTemplates: DEFAULT_AUDIT_POLICY.contentTemplates,
   platformLimits: { toutiao: limit, sohu: limit, ctrip_community: limit },
 };
 
-const publicationPayload: PublicationVariantPayload = {
-  title: "Evidence first",
-  summary: "A bounded and verifiable travel answer.",
-  bodyMarkdown: "## Evidence\n\nUse the current itinerary. Hotline: 4001133986.",
+const publicationPayloadInput: PublicationVariantPayload = {
+  title: "placeholder",
+  summary: "placeholder",
+  bodyMarkdown: "placeholder",
+  titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+  summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
+  bodyBlocks: [
+    { type: "template", templateId: "generic.body.heading.verified" },
+    { type: "template", templateId: "generic.body.guidance.verified" },
+    { type: "claim", claimId: factId, presentation: "paragraph" },
+    { type: "template", templateId: "generic.body.heading.contact" },
+    { type: "contact", contactId, presentation: "paragraph" },
+    { type: "template", templateId: "generic.body.guidance.contact" },
+  ],
+  tagTemplateIds: [],
   media: [],
   claims: [
     {
@@ -89,6 +107,27 @@ const publicationPayload: PublicationVariantPayload = {
   ],
   contactIds: [contactId],
   tags: [],
+};
+const renderedPublicationPayload = renderCanonicalContent({
+  payload: publicationPayloadInput,
+  policy,
+  factSnapshot: snapshot,
+  contacts: [contact],
+});
+if (
+  renderedPublicationPayload.title === null ||
+  renderedPublicationPayload.summary === null ||
+  renderedPublicationPayload.bodyMarkdown === null ||
+  renderedPublicationPayload.tags === null
+) {
+  throw new Error("Canonical grant fixture did not render");
+}
+const publicationPayload: PublicationVariantPayload = {
+  ...publicationPayloadInput,
+  title: renderedPublicationPayload.title,
+  summary: renderedPublicationPayload.summary,
+  bodyMarkdown: renderedPublicationPayload.bodyMarkdown,
+  tags: [...renderedPublicationPayload.tags],
 };
 
 function passedAudit() {

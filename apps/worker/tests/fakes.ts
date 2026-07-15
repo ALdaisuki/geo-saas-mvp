@@ -1,4 +1,6 @@
 import type {
+  AcquirePublicationExecutionInput,
+  AcquirePublicationExecutionResult,
   CompletePublicationInput,
   CompletePublicationResult,
   ClaimedOutboxEvent,
@@ -6,6 +8,7 @@ import type {
   DispatcherStore,
   PublicationWork,
   RecordFailureInput,
+  RecordReconciliationFailureInput,
   RecordUncertainInput,
   ResolveUncertainInput,
   RetryOptions,
@@ -48,13 +51,32 @@ export class FakeDispatcherStore implements DispatcherStore {
 
 export class FakeTenantJobStore implements TenantJobStore {
   readonly works = new Map<string, PublicationWork>();
+  readonly acquisitions: AcquirePublicationExecutionInput[] = [];
+  acquisitionResult: AcquirePublicationExecutionResult = {
+    allowed: true,
+    reason: null,
+    halfOpenProbe: false,
+  };
   readonly completions: CompletePublicationInput[] = [];
   readonly failures: RecordFailureInput[] = [];
+  failureError: Error | null = null;
+  readonly reconciliationFailures: RecordReconciliationFailureInput[] = [];
   readonly uncertainties: RecordUncertainInput[] = [];
   readonly resolutions: ResolveUncertainInput[] = [];
 
   async load(_context: TenantContext, jobId: string): Promise<PublicationWork | null> {
     return this.works.get(jobId) ?? null;
+  }
+
+  async acquirePublicationExecution(
+    input: AcquirePublicationExecutionInput,
+  ): Promise<AcquirePublicationExecutionResult> {
+    this.acquisitions.push(input);
+    if (this.acquisitionResult.allowed) {
+      const work = this.works.get(input.jobId);
+      if (work !== undefined) work.job.state = "dispatching";
+    }
+    return this.acquisitionResult;
   }
 
   async complete(input: CompletePublicationInput): Promise<CompletePublicationResult> {
@@ -71,11 +93,20 @@ export class FakeTenantJobStore implements TenantJobStore {
   }
 
   async recordFailure(input: RecordFailureInput): Promise<void> {
+    if (this.failureError !== null) throw this.failureError;
     this.failures.push(input);
     const work = this.works.get(input.jobId);
     if (work !== undefined) {
-      work.job.state = input.final ? "permanent_failure" : "retry_wait";
+      work.job.state = input.final
+        ? input.code === "PUBLICATION_AUTHORIZATION_INVALID"
+          ? "needs_review"
+          : "permanent_failure"
+        : "retry_wait";
     }
+  }
+
+  async recordReconciliationFailure(input: RecordReconciliationFailureInput): Promise<void> {
+    this.reconciliationFailures.push(input);
   }
 
   async recordUncertain(input: RecordUncertainInput): Promise<void> {

@@ -60,12 +60,12 @@ export function buildCapabilityReport(
     return {
       platform,
       capability: "manual_only",
-      supportedExecutionLevels: ["dry_run", "assisted"],
+      supportedExecutionLevels: ["dry_run"],
       checkedAt,
       evidenceType: "preview",
       evidenceRefs: [],
       reason:
-        "No verified public or partner article-publishing API is configured; only preview and manual export are available.",
+        "No verified public or partner article-publishing API is configured; publication execution is dry-run only. Manual package export is a separate non-publication action.",
     };
   }
 
@@ -140,10 +140,10 @@ export function executionLevelsForCapability(
   if (capability === "public_api" || capability === "partner_api") {
     return ["dry_run", "assisted", "unattended"];
   }
-  if (capability === "disabled") {
-    return ["dry_run"];
+  if (capability === "browser_assisted") {
+    return ["dry_run", "assisted"];
   }
-  return ["dry_run", "assisted"];
+  return ["dry_run"];
 }
 
 export function assertExecutionAllowed(

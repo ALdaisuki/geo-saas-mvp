@@ -104,7 +104,7 @@ function setup(
     jobs,
     connectors: resolver,
     workerId: "test-worker",
-    actorId,
+    actorIdsByTenant: { [tenantId]: actorId },
     now: () => new Date("2026-07-14T00:00:00.000Z"),
     idGenerator: idGenerator(),
   });
@@ -114,7 +114,7 @@ function setup(
 describe.each(["toutiao", "sohu", "ctrip_community"] as const)(
   "%s dry-run publication",
   (platform) => {
-    it("stores an immutable preview receipt and completes the workflow without readback", async () => {
+    it("stores an immutable preview receipt with a truthful not-required readback", async () => {
       const work = makeWork(platform);
       const { dispatcher, jobs, worker } = setup(work);
 
@@ -122,6 +122,7 @@ describe.each(["toutiao", "sohu", "ctrip_community"] as const)(
 
       expect(summary).toMatchObject({ claimed: 1, completed: 1, acknowledged: 1 });
       expect(dispatcher.retries).toHaveLength(0);
+      expect(jobs.acquisitions).toHaveLength(1);
       expect(jobs.completions).toHaveLength(1);
       expect(jobs.completions[0]?.receipt).toMatchObject({
         platform,
@@ -163,7 +164,7 @@ it("relies on atomic claim so concurrent workers publish a shared event once", a
     jobs,
     connectors: resolver,
     workerId: "worker-a",
-    actorId,
+    actorIdsByTenant: { [tenantId]: actorId },
     now: () => new Date("2026-07-14T00:00:00.000Z"),
     idGenerator: idGenerator(),
   };
@@ -231,6 +232,22 @@ it("dead-letters payload hash mutation before invoking a connector", async () =>
   expect(jobs.completions).toHaveLength(0);
 });
 
+it("keeps the outbox event retryable when terminal failure persistence fails", async () => {
+  const work = makeWork("toutiao");
+  work.variant.payloadHash = "f".repeat(64);
+  const { dispatcher, jobs, worker } = setup(work);
+  jobs.failureError = new Error("database write unavailable");
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.failures).toHaveLength(0);
+  expect(dispatcher.retries[0]).toMatchObject({
+    deadLetter: false,
+    error: expect.stringContaining("FAILURE_PERSISTENCE_FAILED"),
+  });
+  expect(summary).toMatchObject({ retried: 1, deadLettered: 0 });
+});
+
 it("retries transient connector failures and dead-letters at the attempt limit", async () => {
   const connector = createDefaultConnectorRegistry().get("toutiao");
   const resolver: ConnectorResolver = {
@@ -258,7 +275,7 @@ it("retries transient connector failures and dead-letters at the attempt limit",
     jobs: finalJobs,
     connectors: resolver,
     workerId: "test-worker",
-    actorId,
+    actorIdsByTenant: { [tenantId]: actorId },
     maxAttempts: 5,
     idGenerator: idGenerator(),
   });
@@ -277,6 +294,231 @@ it("does not publish while a kill switch or circuit gate is closed", async () =>
   expect(jobs.completions).toHaveLength(0);
   expect(jobs.failures[0]).toMatchObject({ code: "PUBLICATION_GATE_BLOCKED", final: false });
   expect(dispatcher.retries[0]).toMatchObject({ deadLetter: false });
+});
+
+it("honors an atomic quota denial before rendering or publishing", async () => {
+  const work = makeWork("sohu");
+  const connector = createDefaultConnectorRegistry().get("sohu");
+  let renderCalls = 0;
+  let publishCalls = 0;
+  const { dispatcher, jobs, worker } = setup(work, {
+    get: () =>
+      new Proxy(connector, {
+        get(target, property, receiver) {
+          if (property === "renderDraft") {
+            return async (...args: Parameters<PlatformConnector["renderDraft"]>) => {
+              renderCalls += 1;
+              return target.renderDraft(...args);
+            };
+          }
+          if (property === "publish") {
+            return async (input: PublishInput) => {
+              publishCalls += 1;
+              return target.publish(input);
+            };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+  });
+  jobs.acquisitionResult = {
+    allowed: false,
+    reason: "tenant perMinute quota exceeded",
+    halfOpenProbe: false,
+  };
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.acquisitions).toHaveLength(1);
+  expect(renderCalls).toBe(0);
+  expect(publishCalls).toBe(0);
+  expect(jobs.failures).toHaveLength(0);
+  expect(jobs.completions).toHaveLength(0);
+  expect(dispatcher.retries[0]).toMatchObject({
+    error: "PUBLICATION_GATE_BLOCKED: tenant perMinute quota exceeded",
+    deadLetter: false,
+  });
+  expect(summary.retried).toBe(1);
+});
+
+it("treats an expired publication authorization as terminal on the first attempt", async () => {
+  const work = makeWork("sohu", "10000000-0000-4000-8000-000000002090");
+  const { dispatcher, jobs, worker } = setup(work);
+  jobs.acquisitionResult = {
+    allowed: false,
+    reason: "authorization_expired",
+    halfOpenProbe: false,
+  };
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.completions).toHaveLength(0);
+  expect(jobs.failures[0]).toMatchObject({
+    jobId: work.job.id,
+    code: "PUBLICATION_AUTHORIZATION_INVALID",
+    message: "authorization_expired",
+    final: true,
+  });
+  expect(work.job.state).toBe("needs_review");
+  expect(dispatcher.retries[0]).toMatchObject({
+    error: "PUBLICATION_AUTHORIZATION_INVALID: authorization_expired",
+    delaySeconds: 0,
+    deadLetter: true,
+  });
+  expect(summary).toMatchObject({ retried: 0, deadLettered: 1 });
+});
+
+it("persists a terminal job failure when an atomic quota gate exhausts max attempts", async () => {
+  const work = makeWork("sohu", "10000000-0000-4000-8000-000000002088");
+  const event = makeEvent(work, 5);
+  const dispatcher = new FakeDispatcherStore([event]);
+  const jobs = new FakeTenantJobStore();
+  jobs.works.set(work.job.id, work);
+  jobs.acquisitionResult = {
+    allowed: false,
+    reason: "quota_per_minute:tenant:*",
+    halfOpenProbe: false,
+  };
+  const worker = new OutboxWorker({
+    dispatcher,
+    jobs,
+    connectors: createDefaultConnectorRegistry(),
+    workerId: "test-worker",
+    actorIdsByTenant: { [tenantId]: actorId },
+    maxAttempts: 5,
+    idGenerator: idGenerator(),
+  });
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.failures[0]).toMatchObject({
+    jobId: work.job.id,
+    code: "PUBLICATION_GATE_BLOCKED",
+    message: "quota_per_minute:tenant:*",
+    final: true,
+  });
+  expect(work.job.state).toBe("permanent_failure");
+  expect(dispatcher.retries[0]).toMatchObject({
+    error: "PUBLICATION_GATE_BLOCKED: quota_per_minute:tenant:*",
+    deadLetter: true,
+  });
+  expect(summary.deadLettered).toBe(1);
+});
+
+it("keeps an active job lease retryable after ordinary max attempts", async () => {
+  const work = makeWork("sohu", "10000000-0000-4000-8000-000000002089");
+  work.job.state = "dispatching";
+  const event = makeEvent(work, 99);
+  const dispatcher = new FakeDispatcherStore([event]);
+  const jobs = new FakeTenantJobStore();
+  jobs.works.set(work.job.id, work);
+  jobs.acquisitionResult = {
+    allowed: false,
+    reason: "job_active_lease",
+    halfOpenProbe: false,
+  };
+  const worker = new OutboxWorker({
+    dispatcher,
+    jobs,
+    connectors: createDefaultConnectorRegistry(),
+    workerId: "duplicate-claim-worker",
+    actorIdsByTenant: { [tenantId]: actorId },
+    maxAttempts: 5,
+    idGenerator: idGenerator(),
+  });
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.failures).toHaveLength(0);
+  expect(work.job.state).toBe("dispatching");
+  expect(dispatcher.retries[0]).toMatchObject({
+    error: "PUBLICATION_GATE_BLOCKED: job_active_lease",
+    deadLetter: false,
+  });
+  expect(summary).toMatchObject({ retried: 1, deadLettered: 0 });
+});
+
+it("dead-letters an atomic terminal-state denial instead of retrying forever", async () => {
+  const work = makeWork("sohu");
+  const { dispatcher, jobs, worker } = setup(work);
+  jobs.acquisitionResult = {
+    allowed: false,
+    reason: "job_state:cancelled",
+    halfOpenProbe: false,
+  };
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.acquisitions).toHaveLength(1);
+  expect(jobs.completions).toHaveLength(0);
+  expect(dispatcher.retries[0]).toMatchObject({
+    error: "PUBLICATION_GATE_BLOCKED: job_state:cancelled",
+    delaySeconds: 0,
+    deadLetter: true,
+  });
+  expect(summary.deadLettered).toBe(1);
+});
+
+it("blocks a harmful-visibility circuit before any unattended connector call", async () => {
+  const work = makeWork("toutiao");
+  work.job.executionLevel = "unattended";
+  work.account.capability = "public_api";
+  work.account.supportedExecutionLevels = ["dry_run", "unattended"];
+  work.gate = { allowed: false, reason: "harmful visibility signal opened platform circuit" };
+  const connector = createDefaultConnectorRegistry().get("toutiao");
+  let publishCalls = 0;
+  const { dispatcher, jobs, worker } = setup(work, {
+    get: () =>
+      new Proxy(connector, {
+        get(target, property, receiver) {
+          if (property === "publish") {
+            return async (input: PublishInput) => {
+              publishCalls += 1;
+              return target.publish(input);
+            };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+  });
+
+  await worker.runOnce();
+
+  expect(publishCalls).toBe(0);
+  expect(jobs.failures[0]).toMatchObject({ code: "PUBLICATION_GATE_BLOCKED", final: false });
+  expect(dispatcher.retries[0]).toMatchObject({ deadLetter: false });
+});
+
+it("hard rejects non-dry-run execution even when account and gate advertise unattended", async () => {
+  const work = makeWork("toutiao");
+  work.job.executionLevel = "unattended";
+  work.account.capability = "public_api";
+  work.account.supportedExecutionLevels = ["dry_run", "unattended"];
+  const connector = createDefaultConnectorRegistry().get("toutiao");
+  let publishCalls = 0;
+  const { dispatcher, jobs, worker } = setup(work, {
+    get: () =>
+      new Proxy(connector, {
+        get(target, property, receiver) {
+          if (property === "publish") {
+            return async (input: PublishInput) => {
+              publishCalls += 1;
+              return target.publish(input);
+            };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+  });
+
+  await worker.runOnce();
+
+  expect(publishCalls).toBe(0);
+  expect(jobs.failures[0]).toMatchObject({ code: "MVP_DRY_RUN_ONLY", final: true });
+  expect(dispatcher.retries[0]).toMatchObject({ deadLetter: true });
 });
 
 it("persists UNCERTAIN, reconciles, and retries only after not_published evidence", async () => {
@@ -364,6 +606,53 @@ it("retries reconciliation without publishing when an uncertain job is redeliver
   expect(reconcileCalls).toBe(1);
   expect(work.job.state).toBe("uncertain");
   expect(jobs.failures).toHaveLength(0);
+  expect(jobs.reconciliationFailures[0]).toMatchObject({
+    jobId: work.job.id,
+    attemptId: work.existingReceipt.attemptId,
+    receiptId: work.existingReceipt.id,
+    code: "RECONCILIATION_FAILED",
+  });
   expect(dispatcher.retries[0]).toMatchObject({ deadLetter: false });
   expect(summary.retried).toBe(1);
+});
+
+it("keeps an event retryable when its tenant actor mapping is missing", async () => {
+  const work = makeWork("toutiao");
+  const otherTenantId = "20000000-0000-4000-8000-000000000001";
+  const event: ClaimedOutboxEvent = {
+    ...makeEvent(work, 99),
+    tenantId: otherTenantId,
+    payload: {
+      tenantId: otherTenantId,
+      jobId: work.job.id,
+      variantId: work.variant.id,
+      channelAccountId: work.account.id,
+      platform: work.job.platform,
+      executionLevel: work.job.executionLevel,
+      payloadHash: work.job.payloadHash,
+    },
+  };
+  const dispatcher = new FakeDispatcherStore([event]);
+  const jobs = new FakeTenantJobStore();
+  jobs.works.set(work.job.id, work);
+  const worker = new OutboxWorker({
+    dispatcher,
+    jobs,
+    connectors: createDefaultConnectorRegistry(),
+    workerId: "mapping-test-worker",
+    actorIdsByTenant: { [tenantId]: actorId },
+    maxAttempts: 1,
+    now: () => new Date("2026-07-14T00:00:00.000Z"),
+    idGenerator: idGenerator(),
+  });
+
+  const summary = await worker.runOnce();
+
+  expect(summary).toMatchObject({ claimed: 1, retried: 1, deadLettered: 0 });
+  expect(dispatcher.retries[0]).toMatchObject({
+    deadLetter: false,
+    error: expect.stringContaining("WORKER_ACTOR_NOT_CONFIGURED"),
+  });
+  expect(jobs.acquisitions).toHaveLength(0);
+  expect(jobs.failures).toHaveLength(0);
 });

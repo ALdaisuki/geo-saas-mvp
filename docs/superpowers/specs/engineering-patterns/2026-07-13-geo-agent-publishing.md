@@ -121,16 +121,29 @@ Core pattern:
   own tables nor have `BYPASSRLS`.
 - Requests use transaction-local tenant/actor settings derived from the
   authenticated membership, not from a caller-provided tenant parameter.
-- A `ContentVersion` is rendered into platform-specific
-  `PublicationVariant`s. Audit targets the exact final variant, account, links,
-  and media rather than a generic article.
+- A `ContentVersion` is a closed reference graph: title/summary/body/tags can
+  resolve only through active-policy templates, verified claims, and active
+  tenant contacts. Stored final text must equal the deterministic render.
+- Variant creation accepts only content-version and account IDs. The server
+  derives the platform and renders the platform-specific `PublicationVariant`;
+  a client or model cannot submit final variant prose. Audit targets that exact
+  final variant and account rather than a generic article.
+- A tenant/version/account advisory lock and deterministic payload comparison
+  make same-binding retries reuse one variant. Near-duplicate evaluation covers
+  cross-platform completed publication history and the same content version's
+  draft/frozen siblings, including the first parallel rendering wave.
+- The active strict policy document is compiled from its canonical database
+  hash. Private process-local `WeakMap` provenance binds audit execution to the
+  exact frozen compiler output, so a spread/clone cannot retain authority by
+  copying `sourceHash`.
 - RFC 8785 canonical JSON and SHA-256 bind payload, facts/evidence, policy
   version, audit artifact, tenant, account, and platform.
 - Consuming a short-lived one-time grant, creating the immutable publication
   job, and appending its outbox event happen in one transaction.
-- External delivery is at-least-once. Ambiguous responses enter `UNCERTAIN` and
-  reconcile before retry; the product never promises exactly-once behavior that
-  a platform cannot support.
+- Future external delivery is modeled as at-least-once. Ambiguous responses
+  enter `UNCERTAIN` and reconcile before retry; the product never promises
+  exactly-once behavior that a platform cannot support. The current connectors
+  do not perform external delivery.
 - Redis may optimize limits, but database counters remain the hard fallback.
   Kill switches and circuit breakers exist at global, tenant, platform,
   account, campaign, and topic scopes.
@@ -167,7 +180,15 @@ commission, and order capabilities and does not establish a Ctrip Community
 content publishing API. Creator authentication and automation terms remain
 unknown and require an authenticated account review or written partner terms.
 
-## Connector capability model
+## Future connector capability model
+
+This vocabulary describes how a future connector may prove capability; it is
+not a declaration that those capabilities exist. In the current MVP, Toutiao,
+Sohu, and Ctrip Community are all `MANUAL_ONLY` with `L0 DRY_RUN`. Requests for
+`assisted` or `unattended` execution fail with
+`422 PUBLICATION_CAPABILITY_UNSUPPORTED` before grant consumption, job creation,
+or outbox insertion. There is no live browser worker or external platform
+readback path.
 
 Connectors report capability independently of platform name:
 
@@ -187,7 +208,7 @@ L1 ASSISTED      human login/challenge handling and explicit final publish step
 L2 UNATTENDED    PUBLIC_API or PARTNER_API only, with reconciliation and limits
 ```
 
-The connector SPI includes `probeCapabilities`, `validateSession`,
+The future connector SPI includes `probeCapabilities`, `validateSession`,
 `renderDraft`, `preflight`, `submitDraft`, `publish`, `pollStatus`, `reconcile`,
 and `captureEvidence`. Receipts always identify execution level and evidence
 type, so a fixture, preview, screenshot, or draft cannot be presented as a live
@@ -202,8 +223,11 @@ version, citations, raw answer, and observation method must be captured for
 every run. Repeated samples, competitors, and blank controls are required.
 
 Metrics include brand mention rate, share of voice, citation rate, source
-diversity, answer position, contact accuracy, harmful error rate, and confidence
-intervals. A single answer or synthetic GEO score cannot directly increase
+diversity, average answer position, contact accuracy, competitor share,
+positive/negative sentiment rates, structured hallucination-finding rate,
+harmful error rate, and confidence intervals. Competitor names come from the
+tenant's active brand-scoped truth records, not a process-global list. A single
+answer or synthetic GEO score cannot directly increase
 publication volume; doing so would amplify model variance into repetitive
 content.
 
@@ -219,5 +243,7 @@ content.
    but cannot issue grants or directly drive publisher browsers.
 5. Store travel-specific rules in a versioned domain pack. Core campaign,
    content, audit, publication, and visibility models remain industry-neutral.
-6. Add post-publication readback and negative-signal circuit breakers to MVP;
-   publication-time audit alone is insufficient for unattended operation.
+6. Keep durable dry-run readback declarations and negative-signal circuit
+   breakers in MVP. Add external post-publication readback only with a future
+   verified live connector; publication-time audit alone would be insufficient
+   for unattended operation.

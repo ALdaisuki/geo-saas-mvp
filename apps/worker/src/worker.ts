@@ -27,7 +27,7 @@ export interface OutboxWorkerOptions {
   jobs: TenantJobStore;
   connectors: ConnectorResolver;
   workerId: string;
-  actorId: string;
+  actorIdsByTenant: Readonly<Record<string, string>>;
   batchSize?: number;
   concurrency?: number;
   leaseSeconds?: number;
@@ -65,7 +65,7 @@ export class OutboxWorker {
   readonly #jobs: TenantJobStore;
   readonly #connectors: ConnectorResolver;
   readonly #workerId: string;
-  readonly #actorId: string;
+  readonly #actorIdsByTenant: ReadonlyMap<string, string>;
   readonly #batchSize: number;
   readonly #concurrency: number;
   readonly #leaseSeconds: number;
@@ -80,7 +80,7 @@ export class OutboxWorker {
     this.#jobs = options.jobs;
     this.#connectors = options.connectors;
     this.#workerId = options.workerId;
-    this.#actorId = options.actorId;
+    this.#actorIdsByTenant = new Map(Object.entries(options.actorIdsByTenant));
     this.#batchSize = options.batchSize ?? 25;
     this.#concurrency = options.concurrency ?? 4;
     this.#leaseSeconds = options.leaseSeconds ?? 60;
@@ -97,7 +97,8 @@ export class OutboxWorker {
       this.#concurrency > this.#batchSize ||
       this.#leaseSeconds < 5 ||
       this.#leaseSeconds > 600 ||
-      this.#maxAttempts < 1
+      this.#maxAttempts < 1 ||
+      this.#actorIdsByTenant.size < 1
     ) {
       throw new TypeError("Invalid outbox worker limits");
     }
@@ -146,9 +147,16 @@ export class OutboxWorker {
         );
       }
 
+      const actorId = this.#actorIdsByTenant.get(payload.tenantId);
+      if (actorId === undefined) {
+        throw new RetryableWorkerError(
+          "WORKER_ACTOR_NOT_CONFIGURED",
+          `No worker actor is configured for tenant ${payload.tenantId}`,
+        );
+      }
       context = {
         tenantId: payload.tenantId,
-        actorId: this.#actorId,
+        actorId,
         requestId: `outbox:${event.eventId}`,
       };
       work = (await this.#jobs.load(context, payload.jobId)) ?? undefined;
@@ -204,6 +212,49 @@ export class OutboxWorker {
 
       this.#assertCapability(work);
       this.#assertPayloadIntegrity(work, payload);
+
+      const acquisition = await this.#jobs.acquirePublicationExecution({
+        context,
+        jobId: work.job.id,
+        attemptId,
+        workerId: this.#workerId,
+      });
+      if (!acquisition.allowed) {
+        const reason = acquisition.reason ?? "execution gate denied";
+        const authorizationInvalid = reason.startsWith("authorization_");
+        const terminalJobState = reason.startsWith("job_state:");
+        const activeLease = reason === "job_active_lease";
+        const final =
+          authorizationInvalid ||
+          terminalJobState ||
+          (!activeLease && event.attempts >= this.#maxAttempts);
+        const errorCode = authorizationInvalid
+          ? "PUBLICATION_AUTHORIZATION_INVALID"
+          : "PUBLICATION_GATE_BLOCKED";
+        if (final && !terminalJobState) {
+          await this.#jobs.recordFailure({
+            context,
+            jobId: work.job.id,
+            attemptId,
+            code: errorCode,
+            message: reason,
+            final: true,
+            occurredAt: this.#now(),
+          });
+        }
+        const released = await this.#dispatcher.retry({
+          eventId: event.eventId,
+          workerId: this.#workerId,
+          delaySeconds: final ? 0 : this.#retryDelay(event.attempts),
+          error: `${errorCode}: ${reason}`,
+          deadLetter: final,
+        });
+        return {
+          ...EMPTY_OUTCOME,
+          retried: !final && released ? 1 : 0,
+          deadLettered: final && released ? 1 : 0,
+        };
+      }
 
       const startedAt = this.#now();
       const receiptId = this.#idGenerator();
@@ -384,6 +435,7 @@ export class OutboxWorker {
         receipt,
       });
     } catch {
+      await this.#recordReconciliationFailure(context, work, receipt);
       result = {
         outcome: "manual_confirmation_required",
         confirmed: false,
@@ -442,6 +494,7 @@ export class OutboxWorker {
         resolvedAt: this.#now(),
       });
     } catch (error) {
+      await this.#recordReconciliationFailure(context, work, receipt);
       const final = event.attempts >= this.#maxAttempts;
       if (final) {
         await this.#jobs.resolveUncertain({
@@ -485,6 +538,23 @@ export class OutboxWorker {
     };
   }
 
+  async #recordReconciliationFailure(
+    context: TenantContext,
+    work: PublicationWork,
+    receipt: ReturnType<typeof publicationReceiptSchema.parse>,
+  ): Promise<void> {
+    await this.#jobs.recordReconciliationFailure({
+      context,
+      jobId: work.job.id,
+      attemptId: receipt.attemptId,
+      receiptId: receipt.id,
+      requestHash: receipt.requestHash,
+      responseHash: receipt.responseHash,
+      code: "RECONCILIATION_FAILED",
+      occurredAt: this.#now(),
+    });
+  }
+
   async #handleFailure(
     event: ClaimedOutboxEvent,
     context: TenantContext | undefined,
@@ -492,7 +562,12 @@ export class OutboxWorker {
     attemptId: string,
     failure: WorkerError,
   ): Promise<EventOutcome> {
-    const final = failure.disposition === "dead_letter" || event.attempts >= this.#maxAttempts;
+    const configurationBlocked =
+      failure.code === "WORKER_ACTOR_NOT_CONFIGURED" ||
+      failure.code === "WORKER_ACTOR_NOT_AUTHORIZED";
+    let final =
+      !configurationBlocked &&
+      (failure.disposition === "dead_letter" || event.attempts >= this.#maxAttempts);
     if (context !== undefined && work !== undefined) {
       try {
         await this.#jobs.recordFailure({
@@ -509,6 +584,7 @@ export class OutboxWorker {
           "FAILURE_PERSISTENCE_FAILED",
           `${failure.message}; ${errorMessage(storeError)}`,
         );
+        final = false;
       }
     }
 

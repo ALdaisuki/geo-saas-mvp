@@ -14,9 +14,13 @@ const session: SessionSnapshot = {
     role: "owner",
     capabilities: [
       "tenant:read",
+      "tenant:manage",
+      "member:manage",
+      "principal:manage",
       "content:read",
       "receipt:read",
       "visibility:read",
+      "visibility:run",
       "automation:manage",
     ],
   },
@@ -38,6 +42,104 @@ function liveApi(): GeoApi {
       updatedAt: "2026-07-14T08:00:00.000Z",
     },
     circuits: [],
+  };
+  const publicationJob = {
+    id: "10000000-0000-4000-8000-000000001101",
+    grantId: "10000000-0000-4000-8000-000000001103",
+    auditArtifactId: "10000000-0000-4000-8000-000000001104",
+    variantId: "10000000-0000-4000-8000-000000001102",
+    channelAccountId: "10000000-0000-4000-8000-000000000701",
+    platform: "toutiao",
+    executionLevel: "dry_run",
+    state: "preview_completed",
+    payloadHash: "a".repeat(64),
+    scheduledFor: "2026-07-14T08:00:00.000Z",
+    availableAt: "2026-07-14T08:00:00.000Z",
+    attemptCount: 1,
+    lastErrorCode: null,
+    createdAt: "2026-07-14T08:00:00.000Z",
+    updatedAt: "2026-07-14T08:01:00.000Z",
+  };
+  const publicationReceipt = {
+    id: "10000000-0000-4000-8000-000000001201",
+    jobId: publicationJob.id,
+    attemptId: "10000000-0000-4000-8000-000000001202",
+    platform: "toutiao",
+    executionLevel: "dry_run",
+    evidenceType: "preview",
+    requestHash: "a".repeat(64),
+    responseHash: "b".repeat(64),
+    externalId: null,
+    externalUrl: null,
+    publishedAt: null,
+    confirmed: false,
+    payload: { readback: { required: false, reason: "dry_run_preview_only" } },
+    recordedAt: "2026-07-14T08:01:00.000Z",
+  };
+  const visibilityRun = {
+    id: "10000000-0000-4000-8000-000000001501",
+    querySetVersionId: "10000000-0000-4000-8000-000000000902",
+    provider: "doubao" as const,
+    productSurface: "web-search",
+    model: "doubao-search-v1",
+    searchMode: "on" as const,
+    observationMethod: "manual" as const,
+    status: "completed" as const,
+    locale: "zh-CN",
+    geo: "CN",
+    startedAt: "2026-07-14T08:00:00.000Z",
+    completedAt: "2026-07-14T08:00:01.000Z",
+    errorMessage: null,
+    observationCount: 1,
+    createdAt: "2026-07-14T08:00:00.000Z",
+  };
+  const visibilityDetail = {
+    run: visibilityRun,
+    observations: [
+      {
+        id: "10000000-0000-4000-8000-000000001502",
+        tenantId: session.tenant.id,
+        runId: visibilityRun.id,
+        provider: "doubao" as const,
+        productSurface: visibilityRun.productSurface,
+        model: visibilityRun.model,
+        searchMode: "on" as const,
+        observationMethod: "manual" as const,
+        prompt: "中通国际旅行社电话是多少",
+        promptVersion: "1",
+        locale: "zh-CN",
+        geo: "CN",
+        rawAnswer: "中通国际旅行社 24 小时热线为 4001133986。",
+        citedUrls: ["https://example.test/zhongtong-contact"],
+        evidenceHash: "f".repeat(64),
+        evidenceType: "manual_import",
+        requestStartedAt: "2026-07-14T07:59:59.000Z",
+        responseReceivedAt: "2026-07-14T08:00:00.000Z",
+        observedAt: "2026-07-14T08:00:00.000Z",
+        brandMentioned: true,
+        answerPosition: 1,
+        contactAccuracy: 1,
+        competitorMentions: ["示例旅行社"],
+        sentiment: "neutral" as const,
+        hallucinationFindings: [],
+        harmfulError: false,
+        extractorVersion: "visibility-v1",
+        evaluatorVersion: "geo-visibility-evaluator-v1",
+        metadata: {},
+        createdAt: "2026-07-14T08:00:01.000Z",
+      },
+    ],
+    metrics: [
+      {
+        name: "contact_accuracy",
+        value: 1,
+        sampleCount: 1,
+        confidenceLow: null,
+        confidenceHigh: null,
+        dimensions: { provider: "doubao" },
+        createdAt: "2026-07-14T08:00:01.000Z",
+      },
+    ],
   };
   return {
     getSession: async () => session,
@@ -74,6 +176,12 @@ function liveApi(): GeoApi {
         validUntil: null,
       },
     ],
+    createContact: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    expireContact: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getChannelAccounts: async () => [
       {
         id: "10000000-0000-4000-8000-000000000701",
@@ -87,6 +195,100 @@ function liveApi(): GeoApi {
         lastVerifiedAt: null,
       },
     ],
+    createChannelAccount: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    updateChannelAccount: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getBrands: async () => [
+      {
+        id: "10000000-0000-4000-8000-000000000301",
+        canonicalName: "Zhongtong International Travel Agency",
+        displayName: "中通国际旅行社",
+        aliases: [],
+        description: null,
+        industry: "travel",
+        websiteUrl: null,
+        isPrimary: true,
+        createdAt: "2026-07-14T08:00:00.000Z",
+        updatedAt: "2026-07-14T08:00:00.000Z",
+      },
+    ],
+    getMembers: async () => [
+      {
+        id: "10000000-0000-4000-8000-000000000102",
+        userId: session.actor.id,
+        email: "owner@example.test",
+        displayName: "Test Owner",
+        role: "owner",
+        capabilities: session.actor.capabilities,
+        status: "active",
+        createdAt: "2026-07-14T08:00:00.000Z",
+      },
+    ],
+    createMember: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    updateMember: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getPolicies: async () => [
+      {
+        id: "10000000-0000-4000-8000-000000000801",
+        version: "travel-v1",
+        status: "active",
+        policyHash: "c".repeat(64),
+        document: { vertical: "travel" },
+        effectiveAt: "2026-07-14T08:00:00.000Z",
+        retiredAt: null,
+        createdAt: "2026-07-14T08:00:00.000Z",
+      },
+    ],
+    transitionPolicy: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getServicePrincipals: async () => [],
+    createAutomationServicePrincipal: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    setServicePrincipalStatus: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getQuerySets: async () => [
+      {
+        id: "10000000-0000-4000-8000-000000000901",
+        name: "Domestic AI discovery",
+        industry: "travel",
+        status: "active",
+        currentVersion: 1,
+        description: "Independent Doubao and Qwen prompts",
+        currentVersionId: "10000000-0000-4000-8000-000000000902",
+        prompts: [
+          {
+            key: "brand-phone",
+            category: "contact",
+            prompt: "中通国际旅行社电话是多少",
+          },
+          {
+            key: "generic-japan",
+            category: "generic",
+            prompt: "日本跟团游哪家靠谱",
+          },
+        ],
+        promptHash: "d".repeat(64),
+        createdAt: "2026-07-14T08:00:00.000Z",
+        updatedAt: "2026-07-14T08:00:00.000Z",
+      },
+    ],
+    getEvidenceSources: async () => [],
+    createEvidenceSource: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getFacts: async () => [],
+    createFact: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getCampaigns: async () => [
       {
         id: "10000000-0000-4000-8000-000000001001",
@@ -103,32 +305,69 @@ function liveApi(): GeoApi {
       ...input,
       status: "draft",
     }),
+    transitionCampaignState: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getContent: async () => [],
+    createContent: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    createContentVersion: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getContentVersion: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getContentVariants: async () => [],
-    getPublicationJobs: async () => [
+    createContentVariant: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    auditVariant: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getAudits: async () => [
       {
-        id: "10000000-0000-4000-8000-000000001101",
-        variantId: "10000000-0000-4000-8000-000000001102",
+        id: "10000000-0000-4000-8000-000000001301",
+        tenantId: session.tenant.id,
+        variantId: publicationJob.variantId,
+        channelAccountId: publicationJob.channelAccountId,
         platform: "toutiao",
-        executionLevel: "dry_run",
-        state: "confirmed",
-        payloadHash: "a".repeat(64),
-        createdAt: "2026-07-14T08:00:00.000Z",
-        updatedAt: "2026-07-14T08:01:00.000Z",
+        payloadHash: publicationJob.payloadHash,
+        factSnapshotHash: "f".repeat(64),
+        policyHash: "c".repeat(64),
+        policyVersion: "travel-v1",
+        auditHash: "e".repeat(64),
+        status: "passed",
+        findings: [],
+        createdAt: "2026-07-14T07:59:00.000Z",
+        expiresAt: "2026-07-14T08:14:00.000Z",
       },
     ],
-    getReceipts: async () => [
-      {
-        id: "10000000-0000-4000-8000-000000001201",
-        jobId: "10000000-0000-4000-8000-000000001101",
-        platform: "toutiao",
-        executionLevel: "dry_run",
-        evidenceType: "preview",
-        externalUrl: null,
-        confirmed: true,
-        recordedAt: "2026-07-14T08:01:00.000Z",
-      },
-    ],
+    exportManualPublicationPackage: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getPublicationJobs: async () => [publicationJob],
+    getPublicationJob: async () => publicationJob,
+    requestPublication: async () => ({
+      publicationJobId: publicationJob.id,
+      publicationOutboxEventId: "10000000-0000-4000-8000-000000001105",
+      wasCreated: true,
+    }),
+    revokePublicationGrant: async (grantId) => ({
+      grantId,
+      status: "revoked",
+      revokedAt: "2026-07-14T08:02:00.000Z",
+      wasChanged: true,
+    }),
+    cancelPublicationJob: async () => ({
+      job: { ...publicationJob, state: "cancelled" },
+      wasChanged: true,
+    }),
+    getPublicationAttempts: async () => [],
+    getPublicationReceipts: async () => [publicationReceipt],
+    getPublicationReadbacks: async () => [],
+    getReceipts: async () => [publicationReceipt],
+    getReceipt: async () => publicationReceipt,
     getVisibilitySummary: async () => [
       {
         provider: "doubao",
@@ -140,9 +379,40 @@ function liveApi(): GeoApi {
         observations: 12,
         brandMentionRate: 0.5,
         contactAccuracy: 1,
+        averageAnswerPosition: 1,
+        competitorMentionRate: 0.5,
+        negativeSentimentRate: 0,
+        hallucinationFindings: 0,
         harmfulErrors: 0,
       },
     ],
+    getVisibilityRuns: async () => [visibilityRun],
+    getVisibilityRun: async () => visibilityDetail,
+    runFixtureVisibility: async () => ({
+      visibilityRunId: visibilityRun.id,
+      status: "completed",
+      providerMode: "fixture",
+      evidenceType: "fixture",
+      wasCreated: true,
+    }),
+    importVisibility: async () => ({
+      visibilityRunId: visibilityRun.id,
+      status: "completed",
+      providerMode: "manual",
+      evidenceType: "manual_import",
+      wasCreated: true,
+    }),
+    createAutomationBatch: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getAutomationBatches: async () => [],
+    getAutomationRuns: async () => [],
+    getAutomationRun: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    cancelAutomationBatch: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getAutomation: async () => automation,
     setKillSwitch: async (input) => {
       automation = {
@@ -177,6 +447,10 @@ describe("GEO operator console", () => {
     expect(screen.getByText("三家平台当前均为 Dry-run / Manual only")).toBeInTheDocument();
     expect(screen.getByText("演示数据")).toBeInTheDocument();
     expect(screen.getAllByText(/Fixture/).length).toBeGreaterThan(0);
+    const confirmedMetric = screen.getByText("已确认回执").closest(".metric-cell");
+    expect(confirmedMetric).not.toBeNull();
+    expect(within(confirmedMetric as HTMLElement).getByText("0")).toBeInTheDocument();
+    expect(screen.queryByText("人工辅助")).not.toBeInTheDocument();
   });
 
   it("switches demo tenant context without leaking the previous tenant identity", () => {
@@ -206,6 +480,61 @@ describe("GEO operator console", () => {
     expect(screen.getByText("泰国 / 亲子 / 暑期")).toBeInTheDocument();
   });
 
+  it("keeps global Campaign creation read-only without content:write", async () => {
+    renderApp({ api: liveApi() });
+
+    await screen.findByText("实时日本银发问答集");
+    const createButton = await screen.findByRole("button", { name: "新建 Campaign" });
+    expect(createButton).toBeDisabled();
+    expect(createButton).toHaveAttribute("title", "需要 content:write 权限");
+  });
+
+  it("creates a first Campaign from the brand directory with a neutral industry value", async () => {
+    const api = liveApi();
+    const writerSession: SessionSnapshot = {
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "content:write"],
+      },
+    };
+    let created: Parameters<GeoApi["createCampaign"]>[0] | null = null;
+    api.getSession = async () => writerSession;
+    api.getCampaigns = async () => [];
+    api.createCampaign = async (input) => {
+      created = input;
+      return {
+        id: "10000000-0000-4000-8000-000000001002",
+        ...input,
+        status: "draft",
+      };
+    };
+    renderApp({ api });
+
+    const createButton = await screen.findByRole("button", { name: "新建 Campaign" });
+    await waitFor(() => expect(createButton).toBeEnabled());
+    fireEvent.click(createButton);
+    expect(screen.getByRole("option", { name: /中通国际旅行社 · 主品牌/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Campaign 名称"), {
+      target: { value: "企业知识库可见性" },
+    });
+    fireEvent.change(screen.getByLabelText("主题范围"), {
+      target: { value: "采购 / 决策 / 对比" },
+    });
+    fireEvent.change(screen.getByLabelText("行业"), {
+      target: { value: "professional_services" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建 Campaign" }));
+
+    await waitFor(() => expect(created).not.toBeNull());
+    expect(created).toMatchObject({
+      brandId: "10000000-0000-4000-8000-000000000301",
+      industry: "professional_services",
+      name: "企业知识库可见性",
+      topicKey: "采购 / 决策 / 对比",
+    });
+  });
+
   it("makes the demo kill switch state explicit", () => {
     renderApp({ demo: true });
 
@@ -218,12 +547,216 @@ describe("GEO operator console", () => {
   it("renders live API records and preserves visibility evidence dimensions", async () => {
     renderApp({ path: "/visibility", api: liveApi() });
 
-    await screen.findByText("web-search");
+    expect((await screen.findAllByText("web-search")).length).toBeGreaterThan(0);
     expect(screen.getByText("实时 API")).toBeInTheDocument();
     expect(screen.queryByText("演示数据")).not.toBeInTheDocument();
-    expect(screen.getByText("doubao-search-v1")).toBeInTheDocument();
-    expect(screen.getByText("manual")).toBeInTheDocument();
-    expect(screen.getByText("Manual import")).toBeInTheDocument();
+    expect(screen.getAllByText("doubao-search-v1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("manual").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Manual import").length).toBeGreaterThan(0);
+  });
+
+  it("never counts Preview evidence as a confirmed external receipt", async () => {
+    const api = liveApi();
+    const receipts = await api.getReceipts();
+    api.getReceipts = async () =>
+      receipts.map((receipt) => ({
+        ...receipt,
+        confirmed: true,
+        externalUrl: "https://invalid.example/preview-is-not-published",
+      }));
+    renderApp({ api });
+
+    await screen.findByText("实时日本银发问答集");
+    const confirmedMetric = screen.getByText("已确认回执").closest(".metric-cell");
+    expect(confirmedMetric).not.toBeNull();
+    expect(within(confirmedMetric as HTMLElement).getByText("0")).toBeInTheDocument();
+  });
+
+  it("uses the selected demo tenant contact in generic visibility samples", () => {
+    renderApp({ path: "/visibility", demo: true });
+
+    fireEvent.change(screen.getByLabelText("当前客户"), { target: { value: "isolation" } });
+
+    expect(screen.getByText("隔离测试旅行社电话")).toBeInTheDocument();
+    expect(screen.getAllByText("命中 / 4000000000")).toHaveLength(2);
+    expect(screen.queryByText(/4001133986/)).not.toBeInTheDocument();
+  });
+
+  it("renders the current tenant governance directory from tenant-scoped APIs", async () => {
+    renderApp({ path: "/customers", api: liveApi() });
+
+    await screen.findByText("当前租户治理目录");
+    expect((await screen.findAllByText("owner@example.test")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("中通国际旅行社").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("travel-v1").length).toBeGreaterThan(0);
+    expect(screen.getByText("Domestic AI discovery")).toBeInTheDocument();
+  });
+
+  it("wires tenant governance actions to the live API and refreshes server readback", async () => {
+    const api = liveApi();
+    let submitted: Parameters<GeoApi["createContact"]>[0] | null = null;
+    api.createContact = async (input) => {
+      submitted = input;
+      return {
+        id: "10000000-0000-4000-8000-000000000404",
+        tenantId: session.tenant.id,
+        ...input,
+        validFrom: "2026-07-15T00:00:00.000Z",
+        validUntil: null,
+      };
+    };
+    renderApp({ path: "/customers", api });
+
+    await screen.findByText("租户治理操作");
+    fireEvent.click(screen.getByRole("button", { name: "新增联系方式" }));
+    fireEvent.change(screen.getByLabelText("联系方式类型"), { target: { value: "wechat" } });
+    fireEvent.change(screen.getByLabelText("联系方式标签"), { target: { value: "微信咨询" } });
+    fireEvent.change(screen.getByLabelText("联系方式值"), { target: { value: "ZTGL6431" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存联系方式" }));
+
+    await waitFor(() =>
+      expect(submitted).toEqual({
+        type: "wechat",
+        label: "微信咨询",
+        value: "ZTGL6431",
+        isPrimary: false,
+      }),
+    );
+  });
+
+  it("shows live audit artifacts on the overview instead of an obsolete unsupported state", async () => {
+    renderApp({ api: liveApi() });
+
+    await screen.findByText("审计通过，没有阻断或警告。");
+    expect(screen.queryByText("实时审计列表不可用")).not.toBeInTheDocument();
+  });
+
+  it("keeps the article workflow explicitly bounded to manual-only dry-runs", async () => {
+    renderApp({ path: "/content", api: liveApi() });
+
+    await screen.findByText("受治理运营链");
+    expect(
+      screen.getByText(/头条号、搜狐号、携程社区当前仅 manual_only \+ dry_run/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("尚无文章；创建操作会同时生成 v1")).toBeInTheDocument();
+  });
+
+  it("routes to live automation batches with dashboard campaigns and Dry-run accounts", async () => {
+    const api = liveApi();
+    const campaigns = await api.getCampaigns();
+    let batchReads = 0;
+    let runReads = 0;
+    api.getCampaigns = async () => campaigns.map((campaign) => ({ ...campaign, status: "active" }));
+    api.getAutomationBatches = async () => {
+      batchReads += 1;
+      return [];
+    };
+    api.getAutomationRuns = async () => {
+      runReads += 1;
+      return [];
+    };
+    renderApp({ path: "/automation", api });
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "自动化批次" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "自动化批次" })).toHaveClass("active");
+    expect(await screen.findByText("当前租户尚无自动化批次")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "实时日本银发问答集" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /头条号 · 中通国旅-头条号-Dry Run · manual_only/,
+      }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "创建 Dry-run 批次" })).toBeEnabled(),
+    );
+    expect(screen.getByText(/不执行外部发送/)).toBeInTheDocument();
+    expect(screen.queryByText(/已真实发布/)).not.toBeInTheDocument();
+    expect(batchReads).toBe(1);
+    expect(runReads).toBe(1);
+  });
+
+  it("refreshes dashboard Campaign data after a governed activation readback", async () => {
+    const api = liveApi();
+    const [initialCampaign] = await api.getCampaigns();
+    if (initialCampaign === undefined) throw new Error("fixture campaign is missing");
+    let currentCampaign = initialCampaign;
+    let campaignReads = 0;
+    const transitionCalls: {
+      readonly campaignId: string;
+      readonly status: string;
+      readonly reason: string | undefined;
+    }[] = [];
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "content:write"],
+      },
+    });
+    api.getCampaigns = async () => {
+      campaignReads += 1;
+      return [currentCampaign];
+    };
+    api.transitionCampaignState = async (campaignId, input) => {
+      transitionCalls.push({ campaignId, status: input.status, reason: input.reason });
+      const previousStatus = currentCampaign.status;
+      currentCampaign = { ...currentCampaign, status: input.status };
+      return { campaign: currentCampaign, previousStatus, wasChanged: true };
+    };
+    renderApp({ path: "/automation", api });
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: `激活 Campaign ${initialCampaign.name}`,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText("Campaign 状态变更原因"), {
+      target: { value: "核验事实与平台账号已就绪" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认激活" }));
+
+    expect(await screen.findByRole("option", { name: initialCampaign.name })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "创建 Dry-run 批次" })).toBeEnabled(),
+    );
+    expect(transitionCalls).toEqual([
+      {
+        campaignId: initialCampaign.id,
+        status: "active",
+        reason: "核验事实与平台账号已就绪",
+      },
+    ]);
+    expect(campaignReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps the integrated automation route read-only without automation:manage", async () => {
+    const api = liveApi();
+    const campaigns = await api.getCampaigns();
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: session.actor.capabilities.filter(
+          (capability) => capability !== "automation:manage",
+        ),
+      },
+    });
+    api.getCampaigns = async () => campaigns.map((campaign) => ({ ...campaign, status: "active" }));
+    renderApp({ path: "/automation", api });
+
+    expect(await screen.findByText(/本页保持只读/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建 Dry-run 批次" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加槽位" })).toBeDisabled();
+  });
+
+  it("does not turn demo data into an automation run", () => {
+    renderApp({ path: "/automation", demo: true });
+
+    expect(screen.getByRole("heading", { level: 1, name: "自动化批次" })).toBeInTheDocument();
+    expect(screen.getByText("离线演示不创建自动化批次")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "创建 Dry-run 批次" })).not.toBeInTheDocument();
   });
 
   it("does not silently replace an unavailable API with demo success", async () => {
@@ -234,7 +767,8 @@ describe("GEO operator console", () => {
     renderApp({ api });
 
     await screen.findByRole("heading", { name: "登录运营台" });
-    expect(screen.getByText(/NETWORK_ERROR: API unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/运营 API 暂时不可用/)).toBeInTheDocument();
+    expect(screen.getByText(/NETWORK_ERROR/)).toBeInTheDocument();
     expect(screen.queryByText("日本银发跟团游问答集")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "进入演示模式" }));
@@ -263,8 +797,7 @@ describe("GEO operator console", () => {
   it("shows a truthful empty state for a successful zero-row response", async () => {
     renderApp({ path: "/content", api: liveApi() });
 
-    await screen.findByText("暂无内容资产");
-    expect(screen.getByText("GET /api/content 返回 0 条记录")).toBeInTheDocument();
+    await screen.findByText("尚无文章；创建操作会同时生成 v1");
   });
 
   it("shows live Kill Switch state only after write and readback agree", async () => {
@@ -279,5 +812,43 @@ describe("GEO operator console", () => {
 
     await screen.findByText("当前租户投放已暂停");
     expect(screen.getByRole("button", { name: "恢复 Shadow" })).toBeInTheDocument();
+  });
+
+  it("clears the selected publication job when the tenant changes", async () => {
+    const api = liveApi();
+    const otherSession: SessionSnapshot = {
+      ...session,
+      tenant: {
+        id: "20000000-0000-4000-8000-000000000001",
+        slug: "other-customer",
+        displayName: "其他客户",
+      },
+    };
+    api.getTenants = async () => [
+      {
+        id: session.tenant.id,
+        slug: session.tenant.slug,
+        displayName: session.tenant.displayName,
+        role: "owner",
+        status: "active",
+      },
+      {
+        id: otherSession.tenant.id,
+        slug: otherSession.tenant.slug,
+        displayName: otherSession.tenant.displayName,
+        role: "owner",
+        status: "active",
+      },
+    ];
+    api.switchTenant = async () => otherSession;
+    renderApp({ path: "/publishing", api });
+
+    fireEvent.click(await screen.findByRole("button", { name: /查看作业 .* 详情/ }));
+    await screen.findByText(/作业详情 · 头条号/);
+    const tenantSelect = screen.getByLabelText("当前会话租户");
+    await waitFor(() => expect(tenantSelect).toBeEnabled());
+    fireEvent.change(tenantSelect, { target: { value: otherSession.tenant.slug } });
+
+    await screen.findByText("选择作业查看运行证据");
   });
 });

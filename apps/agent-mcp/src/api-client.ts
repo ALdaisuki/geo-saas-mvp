@@ -10,11 +10,8 @@ export interface DraftProposalInput {
   brandId: string;
   campaignId: string;
   brief: string;
-  fixtureDraft?: {
-    title: string;
-    summary: string;
-    bodyMarkdown: string;
-  };
+  idempotencyKey: string;
+  fixtureMode?: boolean;
 }
 
 export interface VariantPreviewInput {

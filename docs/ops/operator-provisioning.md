@@ -1,16 +1,67 @@
-# Operator Provisioning
+# Tenant and Operator Provisioning
 
 ## Security default
 
 `db:seed` deliberately writes disabled fixture users with `password_hash='seed-disabled'`. Seed completion is not login readiness and no shared default password exists.
 
-The repository provides one explicit bootstrap command for the initial tenant owner:
+Production commissioning is deliberately split into two admin-only commands:
 
 ```text
+pnpm db:provision:tenant
 pnpm db:bootstrap:operator
 ```
 
-It requires exactly these environment values:
+The first command creates the tenant baseline. The second binds an owner to that already-created tenant. Neither API nor an existing tenant owner can create another tenant.
+
+## Step 1: provision the tenant baseline
+
+`db:provision:tenant` requires these explicit values:
+
+| Variable                             | Contract                                                      |
+| ------------------------------------ | ------------------------------------------------------------- |
+| `DATABASE_ADMIN_URL`                 | PostgreSQL admin URL; never pass it to API, worker or MCP     |
+| `GEO_PROVISION_IDEMPOTENCY_KEY`      | Approved ticket/request key; 8-200 safe identifier characters |
+| `GEO_PROVISION_TENANT_SLUG`          | New immutable tenant identity slug                            |
+| `GEO_PROVISION_LEGAL_NAME`           | Legal customer name                                           |
+| `GEO_PROVISION_DISPLAY_NAME`         | Tenant display name                                           |
+| `GEO_PROVISION_INDUSTRY`             | Industry key; no travel-specific value is implied             |
+| `GEO_PROVISION_DEFAULT_LOCALE`       | Locale such as `zh-CN`                                        |
+| `GEO_PROVISION_BRAND_CANONICAL_NAME` | Canonical name for the initial primary brand                  |
+| `GEO_PROVISION_BRAND_DISPLAY_NAME`   | Display name for the initial primary brand                    |
+| `GEO_PROVISION_CONTACTS_JSON`        | JSON array with 0-100 explicit contacts; use `[]` for none    |
+| `GEO_PROVISION_WORKER_NAME`          | Name of the new active same-tenant `worker` service principal |
+
+Each contact must contain exactly `type`, `label`, `value`, `normalizedValue` and boolean `isPrimary`. The caller supplies `normalizedValue`; the provisioning tool does not guess industry or regional normalization rules.
+
+```json
+[
+  {
+    "type": "phone",
+    "label": "Service hotline",
+    "value": "4001234567",
+    "normalizedValue": "4001234567",
+    "isPrimary": true
+  }
+]
+```
+
+In one transaction the command creates an active industry-neutral tenant, one primary brand, the contacts, a tenant `shadow` control with conservative database-enforced quotas, three active `manual_only` accounts supporting only `dry_run`, one active worker service principal, one active `geo.audit-policy.v1` baseline policy bundle, and one active provider-neutral Doubao/Qwen baseline query set with version 1. It creates no platform credential, operator, live connector capability, live provider call, or cross-tenant resource. The baseline pack version is immutable and industry-neutral; later policy/query activation remains a separate administrative workflow.
+
+The append-only admin receipt binds the idempotency key to the canonical request hash and all result IDs, including `policyBundleId`, `querySetId`, and `querySetVersionId`. Exact same-key replays verify the complete tenant, brand, contacts, accounts, worker, automation control, policy document/hash, and query prompts/hash before returning the original IDs with `wasCreated=false`. A changed request with the same key, a different key for an existing slug, or drift in any provisioned baseline is rejected; this command never updates or adopts an existing tenant.
+
+Run the explicit Compose profile after migrations and role bootstrap succeed:
+
+```powershell
+docker compose --profile tenant-provisioning run --rm db-provision-tenant
+```
+
+The single JSON result contains the fixed `event` discriminator, `tenantId`, `brandId`, `workerServicePrincipalId`, `policyBundleId`, `querySetId`, `querySetVersionId`, `wasCreated`, and a `workerTenantActorsJsonFragment`. It contains no database URL, credential or secret. Merge the fragment into the deployment's complete `WORKER_TENANT_ACTORS_JSON` object before starting the worker; do not replace mappings for existing tenants.
+
+For direct development, export `DATABASE_ADMIN_URL` plus all ten `GEO_PROVISION_*` variables and run `pnpm db:provision:tenant`. The applications do not load `.env` automatically.
+
+## Step 2: bind the initial owner
+
+After Step 1 succeeds, configure the existing owner bootstrap command:
 
 | Variable                     | Contract                                                         |
 | ---------------------------- | ---------------------------------------------------------------- |
@@ -26,24 +77,27 @@ The CLI hashes the password with Argon2id (`memoryCost=19456`, `timeCost=2`, `pa
 
 `db-bootstrap-operator` is an explicit `operator-bootstrap` profile. `DATABASE_ADMIN_URL` is assembled from the database admin secret. The four `GEO_BOOTSTRAP_*` values are pass-through variables; `GEO_BOOTSTRAP_PASSWORD` has intentionally no Compose or `.env.example` default.
 
-1. Complete migrations/login-role bootstrap and create the target tenant. The optional fixture tenant exists only after the explicit `fixture-seed` command.
-2. Set slug, email and display name from the approved ticket. Inject the password into the process environment from the secret manager without putting its value on the command line.
-3. Run:
+1. Confirm the tenant-provisioning result from Step 1 and set `GEO_BOOTSTRAP_TENANT_SLUG` to that exact existing active slug.
+2. Set email and display name from the approved ticket. Inject the password into the process environment from the secret manager without putting its value on the command line.
+3. Run the owner-only profile:
 
 ```powershell
 docker compose --profile operator-bootstrap run --rm db-bootstrap-operator
 ```
 
-4. Remove the password environment value immediately. Capture the JSON IDs, command exit code, image digest, operator and reviewer in the provisioning ticket.
+4. Remove the password environment value immediately. Capture both commands' JSON IDs, exit codes, image digest, admin operator and reviewer in the provisioning ticket.
 5. Test login only through the external HTTPS origin. Verify Secure/HttpOnly/SameSite cookies, CSRF denial on a missing token, an allowed tenant read and a cross-tenant denial.
+6. Verify the worker starts with the complete merged `WORKER_TENANT_ACTORS_JSON` and can perform only a dry-run canary for this tenant.
 
 For direct development use, export all five variables and run `pnpm db:bootstrap:operator`. The applications do not load `.env` automatically.
 
 ## High-privilege and idempotency warning
 
-This command always provisions `owner`; it is not a general member-management CLI. Re-running it for an existing email changes that user's password/display name, reactivates the user and grants/refreshes an owner membership in the selected tenant. Use it only for controlled initial bootstrap or explicit recovery with two-person approval.
+The tenant command and owner command both use the admin URL and require two-person approval. The tenant command is create-or-exact-replay only. It cannot edit, suspend, close or repair a tenant; use a separately reviewed administrative procedure for those operations.
 
-The current implementation does not append a `geo.audit_log` row itself. Until that is added, the provisioning ticket, database connection audit and emitted IDs are mandatory compensating evidence. Normal editor/auditor/publisher/viewer provisioning and least-privilege service-principal creation remain product gaps.
+The owner command always provisions `owner`; it is not a general member-management CLI. Re-running it for an existing email changes that user's password/display name, reactivates the user and grants/refreshes an owner membership in the selected tenant. Use it only for controlled initial bootstrap or explicit recovery with two-person approval.
+
+Tenant creation writes an immutable `geo.tenant_provisioning_receipts` row that runtime and dispatcher roles cannot read. Owner bootstrap does not append a `geo.audit_log` row itself, so the provisioning ticket, database connection audit and emitted IDs remain mandatory evidence. Normal editor/auditor/publisher/viewer provisioning remains a product gap.
 
 `MCP_PRINCIPALS_JSON` contains both a bearer token and an API login. Do not silently reuse an owner as a permanent machine principal. Commissioning may use the initial owner only under explicit approval; production MCP needs a dedicated least-privilege user once member provisioning supports it.
 

@@ -7,6 +7,20 @@ export {
   type BootstrapOperatorResult,
 } from "./bootstrap.js";
 export {
+  formatTenantProvisioningOutput,
+  loadProvisionTenantEnvironment,
+  provisionTenant,
+  TenantProvisioningConflictError,
+  tenantProvisioningRequestHash,
+  type ProvisionContactInput,
+  type ProvisionContactType,
+  type ProvisionTenantEnvironment,
+  type ProvisionTenantInput,
+  type ProvisionTenantOptions,
+  type ProvisionTenantOutput,
+  type ProvisionTenantResult,
+} from "./provisioning.js";
+export {
   setTenantContext,
   withTenantTransaction,
   type TenantTransaction,

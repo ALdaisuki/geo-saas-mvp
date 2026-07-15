@@ -4,6 +4,7 @@ const allCapabilities = [
   "tenant:read",
   "tenant:manage",
   "member:manage",
+  "principal:manage",
   "content:read",
   "content:write",
   "audit:read",
@@ -15,6 +16,18 @@ const allCapabilities = [
   "visibility:read",
   "visibility:run",
   "automation:manage",
+  "automation:execute",
+] as const satisfies readonly Capability[];
+
+export const automationProducerCapabilities = [
+  "tenant:read",
+  "content:read",
+  "content:write",
+  "audit:read",
+  "audit:run",
+  "publish:request",
+  "receipt:read",
+  "automation:execute",
 ] as const satisfies readonly Capability[];
 
 export const roleCapabilities: Readonly<Record<TenantRole, ReadonlySet<Capability>>> = {

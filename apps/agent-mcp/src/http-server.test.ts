@@ -13,6 +13,7 @@ import {
   listenGeoMcpHttpServer,
   type McpRequestAuthenticator,
 } from "./http-server.js";
+import { PiAgentRunError, type PiAgentRunService } from "./pi-runner.js";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
 const actorId = "00000000-0000-4000-8000-000000000002";
@@ -83,6 +84,47 @@ afterEach(async () => {
 });
 
 describe("authenticated Streamable HTTP MCP server", () => {
+  it("reports non-sensitive automation producer health", async () => {
+    const port = await availablePort();
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      allowedHosts: [`127.0.0.1:${port}`],
+      automationProducer: {
+        health: () => ({
+          enabled: true,
+          running: true,
+          lastTick: "2026-07-15T00:00:00.000Z",
+          activeRuns: 2,
+          lastError: {
+            operation: "claim",
+            kind: "retryable",
+            code: "AUTOMATION_PRINCIPAL_CLAIM_FAILED",
+            at: "2026-07-15T00:00:01.000Z",
+          },
+        }),
+      },
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/health/live`);
+    expect(await response.json()).toMatchObject({
+      status: "ok",
+      automation: {
+        enabled: true,
+        running: true,
+        activeRuns: 2,
+        lastError: { code: "AUTOMATION_PRINCIPAL_CLAIM_FAILED" },
+      },
+    });
+  });
+
   it("lists and invokes only the bounded GEO tools", async () => {
     const port = await availablePort();
     const api = mockApi();
@@ -193,5 +235,239 @@ describe("authenticated Streamable HTTP MCP server", () => {
 
     expect(response.status).toBe(411);
     expect(response.body).toContain("Content-Length required");
+  });
+
+  it("runs an authenticated agent request with the resolved tenant principal", async () => {
+    const port = await availablePort();
+    const agentRunner: PiAgentRunService = {
+      capability: { mode: "fixture", provider: "fixture", model: "fixture-geo-writer-v1" },
+      run: vi.fn(async (runPrincipal, input) => ({
+        tenantId: runPrincipal.tenantId,
+        actorId: runPrincipal.actorId,
+        input,
+      })),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      agentRunner,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+    const input = {
+      workflow: "draft_to_publication",
+      tenantId,
+      topic: "Audited travel article",
+    };
+
+    const response = await fetch(`http://127.0.0.1:${port}/agent/runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/u);
+    await expect(response.json()).resolves.toMatchObject({
+      capability: agentRunner.capability,
+      result: { tenantId, actorId, input },
+    });
+    expect(agentRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId, actorId }),
+      input,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("allows only one active agent run per tenant actor", async () => {
+    const port = await availablePort();
+    let releaseRun: () => void = () => undefined;
+    let signalStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolvePromise) => {
+      signalStarted = resolvePromise;
+    });
+    const pending = new Promise<void>((resolvePromise) => {
+      releaseRun = resolvePromise;
+    });
+    const agentRunner: PiAgentRunService = {
+      capability: { mode: "fixture", provider: "fixture", model: "fixture-geo-writer-v1" },
+      run: vi.fn(async () => {
+        signalStarted();
+        await pending;
+        return { ok: true };
+      }),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      agentRunner,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+    const request = () =>
+      fetch(`http://127.0.0.1:${port}/agent/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ workflow: "prompt", prompt: "Review evidence" }),
+      });
+
+    const firstResponse = request();
+    await started;
+    const concurrentResponse = await request();
+    expect(concurrentResponse.status).toBe(409);
+    await expect(concurrentResponse.json()).resolves.toMatchObject({
+      error: { code: "AGENT_RUN_ACTIVE" },
+    });
+
+    releaseRun();
+    expect((await firstResponse).status).toBe(200);
+    expect(agentRunner.run).toHaveBeenCalledOnce();
+  });
+
+  it("times out an agent run but keeps its concurrency lock until the runner settles", async () => {
+    const port = await availablePort();
+    let releaseRun: () => void = () => undefined;
+    const pending = new Promise<void>((resolvePromise) => {
+      releaseRun = resolvePromise;
+    });
+    let observedSignal: AbortSignal | undefined;
+    const agentRunner: PiAgentRunService = {
+      capability: { mode: "pi", provider: "test", model: "test-model" },
+      run: vi.fn(async (_principal, _input, signal) => {
+        observedSignal = signal;
+        await pending;
+        return { ok: true };
+      }),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      agentRunner,
+      agentRunTimeoutMs: 1_000,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+    const request = () =>
+      fetch(`http://127.0.0.1:${port}/agent/runs`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ workflow: "prompt", prompt: "Review evidence" }),
+      });
+
+    const timedOut = await request();
+    expect(timedOut.status).toBe(504);
+    await expect(timedOut.json()).resolves.toEqual({
+      error: { code: "AGENT_RUN_TIMEOUT", message: "Agent run timed out" },
+    });
+    expect(observedSignal?.aborted).toBe(true);
+
+    const stillLocked = await request();
+    expect(stillLocked.status).toBe(409);
+    expect(agentRunner.run).toHaveBeenCalledOnce();
+
+    releaseRun();
+    await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+    expect((await request()).status).toBe(200);
+  });
+
+  it("does not expose runner errors or credentials", async () => {
+    const port = await availablePort();
+    const agentRunner: PiAgentRunService = {
+      capability: { mode: "pi", provider: "test", model: "test-model" },
+      run: vi.fn(async () => {
+        throw new Error("Authorization: Bearer provider-secret");
+      }),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      agentRunner,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/agent/runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ workflow: "prompt", prompt: "Review evidence" }),
+    });
+    const responseBody = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(responseBody).toContain("AGENT_RUN_REJECTED");
+    expect(responseBody).not.toContain("provider-secret");
+  });
+
+  it("maps a Pi provider failure to a sanitized upstream error", async () => {
+    const port = await availablePort();
+    const agentRunner: PiAgentRunService = {
+      capability: { mode: "pi", provider: "test", model: "test-model" },
+      run: vi.fn(async () => {
+        throw new PiAgentRunError();
+      }),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      agentRunner,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+
+    const response = await fetch(`http://127.0.0.1:${port}/agent/runs`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ workflow: "prompt", prompt: "Review evidence" }),
+    });
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "AGENT_PROVIDER_FAILED", message: "Agent provider failed" },
+    });
   });
 });

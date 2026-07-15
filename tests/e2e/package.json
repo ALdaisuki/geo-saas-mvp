@@ -9,11 +9,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@geo/agent": "workspace:*",
     "@geo/agent-mcp": "workspace:*",
     "@geo/api": "workspace:*",
     "@geo/connectors": "workspace:*",
     "@geo/contracts": "workspace:*",
+    "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
+    "@geo/visibility": "workspace:*",
     "@geo/worker": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
     "pg": "8.16.3"

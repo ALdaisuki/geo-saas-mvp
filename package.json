@@ -22,15 +22,19 @@
     "build": "pnpm -r --if-present build",
     "db:bootstrap:operator": "pnpm --filter @geo/db bootstrap:operator",
     "db:migrate": "pnpm --filter @geo/db migrate",
+    "db:provision:tenant": "pnpm --filter @geo/db provision:tenant",
     "db:seed": "pnpm --filter @geo/db seed",
     "dev": "pnpm -r --parallel --if-present dev",
     "e2e": "pnpm --filter @geo/e2e test:e2e",
+    "e2e:web": "pnpm --filter @geo/web-e2e test:e2e",
+    "e2e:web:install": "pnpm --filter @geo/web-e2e exec playwright install chromium",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "test": "pnpm -r --if-present test",
     "test:watch": "pnpm -r --parallel --if-present test:watch",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "typecheck": "pnpm -r --if-present typecheck",
+    "verify:mvp": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm --filter @geo/db test:integration && pnpm e2e && pnpm e2e:web && pnpm build && git diff --check"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

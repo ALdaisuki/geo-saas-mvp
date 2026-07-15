@@ -38,6 +38,25 @@ x-db-tools: &db-tools
   logging: *default-logging
 
 services:
+  config-preflight:
+    <<: *db-tools
+    command:
+      - node
+      - dist/cli/validate-production.js
+    environment:
+      - NODE_ENV=production
+      - POSTGRES_ADMIN_PASSWORD=${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      - GEO_API_DB_PASSWORD=${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}
+      - GEO_WORKER_DB_PASSWORD=${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}
+      - GEO_IDENTITY_DB_PASSWORD=${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
+      - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
+      - MCP_PRINCIPALS_JSON=${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
+      - AGENT_API_KEY
+      - GEO_BOOTSTRAP_PASSWORD
+      - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
+      - DOUBAO_API_KEY
+      - QWEN_API_KEY
+
   postgres:
     image: *postgres-image
     restart: unless-stopped
@@ -62,6 +81,9 @@ services:
     networks:
       - backend
     logging: *default-logging
+    depends_on:
+      config-preflight:
+        condition: service_completed_successfully
 
   db-migrate:
     <<: *db-tools
@@ -94,6 +116,8 @@ services:
       GEO_IDENTITY_DB_PASSWORD: ${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
     volumes:
       - ./docs/ops/postgres/bootstrap-login-roles.sh:/bootstrap/bootstrap-login-roles.sh:ro
+      - ./docs/ops/postgres/ensure-application-roles.sql:/bootstrap/ensure-application-roles.sql:ro
+      - ./docs/ops/postgres/reconcile-application-acls.sql:/bootstrap/reconcile-application-acls.sql:ro
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -107,6 +131,62 @@ services:
     networks:
       - backend
     logging: *default-logging
+
+  db-restore-roles:
+    image: *postgres-image
+    profiles:
+      - restore-tools
+    restart: "no"
+    entrypoint:
+      - psql
+    command:
+      - --no-psqlrc
+      - --set=ON_ERROR_STOP=1
+      - --file=/bootstrap/ensure-application-roles.sql
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-geo_saas}
+      PGUSER: ${POSTGRES_ADMIN_USER:-geo_admin}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      - ./docs/ops/postgres/ensure-application-roles.sql:/bootstrap/ensure-application-roles.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    logging: *default-logging
+
+  db-provision-tenant:
+    <<: *db-tools
+    profiles:
+      - tenant-provisioning
+    command:
+      - node
+      - dist/cli/provision-tenant.js
+    environment:
+      - DATABASE_ADMIN_URL=postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      - GEO_PROVISION_IDEMPOTENCY_KEY
+      - GEO_PROVISION_TENANT_SLUG
+      - GEO_PROVISION_LEGAL_NAME
+      - GEO_PROVISION_DISPLAY_NAME
+      - GEO_PROVISION_INDUSTRY
+      - GEO_PROVISION_DEFAULT_LOCALE
+      - GEO_PROVISION_BRAND_CANONICAL_NAME
+      - GEO_PROVISION_BRAND_DISPLAY_NAME
+      - GEO_PROVISION_CONTACTS_JSON
+      - GEO_PROVISION_WORKER_NAME
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
 
   db-bootstrap-operator:
     <<: *db-tools
@@ -157,10 +237,8 @@ services:
       - APP_ORIGIN=${APP_ORIGIN:?set APP_ORIGIN to the external HTTPS origin}
       - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
       # Bare form passes the secret only when it is present in the operator environment/.env.
-      - PLASTIC_PROMISE_MCP_AUTHORIZATION
+      - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
-      - AGENT_PROVIDER=${AGENT_PROVIDER:-fixture}
-      - AGENT_MODEL=${AGENT_MODEL:-fixture-geo-writer-v1}
       - DOUBAO_ADAPTER=${DOUBAO_ADAPTER:-fixture}
       - QWEN_ADAPTER=${QWEN_ADAPTER:-fixture}
       - ENABLE_BROWSER_ASSISTED=false
@@ -198,7 +276,7 @@ services:
     environment:
       DISPATCHER_DATABASE_URL: postgresql://${GEO_WORKER_DB_USER:-geo_worker}:${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
       RUNTIME_DATABASE_URL: postgresql://${GEO_WORKER_DB_USER:-geo_worker}:${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
-      WORKER_ACTOR_ID: ${WORKER_ACTOR_ID:?set WORKER_ACTOR_ID to a provisioned service actor UUID}
+      WORKER_TENANT_ACTORS_JSON: ${WORKER_TENANT_ACTORS_JSON:?map each tenant UUID to its same-tenant active worker service-principal UUID}
       WORKER_BATCH_SIZE: ${WORKER_BATCH_SIZE:-25}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-60}
@@ -243,6 +321,19 @@ services:
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1:9021,localhost:9021}
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-https://geo.example.com}
       MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
+      PLASTIC_PROMISE_MCP_AUTHORIZATION: ${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-fixture}
+      AGENT_MODEL: ${AGENT_MODEL:-fixture-geo-writer-v1}
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_RUN_TIMEOUT_MS: ${AGENT_RUN_TIMEOUT_MS:-120000}
+      AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:?set true or false explicitly}
+      AUTOMATION_PRODUCER_ID: ${AUTOMATION_PRODUCER_ID:-geo-automation-primary}
+      AUTOMATION_PRODUCER_CONCURRENCY: ${AUTOMATION_PRODUCER_CONCURRENCY:-1}
+      AUTOMATION_PRODUCER_POLL_INTERVAL_MS: ${AUTOMATION_PRODUCER_POLL_INTERVAL_MS:-1000}
+      AUTOMATION_PRODUCER_LEASE_DURATION_MS: ${AUTOMATION_PRODUCER_LEASE_DURATION_MS:-60000}
+      AUTOMATION_PRODUCER_HEARTBEAT_INTERVAL_MS: ${AUTOMATION_PRODUCER_HEARTBEAT_INTERVAL_MS:-20000}
+      AUTOMATION_DELIVERY_POLL_INTERVAL_MS: ${AUTOMATION_DELIVERY_POLL_INTERVAL_MS:-1000}
     healthcheck:
       test:
         - CMD

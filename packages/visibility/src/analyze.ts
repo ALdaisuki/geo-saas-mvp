@@ -9,6 +9,8 @@ import type {
   VisibilitySampleRequest,
 } from "./types.js";
 
+export const VISIBILITY_EVALUATOR_VERSION = "geo-visibility-evaluator-v1";
+
 function normalized(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase("zh-CN");
 }
@@ -55,6 +57,7 @@ function contactAnalysis(
 ): {
   accuracy: number;
   harmfulError: boolean;
+  unexpectedContacts: string[];
 } {
   const expected = truth.expectedContacts.map(compactContact);
   const expectedFound = expected.filter((contact) => compactContact(answer).includes(contact));
@@ -67,6 +70,7 @@ function contactAnalysis(
     return {
       accuracy: expectedFound.length === 0 ? 1 : expectedFound.length / expected.length,
       harmfulError: false,
+      unexpectedContacts: [],
     };
   }
 
@@ -74,7 +78,23 @@ function contactAnalysis(
   return {
     accuracy: correctObserved / observed.length,
     harmfulError: unexpectedObserved,
+    unexpectedContacts: [...new Set(observed.filter((contact) => !expected.includes(contact)))],
   };
+}
+
+function sentiment(answer: string): VisibilityObservation["sentiment"] {
+  const value = normalized(answer);
+  const negative = ["不推荐", "不靠谱", "投诉", "较差", "风险", "错误"].some((token) =>
+    value.includes(token),
+  );
+  const positiveText = value.replaceAll("不推荐", "").replaceAll("不靠谱", "");
+  const positive = ["推荐", "靠谱", "值得", "满意", "优质"].some((token) =>
+    positiveText.includes(token),
+  );
+  if (positive && negative) return "mixed";
+  if (positive) return "positive";
+  if (negative) return "negative";
+  return "neutral";
 }
 
 function firstBrandPosition(answer: string, brandNames: string[]): number | null {
@@ -96,6 +116,8 @@ function evidenceHash(evidence: AdapterEvidence): string {
         citedUrls: [...evidence.citedUrls].sort(),
         evidenceType: evidence.evidenceType,
         observationMethod: evidence.observationMethod,
+        requestStartedAt: evidence.requestStartedAt,
+        responseReceivedAt: evidence.responseReceivedAt,
         observedAt: evidence.observedAt,
         rawAnswer: evidence.rawAnswer,
       }),
@@ -107,13 +129,34 @@ export function analyzeVisibilityEvidence(
   request: VisibilitySampleRequest,
   evidence: AdapterEvidence,
 ): VisibilityObservation {
+  const requestStartedAt = Date.parse(evidence.requestStartedAt);
+  const responseReceivedAt = Date.parse(evidence.responseReceivedAt);
+  if (
+    !Number.isFinite(requestStartedAt) ||
+    !Number.isFinite(responseReceivedAt) ||
+    responseReceivedAt < requestStartedAt
+  ) {
+    throw new TypeError("Visibility evidence has invalid request/response timestamps");
+  }
   const brandMentioned = request.truth.brandNames.some((name) =>
     containsValue(evidence.rawAnswer, name),
   );
-  const competitors = request.truth.knownCompetitors.filter((name) =>
-    containsValue(evidence.rawAnswer, name),
-  );
+  const competitors = request.truth.competitors
+    .filter((competitor) =>
+      [competitor.canonicalName, ...competitor.aliases].some((name) =>
+        containsValue(evidence.rawAnswer, name),
+      ),
+    )
+    .map((competitor) => competitor.canonicalName);
   const contacts = contactAnalysis(evidence.rawAnswer, request.truth);
+  const hallucinationFindings = contacts.unexpectedContacts.map((observedValue) => ({
+    code: "unexpected_contact",
+    category: "contact" as const,
+    severity: "high" as const,
+    statement: "回答包含未登记的联系方式",
+    observedValue,
+    expectedValues: [...request.truth.expectedContacts],
+  }));
 
   return {
     id: request.observationId,
@@ -132,12 +175,17 @@ export function analyzeVisibilityEvidence(
     citedUrls: evidence.citedUrls,
     evidenceHash: evidenceHash(evidence),
     evidenceType: evidence.evidenceType,
+    requestStartedAt: evidence.requestStartedAt,
+    responseReceivedAt: evidence.responseReceivedAt,
     observedAt: evidence.observedAt,
     brandMentioned,
     answerPosition: firstBrandPosition(evidence.rawAnswer, request.truth.brandNames),
     contactAccuracy: contacts.accuracy,
     competitorMentions: competitors,
+    sentiment: sentiment(evidence.rawAnswer),
+    hallucinationFindings,
     harmfulError: contacts.harmfulError,
+    evaluatorVersion: VISIBILITY_EVALUATOR_VERSION,
   };
 }
 
@@ -177,6 +225,10 @@ export function calculateVisibilityMetrics(
       shareOfVoice: 0,
       harmfulErrorRate: 0,
       brandMentionVolatility: 0,
+      averageAnswerPosition: 0,
+      positiveSentimentRate: 0,
+      negativeSentimentRate: 0,
+      hallucinationFindingRate: 0,
     };
   }
 
@@ -186,6 +238,18 @@ export function calculateVisibilityMetrics(
     (observation) => observation.competitorMentions.length > 0,
   ).length;
   const harmful = observations.filter((observation) => observation.harmfulError).length;
+  const answerPositions = observations.flatMap((observation) =>
+    observation.answerPosition === null ? [] : [observation.answerPosition],
+  );
+  const positiveSentiments = observations.filter(
+    (observation) => observation.sentiment === "positive",
+  ).length;
+  const negativeSentiments = observations.filter(
+    (observation) => observation.sentiment === "negative",
+  ).length;
+  const hallucinationSamples = observations.filter(
+    (observation) => observation.hallucinationFindings.length > 0,
+  ).length;
   const sourceDomains = new Set(
     observations.flatMap((observation) =>
       observation.citedUrls.map((url) => new URL(url).hostname.toLocaleLowerCase("en-US")),
@@ -214,5 +278,13 @@ export function calculateVisibilityMetrics(
     shareOfVoice: round(totalVoice === 0 ? 0 : brandMentions / totalVoice),
     harmfulErrorRate: round(harmful / sampleCount),
     brandMentionVolatility: round(Math.sqrt(variance)),
+    averageAnswerPosition: round(
+      answerPositions.length === 0
+        ? 0
+        : answerPositions.reduce((sum, position) => sum + position, 0) / answerPositions.length,
+    ),
+    positiveSentimentRate: round(positiveSentiments / sampleCount),
+    negativeSentimentRate: round(negativeSentiments / sampleCount),
+    hallucinationFindingRate: round(hallucinationSamples / sampleCount),
   };
 }

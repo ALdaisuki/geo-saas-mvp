@@ -2,25 +2,77 @@
 
 ## Transport and authority
 
-`agent-mcp` exposes Streamable HTTP `POST /mcp` and unauthenticated `GET /health/live` on container port `9021`. MCP requests are limited to 1 MiB, require a configured Host, allow only configured Origins, and require a bearer token from `MCP_PRINCIPALS_JSON`.
+`agent-mcp` exposes Streamable HTTP `POST /mcp`, JSON `POST /agent/runs`, and unauthenticated `GET /health/live` on container port `9021`. Both POST endpoints require an explicit `Content-Length`, reject transfer encoding, are limited to 1 MiB, require a configured Host, allow an Origin only when it is configured, and require a bearer token from `MCP_PRINCIPALS_JSON`.
 
 The bearer credential is mapped to an API email/password/tenant login. Seed users cannot satisfy this login. Each tool then checks the principal capability, input `tenantId`, and referenced resource scope through the API. Tool schemas are a static allowlist; arbitrary names and dynamically discovered tools are denied.
 
-Pi Agent v0.73.1 does not contain MCP support. `packages/agent` contains a narrow bridge/runtime library. The current Compose file does not run a Pi process, but the API does connect to an external Plastic Promise MCP endpoint before startup. Publication requests call only `audit_pre_check` and `defense`; a denial, malformed result or transport failure blocks grant consumption. Adding a Pi service must preserve the static destination/tool allowlist and deterministic API authorization.
+Pi Agent v0.73.1 does not contain built-in MCP support. `agent-mcp` embeds a restricted Pi runner next to the GEO MCP server and an optional background batch Producer in the same process. The runner uses a static allowlist of seven GEO tools and three narrow Plastic Promise wrappers. GEO tools pass deterministic principal, capability, tenant, and API resource-scope authorization. Governance wrappers still require the authenticated tenant and capability; `context_supply` is additionally forced to `project:geo-saas:tenant:<tenantId>` with `project_policy=strict` and project-only retrieval, so it cannot use the model's arguments to select another tenant memory scope. Both the API and `agent-mcp` connect to the external Plastic Promise endpoint during startup.
 
 ## Tool inventory
 
-| Tool                      | Principal capability | Main input                                                 | Effect                                                                          |
-| ------------------------- | -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `geo_tenant_context`      | `tenant:read`        | `tenantId`                                                 | Read tenant, contacts, accounts and capability reports                          |
-| `geo_fact_lookup`         | `content:read`       | `tenantId`, `brandId`, `query`, optional `limit`           | Read tenant facts and evidence                                                  |
-| `geo_draft_proposal`      | `content:write`      | tenant/brand/campaign, brief, optional fixture draft       | Create an API content item/version proposal                                     |
-| `geo_variant_preview`     | `content:write`      | tenant, content version, account, platform                 | Create an immutable account/platform variant                                    |
-| `geo_audit_request`       | `audit:run`          | tenant, variant, idempotency key                           | Run exact deterministic audit; cache returned grant in the MCP session registry |
-| `geo_publication_request` | `publish:request`    | tenant, variant, account, execution level, idempotency key | Consume a grant previously returned in this process and enqueue a job           |
-| `geo_visibility_request`  | `visibility:run`     | tenant, query-set version, `doubao                         | qwen`, sample count, idempotency key                                            | Request the API fixture visibility path |
+| Tool                      | Principal capability | Main input                                                                   | Effect                                                                          |
+| ------------------------- | -------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `geo_tenant_context`      | `tenant:read`        | `tenantId`                                                                   | Read tenant, contacts, accounts and capability reports                          |
+| `geo_fact_lookup`         | `content:read`       | `tenantId`, `brandId`, `query`, optional `limit`                             | Read tenant facts and evidence                                                  |
+| `geo_draft_proposal`      | `content:write`      | tenant/brand/campaign, brief, optional `fixtureMode` boolean                 | Create a canonical API content item/version proposal                            |
+| `geo_variant_preview`     | `content:write`      | tenant, content version, account, platform                                   | Create an immutable account/platform variant                                    |
+| `geo_audit_request`       | `audit:run`          | tenant, variant, idempotency key                                             | Run exact deterministic audit; cache returned grant in the MCP session registry |
+| `geo_publication_request` | `publish:request`    | tenant, variant, account, execution level, idempotency key                   | Consume a grant previously returned in this process and enqueue a job           |
+| `geo_visibility_request`  | `visibility:run`     | tenant, query-set version, `doubao` or `qwen`, sample count, idempotency key | Request the API fixture visibility path                                         |
 
-`geo_publication_request` cannot create its own grant. The audit must pass, the actor must be eligible, the in-process pending grant must still be present/unexpired, and Plastic Promise must return a passing pre-check plus `allow` defense decision. Restarting agent-MCP clears its pending map. Requesting `unattended` in the schema does not make it allowed: governance, account capability, database grant logic, automation control and connector policy still apply.
+`geo_publication_request` cannot create its own grant. The audit must pass, the actor must be eligible, the in-process pending grant must still be present/unexpired, and Plastic Promise must return a passing pre-check plus an `allow` defense decision. An `allow` value is not sufficient by itself: the defense result must name exactly `geo_publication_request`, classify it as `high` or `critical` risk, require trust of at least `0.60`, and include `external_publish` in `manifest.side_effects`; the manifest name must match the tool. Missing or inconsistent classification returns `defense_semantics_invalid` and fails closed. Restarting agent-MCP clears its pending map. Requesting `unattended` in the schema does not make it allowed: governance, account capability, database grant logic, automation control and connector policy still apply.
+
+`geo_draft_proposal` does not accept model-authored title, summary, body, tags, contacts, or claim text. It loads the active strict `geo.audit-policy.v1` bundle, current verified facts, and active tenant contacts, then sends a canonical closed-reference content version to the API. The `brief` is orchestration context only; it is not copied into publishable text. `fixtureMode=true` labels the deterministic proposal path and is not a replacement free-text payload.
+
+`geo_variant_preview` uses `platform` only as an account-scope assertion. Its downstream API POST contains exactly `{ contentVersionId, channelAccountId }`; no model/client payload or platform value crosses that write boundary. The API derives the platform and renders title, summary, body and tags from the active policy profile while preserving the canonical claim/contact references. The response payload is therefore server-generated. Same-version/account retries reuse the deterministic variant, and audit history includes cross-platform publication history plus same-version sibling variants when evaluating near duplicates.
+
+## Agent run endpoint
+
+With the default `AGENT_PROVIDER=fixture`, `POST /agent/runs` invokes `FixturePiAgentRunService` and accepts only this strict request shape:
+
+```json
+{
+  "workflow": "draft_to_publication",
+  "tenantId": "00000000-0000-4000-8000-000000000001",
+  "brandId": "00000000-0000-4000-8000-000000000002",
+  "campaignId": "00000000-0000-4000-8000-000000000003",
+  "channelAccountId": "00000000-0000-4000-8000-000000000004",
+  "platform": "toutiao",
+  "topic": "Verified destination guidance",
+  "idempotencyKey": "agent-run-001"
+}
+```
+
+The request `tenantId` must match the authenticated principal. The fixture flow creates a deterministic draft, variant, audit, and publication request through the same allowlisted tools, and hard-codes `executionLevel=dry_run`.
+
+Real Pi mode is selected only when `AGENT_PROVIDER` names a provider known to Pi, `AGENT_MODEL` names one of that provider's registered models, and `AGENT_API_KEY` is injected. Unknown providers/models or a missing key fail process startup. In this mode the endpoint accepts only:
+
+```json
+{
+  "workflow": "prompt",
+  "prompt": "Create and audit a tenant-scoped article using only verified facts."
+}
+```
+
+A successful response is `{ "capability": { "mode", "provider", "model" }, "result": ... }`. The health response exposes the selected non-secret capability. A Pi provider failure returns sanitized `502 AGENT_PROVIDER_FAILED`, rather than a false successful response with empty text. Runs default to a 120-second limit (`AGENT_RUN_TIMEOUT_MS`, allowed range 1 second to 15 minutes); expiry returns `504 AGENT_RUN_TIMEOUT` and aborts the Pi loop. Only one run may be active for the same tenant/actor pair; another returns `409 AGENT_RUN_ACTIVE`. After a timeout, the in-process lock remains until the underlying runner actually settles, so a slow ignored abort cannot overlap a second state-changing run. This is an in-process guard, not a distributed quota or general rate limiter.
+
+Real Pi means a real model loop is orchestrating the same static tools. It does **not** mean that Toutiao, Sohu, Ctrip Community, Doubao, or Qwen is being called through a real platform API. The three publishing platforms remain `manual_only` plus `dry_run`; Doubao/Qwen remain fixture runs or explicit manual imports.
+
+## Background batch Producer
+
+`AUTOMATION_PRODUCER_ENABLED=true` starts a long-running scheduler after the HTTP server binds. It round-robins only configured API principals whose current session includes `automation:execute`; claim failures are isolated per principal so one disabled tenant cannot starve the others. Each claimed run carries an API-issued tenant gate and an actor-bound database lease. Heartbeats and every draft/target checkpoint re-evaluate tenant/Campaign/control/circuit gates. The Producer never accepts an execution level from a batch and always requests `dry_run`.
+
+The Producer persists the canonical draft before any target, then persists `variant_ready`, the real audit run ID plus artifact ID, and `awaiting_delivery` independently for every account. It polls only the publication job bound to that target and records `preview_completed` only when the job reports the Dry-run Preview terminal state. Audit artifact IDs are never substituted for audit run IDs; both are parsed and checked independently. Process restart relies on database lease expiry and stable idempotency keys, while `awaiting_delivery` runs resume by readback rather than reissuing publication.
+
+Configuration is bounded by `AUTOMATION_PRODUCER_CONCURRENCY` (1-16), poll, lease, heartbeat and delivery-poll intervals. `AUTOMATION_PRODUCER_ID` should remain stable across restarts for diagnosis. Shutdown stops acquisition, aborts active work, reconciles uncertain state and closes the governance transport. `/health/live` exposes only the enable/running flag, last tick, active count and sanitized failure code; it contains no prompt, credential, lease token or tenant payload.
+
+## Publication governance handoff
+
+Publication governance has two explicit stages. The Pi/runtime `pre_authorization` stage has no authoritative grant row or audit artifact, so its `audit_pre_check` action description marks `publicationContext.availability=deferred_to_api_grant_consumption`. It is a proposal gate, not proof that a grant can be consumed.
+
+The fixture/model drafting context call is separate from that publication decision. Its Plastic Promise project ID is derived from the authenticated tenant by application code, never accepted from the prompt, and uses strict project retrieval. Empty tenant-specific memory is preferable to falling back to another tenant or global project memory.
+
+At the API `grant_consumption` stage, the tenant-scoped repository loads the grant and its immutable audit artifact before any grant/job/outbox side effect. The API sends a whitelisted context to `audit_pre_check`: grant ID/status/issue/expiry metadata plus artifact identity, tenant/variant/account/platform bindings, payload/fact/policy/audit hashes, policy version, status, findings, and timestamps. The action description is redacted and never contains the publication bearer token or token hash. Plastic Promise `audit_pre_check` must pass, and `defense` must both allow the action and return the exact high-risk external-publication semantics described above. Malformed, denied, semantically downgraded, or unavailable governance fails closed.
 
 ## Publishing evidence boundary
 

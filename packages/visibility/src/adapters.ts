@@ -26,10 +26,13 @@ export class FixtureVisibilityAdapter implements VisibilityAdapter {
       throw new Error(`No ${this.provider} fixture for query ${request.query.id}`);
     }
 
+    const completedAt = this.clock().toISOString();
     return Promise.resolve({
       rawAnswer: fixture.answer,
       citedUrls: fixture.citedUrls ?? [],
-      observedAt: this.clock().toISOString(),
+      requestStartedAt: completedAt,
+      responseReceivedAt: completedAt,
+      observedAt: completedAt,
       observationMethod: "fixture",
       evidenceType: "fixture",
     });

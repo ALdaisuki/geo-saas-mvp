@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { createDefaultConnectorRegistry } from "@geo/connectors";
 import { createDatabase } from "@geo/db";
 
+import { parseWorkerTenantActors } from "./actor-map.js";
 import { PostgresDispatcherStore, PostgresTenantJobStore } from "./postgres-stores.js";
 import { OutboxWorker } from "./worker.js";
 
@@ -46,7 +47,7 @@ const worker = new OutboxWorker({
   jobs: new PostgresTenantJobStore(runtimeDatabase),
   connectors: createDefaultConnectorRegistry(),
   workerId,
-  actorId: requiredEnvironment("WORKER_ACTOR_ID"),
+  actorIdsByTenant: parseWorkerTenantActors(requiredEnvironment("WORKER_TENANT_ACTORS_JSON")),
   batchSize: integerEnvironment("WORKER_BATCH_SIZE", 25),
   concurrency: integerEnvironment("WORKER_CONCURRENCY", 4),
   leaseSeconds: integerEnvironment("WORKER_LEASE_SECONDS", 60),

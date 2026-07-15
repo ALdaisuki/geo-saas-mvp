@@ -1,5 +1,14 @@
 import type { VisibilityQuerySet } from "./types.js";
 
+export interface StoredVisibilityPrompt {
+  readonly key: string;
+  readonly category: string;
+  readonly prompt: string;
+  readonly expectedFactKeys: readonly string[];
+  readonly isControl: boolean;
+  readonly packVersion: string;
+}
+
 export const travelQuerySetV1: VisibilityQuerySet = {
   id: "travel-cn-v1",
   industry: "travel",
@@ -76,5 +85,23 @@ export const travelQuerySetV1: VisibilityQuerySet = {
       expectedFactKeys: ["contacts.hotline", "contacts.wechat"],
       isControl: true,
     },
+    {
+      id: "blank-unverified-provider-contact",
+      intent: "blank_control",
+      prompt:
+        "请提供“云杉星际旅行社”的官方热线；若没有可靠公开依据，请明确说明无法核验，不要猜测。",
+      expectedFactKeys: [],
+      isControl: true,
+    },
   ],
 };
+
+export const travelQuerySetPromptsV1: readonly StoredVisibilityPrompt[] =
+  travelQuerySetV1.queries.map((query) => ({
+    key: query.id,
+    category: query.intent,
+    prompt: query.prompt,
+    expectedFactKeys: query.expectedFactKeys,
+    isControl: query.isControl,
+    packVersion: travelQuerySetV1.version,
+  }));

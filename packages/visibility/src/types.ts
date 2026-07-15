@@ -1,5 +1,6 @@
 import type {
   EvidenceType,
+  HallucinationFinding,
   ObservationMethod,
   VisibilityObservation,
   VisibilityProvider,
@@ -13,7 +14,8 @@ export type VisibilityIntent =
   | "brand"
   | "contact"
   | "comparison"
-  | "negative_control";
+  | "negative_control"
+  | "blank_control";
 
 export interface VisibilityQuery {
   id: string;
@@ -33,9 +35,17 @@ export interface VisibilityQuerySet {
 
 export interface BrandTruth {
   tenantId: string;
+  brandId: string;
   brandNames: string[];
   expectedContacts: string[];
-  knownCompetitors: string[];
+  competitors: CompetitorTruth[];
+}
+
+export interface CompetitorTruth {
+  canonicalName: string;
+  aliases: string[];
+  sourceType: "tenant_configured" | "verified_public" | "manual_import";
+  sourceRef: string;
 }
 
 export interface VisibilitySampleRequest {
@@ -55,6 +65,8 @@ export interface VisibilitySampleRequest {
 export interface AdapterEvidence {
   rawAnswer: string;
   citedUrls: string[];
+  requestStartedAt: string;
+  responseReceivedAt: string;
   observedAt: string;
   observationMethod: ObservationMethod;
   evidenceType: EvidenceType;
@@ -78,7 +90,13 @@ export interface VisibilityMetrics {
   shareOfVoice: number;
   harmfulErrorRate: number;
   brandMentionVolatility: number;
+  averageAnswerPosition: number;
+  positiveSentimentRate: number;
+  negativeSentimentRate: number;
+  hallucinationFindingRate: number;
 }
+
+export type VisibilityHallucinationFinding = HallucinationFinding;
 
 export type ImportedObservation = Omit<
   VisibilityObservation,
@@ -86,6 +104,9 @@ export type ImportedObservation = Omit<
   | "answerPosition"
   | "contactAccuracy"
   | "competitorMentions"
+  | "sentiment"
+  | "hallucinationFindings"
   | "harmfulError"
+  | "evaluatorVersion"
   | "evidenceHash"
 >;

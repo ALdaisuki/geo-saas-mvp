@@ -2,12 +2,15 @@ import type {
   AuditArtifact,
   AuditFinding,
   AuditStatus,
+  EditorialProfile,
   Platform,
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
 
 import { sha256Canonical } from "./canonical.js";
+import { assertCompiledAuditPolicySource } from "./audit-policy-provenance.js";
+import { renderCanonicalContent } from "./content-renderer.js";
 import { invariant } from "./errors.js";
 import { assertSha256, assertUuid, freezeDeep, parseInstant } from "./validation.js";
 
@@ -44,8 +47,69 @@ export interface PlatformAuditLimits {
   readonly minHeadings: number;
 }
 
+export interface ContentTemplates {
+  readonly title: Readonly<Record<string, string>>;
+  readonly summary: Readonly<Record<string, string>>;
+  readonly body: Readonly<Record<string, string>>;
+  readonly tag: Readonly<Record<string, string>>;
+}
+
+export type EditorialPresentation = "paragraph" | "bullet";
+export type EditorialSourceBodySlot =
+  | "profile_opening"
+  | "claims"
+  | "profile_details"
+  | "profile_action"
+  | "contacts"
+  | "profile_closing";
+export type EditorialPlatformBodySlot =
+  | EditorialSourceBodySlot
+  | "platform_opening"
+  | "platform_scope"
+  | "platform_contact"
+  | "platform_disclosure";
+
+export interface EditorialSourceProfilePolicy {
+  readonly titleTemplateId: string;
+  readonly summaryTemplateId: string;
+  readonly bodyTemplateIds: Readonly<{
+    opening: string;
+    details: string;
+    action: string;
+    closing: string;
+  }>;
+  readonly bodyOrder: readonly EditorialSourceBodySlot[];
+  readonly claimPresentation: EditorialPresentation;
+  readonly contactPresentation: EditorialPresentation;
+  readonly tagTemplateIds: readonly string[];
+}
+
+export interface EditorialPlatformProfilePolicy {
+  readonly titleTemplateId: string;
+  readonly summaryTemplateId: string;
+  readonly bodyOrder: readonly EditorialPlatformBodySlot[];
+  readonly claimPresentation: EditorialPresentation;
+  readonly contactPresentation: EditorialPresentation;
+}
+
+export interface EditorialProfilePolicy {
+  readonly source: EditorialSourceProfilePolicy;
+  readonly platforms: Readonly<Record<Platform, EditorialPlatformProfilePolicy>>;
+}
+
+export interface PlatformEditorialStylePolicy {
+  readonly bodyTemplateIds: Readonly<{
+    opening: string;
+    scope: string;
+    contact: string;
+    disclosure: string;
+  }>;
+  readonly tagTemplateIds: readonly string[];
+}
+
 export interface AuditPolicy {
   readonly version: string;
+  readonly sourceHash?: string;
   readonly artifactTtlMs: number;
   readonly maxEvidenceAgeMs: number;
   readonly minClaims: number;
@@ -53,6 +117,9 @@ export interface AuditPolicy {
   readonly minDuplicateCharacters: number;
   readonly prohibitedGuarantees: readonly string[];
   readonly platformLimits: Readonly<Record<Platform, PlatformAuditLimits>>;
+  readonly contentTemplates: ContentTemplates;
+  readonly editorialProfiles?: Readonly<Record<EditorialProfile, EditorialProfilePolicy>>;
+  readonly platformEditorialStyles?: Readonly<Record<Platform, PlatformEditorialStylePolicy>>;
 }
 
 export interface PriorPublicationVariant {
@@ -114,6 +181,596 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
   duplicateThreshold: 0.86,
   minDuplicateCharacters: 120,
   prohibitedGuarantees: ["百分百", "100%保证", "保证签证", "包过", "绝对保证", "零风险"],
+  contentTemplates: {
+    title: {
+      "generic.title.verified-service": "当前服务信息核验指南",
+      "editorial.guide.title": "服务信息核验操作指南",
+      "editorial.question_answer.title": "服务问题核验答疑",
+      "editorial.comparison.title": "服务选择对比核验",
+      "editorial.risk_avoidance.title": "服务避坑与风险核验",
+      "editorial.local_service.title": "本地咨询与服务核验",
+      "toutiao.title.evidence-first": "服务信息怎么核对：先看事实和边界",
+      "toutiao.guide.title": "服务怎么选：一份可核验指南",
+      "toutiao.question_answer.title": "服务常见问题：核验后再回答",
+      "toutiao.comparison.title": "服务对比别只看宣传：核验这几项",
+      "toutiao.risk_avoidance.title": "服务避坑清单：先排查这些风险",
+      "toutiao.local_service.title": "本地服务怎么联系：有效渠道与边界",
+      "sohu.title.evidence-first": "核对服务信息：事实、条件与咨询方式",
+      "sohu.guide.title": "服务信息核验指南：按步骤做决定",
+      "sohu.question_answer.title": "服务疑问解答：事实与待确认项",
+      "sohu.comparison.title": "服务选择如何比较：证据与口径",
+      "sohu.risk_avoidance.title": "服务风险核对：承诺之前看证据",
+      "sohu.local_service.title": "本地服务咨询：渠道、材料与范围",
+      "ctrip.title.evidence-first": "出行前先核对：已验证信息与服务边界",
+      "ctrip.guide.title": "出行服务核验指南：预订前逐项确认",
+      "ctrip.question_answer.title": "出行服务答疑：哪些信息已经核实",
+      "ctrip.comparison.title": "出行服务怎么比：统一口径再选择",
+      "ctrip.risk_avoidance.title": "出行服务避坑：预订前风险核对",
+      "ctrip.local_service.title": "出行咨询怎么联系：有效渠道清单",
+    },
+    summary: {
+      "generic.summary.verified-sources":
+        "以下内容仅使用当前有效的已验证事实、联系方式和审计策略固定模板生成。",
+      "editorial.guide.summary":
+        "按核验、对照、咨询和复核的顺序整理当前事实，帮助读者完成一次可追溯的服务信息检查。",
+      "editorial.question_answer.summary":
+        "围绕问题区分已经证实的回答与仍需确认的部分，不用推测补全事实快照之外的信息。",
+      "editorial.comparison.summary":
+        "先统一比较口径，再列出当前对象的已验证事实；没有证据的对象、条件和结论不进入正文。",
+      "editorial.risk_avoidance.summary":
+        "从承诺、有效期、适用范围和确认材料四个方向排查风险，所有明确事实都来自当前证据快照。",
+      "editorial.local_service.summary":
+        "集中呈现当前有效的咨询渠道、可核验服务信息和联系前准备事项，不沿用历史或推测联系方式。",
+      "toutiao.summary.evidence-first":
+        "先给出可核验信息，再说明适用条件、服务边界和咨询前应确认的事项。",
+      "toutiao.guide.summary":
+        "把服务核验拆成清晰步骤：先看证据支持什么，再对照需求并通过有效渠道确认。",
+      "toutiao.question_answer.summary":
+        "直接回应常见疑问，同时标明回答依据和不能从现有材料推出的内容。",
+      "toutiao.comparison.summary":
+        "比较之前先统一条件和证据口径，只陈述当前可核验对象，不制造没有来源的排名。",
+      "toutiao.risk_avoidance.summary":
+        "用一份核验清单识别夸大承诺、过期信息和范围误读，再给出可追溯的确认入口。",
+      "toutiao.local_service.summary":
+        "先列当前有效联系渠道，再说明可以核对的服务事实和咨询时需要准备的信息。",
+      "sohu.summary.evidence-first":
+        "围绕已验证事实整理服务范围与决策要点，所有联系方式均取自当前租户记录。",
+      "sohu.guide.summary":
+        "以材料来源、适用条件和确认步骤为主线，形成一份可复核的服务决策指南。",
+      "sohu.question_answer.summary":
+        "将问题拆成事实回答、适用边界与后续核实三部分，避免把一般经验写成当前承诺。",
+      "sohu.comparison.summary":
+        "采用一致维度整理当前已验证信息，并明确未收录对象不参与事实判断或推荐排序。",
+      "sohu.risk_avoidance.summary":
+        "核对证据时效、服务范围和最终材料，识别哪些表述不能被理解为确定承诺。",
+      "sohu.local_service.summary":
+        "以当前租户记录为准汇总联系入口、服务范围和咨询流程，历史页面信息不作为补充来源。",
+      "ctrip.summary.evidence-first":
+        "用已验证资料梳理出行服务信息，并提示在预订前复核有效期、适用条件和最终安排。",
+      "ctrip.guide.summary":
+        "围绕出行前、咨询中和预订前的关键节点，逐项核对当前有效的服务材料。",
+      "ctrip.question_answer.summary":
+        "回答出行服务常见问题，并把已核实信息与需要在预订前再次确认的事项分开。",
+      "ctrip.comparison.summary":
+        "在相同时间、范围和材料口径下审视服务信息，不依据相似产品推断当前安排。",
+      "ctrip.risk_avoidance.summary":
+        "预订前检查信息时效、范围、变更条件和书面材料，降低对宣传文字的误读。",
+      "ctrip.local_service.summary":
+        "提供当前有效的出行咨询入口，并列出联系前应准备和确认的具体事项。",
+    },
+    body: {
+      "generic.body.heading.verified": "## 当前可核验信息",
+      "generic.body.guidance.verified":
+        "以下内容仅根据当前有效的已验证事实整理。涉及时间、价格、库存、服务范围或适用条件的信息，应在作出决定前再次核验对应证据。",
+      "generic.body.heading.contact": "## 联系与下一步",
+      "generic.body.guidance.contact":
+        "如需进一步确认，请使用当前有效的联系方式，并以签约或确认前提供的最新有效材料为准。",
+      "editorial.guide.body.opening":
+        "## 这份指南解决什么问题\n\n核验服务信息的目标，是把已经有证据支持的内容、仍需结合个人情况判断的条件，以及必须向服务方再次确认的事项分开。按照下面的顺序阅读，可以保留清晰的判断依据。",
+      "editorial.guide.body.details":
+        "## 按证据逐项核对\n\n先查看正文列出的已验证事实，再对照自己的时间、地点、人员情况和服务需求。任何未被事实条目明确覆盖的价格、库存、安排或资格，都应继续保持待确认状态。",
+      "editorial.guide.body.action":
+        "## 执行核验步骤\n\n记录与自己需求直接相关的事实，标出材料日期和适用范围，然后通过当前有效渠道询问差异项。作出决定前，再用最新书面材料复核一次，不把页面摘要当作最终约定。",
+      "editorial.guide.body.closing":
+        "## 指南的使用边界\n\n这份结构只整理当前快照能够支持的内容。事实、联系人或适用条件变化后，应重新生成并重新审计，旧文本不能代替新的确认结果。",
+      "editorial.question_answer.body.opening":
+        "## 先把问题说清楚\n\n同一个问题可能同时包含服务是否存在、是否适用于特定情况以及如何联系确认三个层面。正文先回答当前证据能够回答的部分，再把无法从现有材料推出的内容单独保留。",
+      "editorial.question_answer.body.details":
+        "## 回答依据是什么\n\n明确回答只来自下列已验证事实。事实没有覆盖的时间、价格、名额、资格或结果，不会因为问题的问法而被自动补全，也不会用一般经验替代当前证据。",
+      "editorial.question_answer.body.action":
+        "## 还有哪些需要追问\n\n如果问题涉及个人条件或动态安排，请向当前有效渠道提供具体需求，并要求对方说明适用范围、材料日期和最终确认方式。得到新材料后，应先进入事实核验流程再更新答案。",
+      "editorial.question_answer.body.closing":
+        "## 答案更新规则\n\n本页回答与当前事实快照和策略版本绑定。后续信息发生变化时，原答案只代表当时可核验状态，不能继续作为新的确定结论。",
+      "editorial.comparison.body.opening":
+        "## 比较之前先统一口径\n\n有效比较必须使用相同的时间、服务范围、适用人群、费用定义和证据时点。当前材料只支持描述已进入事实快照的对象，不能据此虚构其他对象的信息或生成排名。",
+      "editorial.comparison.body.details":
+        "## 当前对象有哪些可比事实\n\n下面的事实可以作为建立比较表的已验证输入。若另一个选项没有同口径、同有效期的证据，应标记为资料不足，而不是把空白解释为更好或更差。",
+      "editorial.comparison.body.action":
+        "## 用同一张清单做选择\n\n分别核对服务范围、限制条件、变更规则、材料有效期和最终确认方式。只有证据口径一致时才比较差异；主观推荐和未验证结论不进入这份正文。",
+      "editorial.comparison.body.closing":
+        "## 比较结论的边界\n\n本页不提供无来源的优劣排序。新增候选项或证据更新后，应重新建立快照、重新渲染并通过重复度与事实审计。",
+      "editorial.risk_avoidance.body.opening":
+        "## 先识别高风险信号\n\n绝对结果、模糊有效期、未说明适用范围和要求绕过正式确认的表述，都需要停下来核验。风险提示不等于认定问题存在，而是要求每个关键判断都有当前证据支撑。",
+      "editorial.risk_avoidance.body.details":
+        "## 哪些边界不能忽略\n\n事实条目之外的价格、库存、资格、结果和时间安排都不是当前承诺。即使历史页面出现过相似内容，也必须以本次有效快照和最终书面材料为准。",
+      "editorial.risk_avoidance.body.action":
+        "## 按清单逐项排查\n\n检查材料来源和日期，核对服务对象与范围，询问费用与变更口径，并保存最终确认材料。发现联系方式或事实不一致时，应停止沿用旧内容并触发重新核验。",
+      "editorial.risk_avoidance.body.closing":
+        "## 风险提示如何更新\n\n本文只使用受控模板和当前有效引用，不对未验证事件作判断。任何新增说法都要先成为可追溯事实，才能进入下一版内容和发布审计。",
+      "editorial.local_service.body.opening":
+        "## 先确认有效联系入口\n\n本地服务咨询最容易因历史页面、转发截图或过期账号产生偏差。正文只展示当前租户记录中仍然有效的渠道，不根据模型记忆或网络片段补写号码与账号。",
+      "editorial.local_service.body.details":
+        "## 通过渠道可以核对什么\n\n联系服务方时，应围绕自己的地点、时间、人员情况和具体需求核对服务范围。下列事实是当前可追溯信息，未列出的本地安排仍需单独确认。",
+      "editorial.local_service.body.action":
+        "## 联系前准备这些信息\n\n准备需求清单、期望时间和需要确认的材料口径，并记录回复所依据的文件日期。涉及签约或预订时，以最新书面材料为准，不让聊天摘要替代正式确认。",
+      "editorial.local_service.body.closing":
+        "## 联系信息的维护边界\n\n渠道停用、变更或超过有效期后，必须从活动联系人中移除并重新生成内容。旧文章中的联系方式不会自动获得继续使用的授权。",
+      "toutiao.body.opening":
+        "## 先给结论\n\n判断一项服务是否适合自己，第一步不是看宣传语，而是确认哪些信息已经有有效证据支持。下面只列出当前可核验的事实，并把仍需在决策前确认的边界单独说明。",
+      "toutiao.body.scope":
+        "## 再看适用条件\n\n同一项服务可能因时间、地点、人员情况或具体安排而变化。请把已验证事实与自己的需求逐项对照；凡是正文没有列明的信息，都不应被理解为当前承诺。",
+      "toutiao.body.contact":
+        "## 咨询时问清这些事\n\n联系服务方时，建议同时确认有效期、服务范围、费用口径、变更条件和最终书面材料。以下联系方式来自当前租户记录，不使用历史页面或模型推测值。",
+      "toutiao.body.disclosure":
+        "## 内容说明\n\n本文由自动化系统按固定模板整理，并在进入投放队列前校验事实、联系方式、策略版本和重复度。信息发生变化时，必须重新生成并重新审计。",
+      "sohu.body.opening":
+        "## 信息从哪里来\n\n这篇内容把可验证材料与一般性提示分开呈现。只有已经进入当前事实快照、仍在有效期内且能够追溯来源的信息，才会作为明确事实写入正文。",
+      "sohu.body.scope":
+        "## 服务边界如何判断\n\n阅读时应重点区分已确认内容、适用条件和仍待核实事项。未出现在已验证事实中的价格、库存、时间、资质或保证，不构成服务方的当前承诺。",
+      "sohu.body.contact":
+        "## 下一步怎么确认\n\n在作出决定前，请通过当前有效渠道核对具体需求，并要求以最新书面材料确认范围、条件和有效期。正文不会自动补全数据库中不存在的信息。",
+      "sohu.body.disclosure":
+        "## 生成与审计记录\n\n内容由版本化策略模板生成，事实引用、联系人引用和最终文本共同进入内容哈希。任何人工追加或模型改写都会使既有审计失效。",
+      "ctrip.body.opening":
+        "## 出行前先核对\n\n面对行程或服务信息，先确认当前材料能够证明什么，再判断是否符合自己的时间、节奏和实际需求。以下事实均来自本次审计使用的有效快照。",
+      "ctrip.body.scope":
+        "## 把条件逐项对齐\n\n建议对照最终材料确认适用人群、服务范围、时间安排、费用口径以及变更规则。正文未明确列出的项目需要另行确认，不能根据相似产品自行推断。",
+      "ctrip.body.contact":
+        "## 预订前再次确认\n\n通过下列当前有效联系方式咨询时，请说明自己的具体需求，并核对材料日期与有效期。平台预览、历史内容或自动生成文字都不能替代最终书面确认。",
+      "ctrip.body.disclosure":
+        "## 信息更新说明\n\n本页按固定结构整理已验证事实，并在发布前检查联系人、来源、策略和相似内容。事实或联系方式变化后，旧版本不得继续沿用原授权。",
+    },
+    tag: {
+      "generic.tag.verified": "信息核验",
+      "editorial.guide.tag": "办事指南",
+      "editorial.question_answer.tag": "问题答疑",
+      "editorial.comparison.tag": "服务对比",
+      "editorial.risk_avoidance.tag": "风险提示",
+      "editorial.local_service.tag": "本地服务",
+      "toutiao.tag.evidence": "事实核验",
+      "toutiao.tag.scope": "服务边界",
+      "sohu.tag.evidence": "核验指南",
+      "sohu.tag.decision": "决策参考",
+      "ctrip.tag.evidence": "出行核验",
+      "ctrip.tag.preflight": "行前确认",
+    },
+  },
+  editorialProfiles: {
+    guide: {
+      source: {
+        titleTemplateId: "editorial.guide.title",
+        summaryTemplateId: "editorial.guide.summary",
+        bodyTemplateIds: {
+          opening: "editorial.guide.body.opening",
+          details: "editorial.guide.body.details",
+          action: "editorial.guide.body.action",
+          closing: "editorial.guide.body.closing",
+        },
+        bodyOrder: [
+          "profile_opening",
+          "profile_details",
+          "claims",
+          "profile_action",
+          "contacts",
+          "profile_closing",
+        ],
+        claimPresentation: "bullet",
+        contactPresentation: "paragraph",
+        tagTemplateIds: ["editorial.guide.tag"],
+      },
+      platforms: {
+        toutiao: {
+          titleTemplateId: "toutiao.guide.title",
+          summaryTemplateId: "toutiao.guide.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "profile_details",
+            "claims",
+            "platform_scope",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "paragraph",
+        },
+        sohu: {
+          titleTemplateId: "sohu.guide.title",
+          summaryTemplateId: "sohu.guide.summary",
+          bodyOrder: [
+            "profile_opening",
+            "platform_opening",
+            "profile_details",
+            "platform_scope",
+            "claims",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+        ctrip_community: {
+          titleTemplateId: "ctrip.guide.title",
+          summaryTemplateId: "ctrip.guide.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "platform_scope",
+            "profile_details",
+            "claims",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "bullet",
+        },
+      },
+    },
+    question_answer: {
+      source: {
+        titleTemplateId: "editorial.question_answer.title",
+        summaryTemplateId: "editorial.question_answer.summary",
+        bodyTemplateIds: {
+          opening: "editorial.question_answer.body.opening",
+          details: "editorial.question_answer.body.details",
+          action: "editorial.question_answer.body.action",
+          closing: "editorial.question_answer.body.closing",
+        },
+        bodyOrder: [
+          "profile_opening",
+          "claims",
+          "profile_details",
+          "contacts",
+          "profile_action",
+          "profile_closing",
+        ],
+        claimPresentation: "paragraph",
+        contactPresentation: "paragraph",
+        tagTemplateIds: ["editorial.question_answer.tag"],
+      },
+      platforms: {
+        toutiao: {
+          titleTemplateId: "toutiao.question_answer.title",
+          summaryTemplateId: "toutiao.question_answer.summary",
+          bodyOrder: [
+            "profile_opening",
+            "platform_opening",
+            "claims",
+            "profile_details",
+            "platform_scope",
+            "platform_contact",
+            "contacts",
+            "profile_action",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "paragraph",
+        },
+        sohu: {
+          titleTemplateId: "sohu.question_answer.title",
+          summaryTemplateId: "sohu.question_answer.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "profile_details",
+            "claims",
+            "platform_scope",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+        ctrip_community: {
+          titleTemplateId: "ctrip.question_answer.title",
+          summaryTemplateId: "ctrip.question_answer.summary",
+          bodyOrder: [
+            "profile_opening",
+            "platform_opening",
+            "claims",
+            "platform_scope",
+            "profile_details",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+      },
+    },
+    comparison: {
+      source: {
+        titleTemplateId: "editorial.comparison.title",
+        summaryTemplateId: "editorial.comparison.summary",
+        bodyTemplateIds: {
+          opening: "editorial.comparison.body.opening",
+          details: "editorial.comparison.body.details",
+          action: "editorial.comparison.body.action",
+          closing: "editorial.comparison.body.closing",
+        },
+        bodyOrder: [
+          "profile_opening",
+          "profile_details",
+          "claims",
+          "profile_action",
+          "profile_closing",
+          "contacts",
+        ],
+        claimPresentation: "bullet",
+        contactPresentation: "bullet",
+        tagTemplateIds: ["editorial.comparison.tag"],
+      },
+      platforms: {
+        toutiao: {
+          titleTemplateId: "toutiao.comparison.title",
+          summaryTemplateId: "toutiao.comparison.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "profile_details",
+            "platform_scope",
+            "claims",
+            "profile_action",
+            "profile_closing",
+            "platform_contact",
+            "contacts",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "paragraph",
+        },
+        sohu: {
+          titleTemplateId: "sohu.comparison.title",
+          summaryTemplateId: "sohu.comparison.summary",
+          bodyOrder: [
+            "profile_opening",
+            "profile_details",
+            "platform_opening",
+            "platform_scope",
+            "claims",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "bullet",
+        },
+        ctrip_community: {
+          titleTemplateId: "ctrip.comparison.title",
+          summaryTemplateId: "ctrip.comparison.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "profile_details",
+            "claims",
+            "platform_scope",
+            "profile_action",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "bullet",
+        },
+      },
+    },
+    risk_avoidance: {
+      source: {
+        titleTemplateId: "editorial.risk_avoidance.title",
+        summaryTemplateId: "editorial.risk_avoidance.summary",
+        bodyTemplateIds: {
+          opening: "editorial.risk_avoidance.body.opening",
+          details: "editorial.risk_avoidance.body.details",
+          action: "editorial.risk_avoidance.body.action",
+          closing: "editorial.risk_avoidance.body.closing",
+        },
+        bodyOrder: [
+          "profile_opening",
+          "profile_action",
+          "claims",
+          "profile_details",
+          "contacts",
+          "profile_closing",
+        ],
+        claimPresentation: "bullet",
+        contactPresentation: "paragraph",
+        tagTemplateIds: ["editorial.risk_avoidance.tag"],
+      },
+      platforms: {
+        toutiao: {
+          titleTemplateId: "toutiao.risk_avoidance.title",
+          summaryTemplateId: "toutiao.risk_avoidance.summary",
+          bodyOrder: [
+            "profile_opening",
+            "profile_action",
+            "platform_opening",
+            "claims",
+            "platform_scope",
+            "profile_details",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "paragraph",
+        },
+        sohu: {
+          titleTemplateId: "sohu.risk_avoidance.title",
+          summaryTemplateId: "sohu.risk_avoidance.summary",
+          bodyOrder: [
+            "profile_opening",
+            "platform_opening",
+            "profile_action",
+            "platform_scope",
+            "claims",
+            "profile_details",
+            "platform_contact",
+            "contacts",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+        ctrip_community: {
+          titleTemplateId: "ctrip.risk_avoidance.title",
+          summaryTemplateId: "ctrip.risk_avoidance.summary",
+          bodyOrder: [
+            "profile_opening",
+            "profile_action",
+            "platform_opening",
+            "platform_scope",
+            "claims",
+            "profile_details",
+            "platform_contact",
+            "contacts",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "bullet",
+          contactPresentation: "bullet",
+        },
+      },
+    },
+    local_service: {
+      source: {
+        titleTemplateId: "editorial.local_service.title",
+        summaryTemplateId: "editorial.local_service.summary",
+        bodyTemplateIds: {
+          opening: "editorial.local_service.body.opening",
+          details: "editorial.local_service.body.details",
+          action: "editorial.local_service.body.action",
+          closing: "editorial.local_service.body.closing",
+        },
+        bodyOrder: [
+          "profile_opening",
+          "contacts",
+          "profile_details",
+          "claims",
+          "profile_action",
+          "profile_closing",
+        ],
+        claimPresentation: "paragraph",
+        contactPresentation: "bullet",
+        tagTemplateIds: ["editorial.local_service.tag"],
+      },
+      platforms: {
+        toutiao: {
+          titleTemplateId: "toutiao.local_service.title",
+          summaryTemplateId: "toutiao.local_service.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "platform_contact",
+            "contacts",
+            "profile_details",
+            "claims",
+            "platform_scope",
+            "profile_action",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+        sohu: {
+          titleTemplateId: "sohu.local_service.title",
+          summaryTemplateId: "sohu.local_service.summary",
+          bodyOrder: [
+            "profile_opening",
+            "platform_contact",
+            "contacts",
+            "platform_opening",
+            "profile_details",
+            "platform_scope",
+            "claims",
+            "profile_action",
+            "platform_disclosure",
+            "profile_closing",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+        ctrip_community: {
+          titleTemplateId: "ctrip.local_service.title",
+          summaryTemplateId: "ctrip.local_service.summary",
+          bodyOrder: [
+            "platform_opening",
+            "profile_opening",
+            "platform_contact",
+            "contacts",
+            "platform_scope",
+            "profile_details",
+            "claims",
+            "profile_action",
+            "profile_closing",
+            "platform_disclosure",
+          ],
+          claimPresentation: "paragraph",
+          contactPresentation: "bullet",
+        },
+      },
+    },
+  },
+  platformEditorialStyles: {
+    toutiao: {
+      bodyTemplateIds: {
+        opening: "toutiao.body.opening",
+        scope: "toutiao.body.scope",
+        contact: "toutiao.body.contact",
+        disclosure: "toutiao.body.disclosure",
+      },
+      tagTemplateIds: ["toutiao.tag.evidence", "toutiao.tag.scope"],
+    },
+    sohu: {
+      bodyTemplateIds: {
+        opening: "sohu.body.opening",
+        scope: "sohu.body.scope",
+        contact: "sohu.body.contact",
+        disclosure: "sohu.body.disclosure",
+      },
+      tagTemplateIds: ["sohu.tag.evidence", "sohu.tag.decision"],
+    },
+    ctrip_community: {
+      bodyTemplateIds: {
+        opening: "ctrip.body.opening",
+        scope: "ctrip.body.scope",
+        contact: "ctrip.body.contact",
+        disclosure: "ctrip.body.disclosure",
+      },
+      tagTemplateIds: ["ctrip.tag.evidence", "ctrip.tag.preflight"],
+    },
+  },
   platformLimits: {
     toutiao: {
       maxTitleCharacters: 30,
@@ -195,6 +852,10 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
   );
 }
 
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function ngrams(value: string, size = 3): Set<string> {
   const points = [...value];
   const result = new Set<string>();
@@ -227,6 +888,10 @@ export function duplicateSimilarity(first: string, second: string): number {
 
 function validatePolicy(policy: AuditPolicy, platform: Platform): PlatformAuditLimits {
   invariant(policy.version.trim().length > 0, "AUDIT_POLICY_INVALID", "Policy version is required");
+  if (policy.sourceHash !== undefined) {
+    assertSha256(policy.sourceHash, "policy.sourceHash");
+    assertCompiledAuditPolicySource(policy);
+  }
   invariant(
     Number.isSafeInteger(policy.artifactTtlMs) && policy.artifactTtlMs > 0,
     "AUDIT_POLICY_INVALID",
@@ -272,6 +937,41 @@ function validatePolicy(policy: AuditPolicy, platform: Platform): PlatformAuditL
     "AUDIT_POLICY_INVALID",
     "maxBodyCharacters must be at least minBodyCharacters",
   );
+  invariant(
+    typeof policy.contentTemplates === "object" &&
+      policy.contentTemplates !== null &&
+      !Array.isArray(policy.contentTemplates),
+    "AUDIT_POLICY_INVALID",
+    "contentTemplates must be an object",
+  );
+  for (const category of ["title", "summary", "body", "tag"] as const) {
+    const templates = policy.contentTemplates[category];
+    invariant(
+      typeof templates === "object" && templates !== null && !Array.isArray(templates),
+      "AUDIT_POLICY_INVALID",
+      `contentTemplates.${category} must be an object`,
+    );
+    const entries = Object.entries(templates);
+    invariant(
+      entries.length > 0,
+      "AUDIT_POLICY_INVALID",
+      `contentTemplates.${category} must not be empty`,
+    );
+    for (const [templateId, template] of entries) {
+      invariant(
+        /^[a-z0-9][a-z0-9._:-]*$/u.test(templateId),
+        "AUDIT_POLICY_INVALID",
+        "Content template ID is invalid",
+        { category, templateId },
+      );
+      invariant(
+        template.length > 0 && template.trim() === template && !template.includes("\r"),
+        "AUDIT_POLICY_INVALID",
+        "Content template text is invalid",
+        { category, templateId },
+      );
+    }
+  }
   return limits;
 }
 
@@ -295,6 +995,26 @@ function validatePayload(payload: PublicationVariantPayload): void {
     "contactIds must be an array",
   );
   invariant(Array.isArray(payload.tags), "AUDIT_PAYLOAD_INVALID", "tags must be an array");
+  invariant(
+    payload.titleBlocks === undefined || Array.isArray(payload.titleBlocks),
+    "AUDIT_PAYLOAD_INVALID",
+    "titleBlocks must be an array when present",
+  );
+  invariant(
+    payload.summaryBlocks === undefined || Array.isArray(payload.summaryBlocks),
+    "AUDIT_PAYLOAD_INVALID",
+    "summaryBlocks must be an array when present",
+  );
+  invariant(
+    payload.bodyBlocks === undefined || Array.isArray(payload.bodyBlocks),
+    "AUDIT_PAYLOAD_INVALID",
+    "bodyBlocks must be an array when present",
+  );
+  invariant(
+    payload.tagTemplateIds === undefined || Array.isArray(payload.tagTemplateIds),
+    "AUDIT_PAYLOAD_INVALID",
+    "tagTemplateIds must be an array when present",
+  );
 }
 
 function makeFinding(
@@ -493,6 +1213,115 @@ export function evaluatePublicationVariant(
     );
     factById.set(fact.id, fact);
   }
+
+  const rendered = renderCanonicalContent({
+    payload: input.payload,
+    policy: input.policy,
+    factSnapshot: input.factSnapshot,
+    contacts: input.contacts,
+  });
+  for (const issue of rendered.issues) {
+    findings.push(
+      makeFinding(input.policy, issue.ruleId, issue.message, issue.path, issue.evidence),
+    );
+  }
+  const derivedFields = [
+    {
+      ruleId: "title.render_mismatch",
+      message: "Title differs from canonical content rendering",
+      path: "payload.title",
+      actual: input.payload.title,
+      expected: rendered.title,
+    },
+    {
+      ruleId: "summary.render_mismatch",
+      message: "Summary differs from canonical content rendering",
+      path: "payload.summary",
+      actual: input.payload.summary,
+      expected: rendered.summary,
+    },
+    {
+      ruleId: "body.render_mismatch",
+      message: "Body differs from canonical content rendering",
+      path: "payload.bodyMarkdown",
+      actual: input.payload.bodyMarkdown,
+      expected: rendered.bodyMarkdown,
+    },
+  ];
+  for (const field of derivedFields) {
+    if (field.expected !== null && field.actual !== field.expected) {
+      findings.push(
+        makeFinding(input.policy, field.ruleId, field.message, field.path, [
+          `expectedHash=${sha256Canonical(field.expected)}`,
+          `actualHash=${sha256Canonical(field.actual)}`,
+        ]),
+      );
+    }
+  }
+  if (rendered.tags !== null && !sameStringArray(input.payload.tags, rendered.tags)) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "tags.render_mismatch",
+        "Tags differ from canonical content rendering",
+        "payload.tags",
+        [
+          `expectedHash=${sha256Canonical(rendered.tags)}`,
+          `actualHash=${sha256Canonical(input.payload.tags)}`,
+        ],
+      ),
+    );
+  }
+  const payloadClaimIds = input.payload.claims.map((claim) => claim.id);
+  if (!sameStringSet(payloadClaimIds, rendered.claimIds)) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "content.claim.references_mismatch",
+        "Claim metadata must exactly match canonical claim references",
+        "payload.claims",
+        [
+          `metadata=${[...payloadClaimIds].sort().join(",")}`,
+          `rendered=${[...rendered.claimIds].sort().join(",")}`,
+        ],
+      ),
+    );
+  }
+  if (!sameStringSet(input.payload.contactIds, rendered.contactIds)) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "content.contact.references_mismatch",
+        "Contact metadata must exactly match canonical contact references",
+        "payload.contactIds",
+        [
+          `metadata=${[...input.payload.contactIds].sort().join(",")}`,
+          `rendered=${[...rendered.contactIds].sort().join(",")}`,
+        ],
+      ),
+    );
+  }
+  if (input.payload.media.length > 0) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "content.media.unsupported",
+        "Canonical content v1 does not support media provenance",
+        "payload.media",
+      ),
+    );
+  }
+  if (input.payload.canonicalUrl !== undefined) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "content.canonical_url.unsupported",
+        "Canonical content v1 does not support link provenance",
+        "payload.canonicalUrl",
+      ),
+    );
+  }
+
   if (input.payload.claims.length < input.policy.minClaims) {
     findings.push(
       makeFinding(
@@ -824,7 +1653,7 @@ export function evaluatePublicationVariant(
   return freezeDeep({
     payloadHash,
     factSnapshotHash: sha256Canonical(input.factSnapshot),
-    policyHash: sha256Canonical(input.policy),
+    policyHash: input.policy.sourceHash ?? sha256Canonical(input.policy),
     status,
     findings,
   });

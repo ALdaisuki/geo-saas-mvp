@@ -9,6 +9,7 @@ import {
   DryRunConnector,
   exportManualPackage,
   isConfirmedLivePublication,
+  stableSha256,
 } from "./index.js";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
@@ -49,7 +50,7 @@ describe.each(platforms)("%s dry-run connector", (platform) => {
     expect(capability).toMatchObject({
       platform,
       capability: "manual_only",
-      supportedExecutionLevels: ["dry_run", "assisted"],
+      supportedExecutionLevels: ["dry_run"],
       evidenceType: "preview",
     });
 
@@ -116,29 +117,35 @@ describe.each(platforms)("%s dry-run connector", (platform) => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects every unattended request because no verified API capability exists", async () => {
-    const connector = createDefaultConnectorRegistry().get(platform);
-    await expect(
-      connector.renderDraft({
-        tenantId,
-        channelAccountId,
-        variantId,
-        executionLevel: "unattended",
-        payload,
-      }),
-    ).rejects.toMatchObject({
-      code: "UNATTENDED_REQUIRES_VERIFIED_API",
-      platform,
-      executionLevel: "unattended",
-    });
-  });
+  it.each(["assisted", "unattended"] as const)(
+    "rejects %s because manual package export is not an execution level",
+    async (executionLevel) => {
+      const connector = createDefaultConnectorRegistry().get(platform);
+      await expect(
+        connector.renderDraft({
+          tenantId,
+          channelAccountId,
+          variantId,
+          executionLevel,
+          payload,
+        }),
+      ).rejects.toMatchObject({
+        code:
+          executionLevel === "unattended"
+            ? "UNATTENDED_REQUIRES_VERIFIED_API"
+            : "EXECUTION_LEVEL_UNSUPPORTED",
+        platform,
+        executionLevel,
+      });
+    },
+  );
 });
 
 describe("capability evidence guard", () => {
   it("does not upgrade a connector based on platform name or missing evidence", () => {
     expect(buildCapabilityReport("toutiao", checkedAt)).toMatchObject({
       capability: "manual_only",
-      supportedExecutionLevels: ["dry_run", "assisted"],
+      supportedExecutionLevels: ["dry_run"],
     });
 
     expect(() =>
@@ -190,23 +197,98 @@ describe("manual package and receipt truthfulness", () => {
       tenantId,
       channelAccountId,
       variantId,
-      executionLevel: "assisted",
+      executionLevel: "dry_run",
       payload,
     });
-    const input = { renderedDraft, payloadHash, auditHash, exportedAt: checkedAt };
+    const artifact = {
+      id: receiptId,
+      tenantId,
+      variantId,
+      channelAccountId,
+      platform: "sohu" as const,
+      payloadHash: stableSha256(renderedDraft.payload),
+      factSnapshotHash: "c".repeat(64),
+      policyHash: "d".repeat(64),
+      policyVersion: "travel-v1",
+      auditHash,
+      status: "passed" as const,
+      findings: [],
+      createdAt: "2026-07-13T11:00:00.000Z",
+      expiresAt: "2026-07-13T13:00:00.000Z",
+    };
+    const input = {
+      renderedDraft,
+      auditArtifact: artifact,
+      exportedAt: checkedAt,
+    };
     const first = await exportManualPackage(dryRunConnector, input);
     const second = await exportManualPackage(dryRunConnector, input);
 
     expect(first.packageHash).toBe(second.packageHash);
     expect(first).toMatchObject({
       platform: "sohu",
-      executionLevel: "assisted",
+      executionLevel: "dry_run",
       evidenceType: "preview",
-      payloadHash,
+      auditArtifactId: receiptId,
+      payloadHash: artifact.payloadHash,
       auditHash,
+      requiresManualAction: true,
+      publicationStatus: "not_published",
+      confirmed: false,
     });
+    expect(first.files["manifest.json"]).toContain('"publicationStatus":"not_published"');
+    expect(first.files["NOT_PUBLISHED.txt"]).toMatch(/manual action is required/iu);
     expect(first.files["article.md"]).toContain(payload.title);
     expect(first.files["instructions.txt"]).toContain("最终发布");
+  });
+
+  it("rejects failed, expired, or scope-mismatched audit artifacts", async () => {
+    const connector = createDefaultConnectorRegistry().get("toutiao") as DryRunConnector;
+    const renderedDraft = await connector.renderDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "dry_run",
+      payload,
+    });
+    const artifact = {
+      id: receiptId,
+      tenantId,
+      variantId,
+      channelAccountId,
+      platform: "toutiao" as const,
+      payloadHash: stableSha256(renderedDraft.payload),
+      factSnapshotHash: "c".repeat(64),
+      policyHash: "d".repeat(64),
+      policyVersion: "travel-v1",
+      auditHash,
+      status: "passed" as const,
+      findings: [],
+      createdAt: "2026-07-13T11:00:00.000Z",
+      expiresAt: "2026-07-13T13:00:00.000Z",
+    };
+
+    await expect(
+      exportManualPackage(connector, {
+        renderedDraft,
+        auditArtifact: { ...artifact, status: "failed" },
+        exportedAt: checkedAt,
+      }),
+    ).rejects.toThrow(/passed audit/iu);
+    await expect(
+      exportManualPackage(connector, {
+        renderedDraft,
+        auditArtifact: { ...artifact, expiresAt: "2026-07-13T11:30:00.000Z" },
+        exportedAt: checkedAt,
+      }),
+    ).rejects.toThrow(/expired/iu);
+    await expect(
+      exportManualPackage(connector, {
+        renderedDraft,
+        auditArtifact: { ...artifact, tenantId: "00000000-0000-4000-8000-000000000099" },
+        exportedAt: checkedAt,
+      }),
+    ).rejects.toThrow(/scope/iu);
   });
 
   it("never accepts preview evidence as proof of a live publication", () => {

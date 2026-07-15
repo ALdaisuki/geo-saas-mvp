@@ -71,6 +71,15 @@ async function resolvePgControl(): Promise<string> {
   return pgControl;
 }
 
+async function removeDatabaseDirectory(databaseDir: string): Promise<void> {
+  const tempRoot = `${resolve(tmpdir())}${sep}`;
+  const resolvedDirectory = resolve(databaseDir);
+  if (!resolvedDirectory.startsWith(`${tempRoot}geo-e2e-postgres-`)) {
+    throw new Error(`Refusing to remove unexpected PostgreSQL path: ${resolvedDirectory}`);
+  }
+  await rm(resolvedDirectory, { recursive: true, force: true });
+}
+
 export async function startEmbeddedDatabase(databaseName: string): Promise<EmbeddedDatabase> {
   if (!/^[a-z][a-z0-9_]{2,62}$/.test(databaseName)) {
     throw new TypeError("Test database name is invalid");
@@ -121,8 +130,25 @@ export async function startEmbeddedDatabase(databaseName: string): Promise<Embed
       await bootstrap.end();
     }
   } catch (error) {
+    const cleanupErrors: string[] = [];
+    if (started) {
+      try {
+        await executeFile(pgControl, ["-D", databaseDir, "-m", "fast", "-w", "stop"]);
+      } catch (cleanupError) {
+        cleanupErrors.push(
+          `stop cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        );
+      }
+    }
+    try {
+      await removeDatabaseDirectory(databaseDir);
+    } catch (cleanupError) {
+      cleanupErrors.push(
+        `directory cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+      );
+    }
     throw new Error(
-      `Embedded PostgreSQL startup failed: ${error instanceof Error ? error.message : String(error)}\n${diagnostics.join("\n")}`,
+      `Embedded PostgreSQL startup failed: ${error instanceof Error ? error.message : String(error)}\n${[...diagnostics, ...cleanupErrors].join("\n")}`,
       { cause: error },
     );
   }
@@ -135,12 +161,7 @@ export async function startEmbeddedDatabase(databaseName: string): Promise<Embed
         await executeFile(pgControl, ["-D", databaseDir, "-m", "fast", "-w", "stop"]);
         started = false;
       }
-      const tempRoot = `${resolve(tmpdir())}${sep}`;
-      const resolvedDirectory = resolve(databaseDir);
-      if (!resolvedDirectory.startsWith(`${tempRoot}geo-e2e-postgres-`)) {
-        throw new Error(`Refusing to remove unexpected PostgreSQL path: ${resolvedDirectory}`);
-      }
-      await rm(resolvedDirectory, { recursive: true, force: true });
+      await removeDatabaseDirectory(databaseDir);
     },
   };
 }

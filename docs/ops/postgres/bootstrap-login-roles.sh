@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+ACL_RECONCILIATION_FILE="${ACL_RECONCILIATION_FILE:-/bootstrap/reconcile-application-acls.sql}"
+APPLICATION_ROLES_FILE="${APPLICATION_ROLES_FILE:-/bootstrap/ensure-application-roles.sql}"
+
 required_variables=(
   PGHOST
   PGUSER
@@ -41,10 +44,24 @@ if [[ "${GEO_API_DB_USER}" == "${GEO_WORKER_DB_USER}" ||
   exit 1
 fi
 
-if [[ "$(psql --no-psqlrc --tuples-only --no-align --command "select to_regclass('geo.users') is not null and to_regprocedure('geo.find_login_identity(text)') is not null and to_regprocedure('geo.find_login_identity_by_user(uuid)') is not null")" != "t" ]]; then
-  echo "geo migrations are incomplete; refusing to bootstrap login roles" >&2
+if [[ ! -r "${APPLICATION_ROLES_FILE}" ]]; then
+  echo "Application roles file is not readable: ${APPLICATION_ROLES_FILE}" >&2
   exit 1
 fi
+
+psql --no-psqlrc --set=ON_ERROR_STOP=1 --file="${APPLICATION_ROLES_FILE}"
+
+if [[ "$(psql --no-psqlrc --tuples-only --no-align --command "select to_regclass('geo.users') is not null and to_regprocedure('geo.find_login_identity(text)') is not null and to_regprocedure('geo.find_login_identity_by_user(uuid)') is not null")" != "t" ]]; then
+  echo "geo migrations are incomplete; refusing to reconcile ACLs or bootstrap login roles" >&2
+  exit 1
+fi
+
+if [[ ! -r "${ACL_RECONCILIATION_FILE}" ]]; then
+  echo "ACL reconciliation file is not readable: ${ACL_RECONCILIATION_FILE}" >&2
+  exit 1
+fi
+
+psql --no-psqlrc --set=ON_ERROR_STOP=1 --file="${ACL_RECONCILIATION_FILE}"
 
 psql \
   --no-psqlrc \

@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Bell,
   Building2,
+  CalendarClock,
   CheckCircle2,
   ChevronRight,
   Clock3,
@@ -29,7 +30,6 @@ import {
   Sparkles,
   WifiOff,
   X,
-  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
@@ -39,18 +39,26 @@ import {
   GeoApiError,
   createGeoApi,
   isAuthenticationError,
+  type AuditArtifact,
   type AutomationSnapshot,
+  type Brand,
   type Campaign,
   type ChannelAccount,
   type ContentItem,
   type GeoApi,
   type PublicationJob,
+  type PolicyBundle,
   type PublicationReceipt,
+  type QuerySet,
+  type ServicePrincipal,
   type SessionSnapshot,
+  type TenantContact,
   type TenantOption,
+  type TenantMember,
   type TenantView,
   type VisibilityProviderSummary,
 } from "./api.js";
+import { AutomationOperations } from "./automation-operations.js";
 import {
   createLoadingDashboard,
   dashboardHasAuthenticationError,
@@ -59,17 +67,21 @@ import {
   type ApiResource,
   type LiveDashboard,
 } from "./dashboard.js";
+import { AuditOperationsList, OperationsWorkspace, PublicationJobDetail } from "./operations.js";
+import { VisibilityOperations } from "./visibility-operations.js";
+import { TenantGovernance } from "./tenant-governance.js";
 import {
   auditFindings,
   contentItems as demoContentItems,
   initialCampaigns,
-  platformAccounts as demoPlatformAccounts,
+  platformAccountsForTenant,
   providerMetrics as demoProviderMetrics,
   publicationRows as demoPublicationRows,
-  queryRuns,
+  queryRunsForTenant,
   tenants as demoTenants,
   type CampaignDemo,
   type StatusTone,
+  type TenantDemo,
 } from "./data.js";
 
 interface NavigationItem {
@@ -100,6 +112,7 @@ interface ContentRow {
   statusTone: StatusTone;
   updatedAt: string | null;
   image: string;
+  imageAlt: string;
   campaignId: string | null;
 }
 
@@ -171,6 +184,7 @@ const navigation: NavigationItem[] = [
   { path: "/customers", label: "客户与品牌", icon: Building2 },
   { path: "/content", label: "内容资产", icon: FileText },
   { path: "/publishing", label: "投放中心", icon: Send },
+  { path: "/automation", label: "自动化批次", icon: CalendarClock },
   { path: "/visibility", label: "AI 可见性", icon: Sparkles },
   { path: "/audit", label: "审计与证据", icon: FileCheck2 },
   { path: "/settings", label: "系统设置", icon: Settings },
@@ -181,16 +195,37 @@ const routeTitles: Record<string, { title: string; subtitle: string }> = {
   "/customers": { title: "客户与品牌", subtitle: "租户隔离、品牌事实和联系方式版本" },
   "/content": { title: "内容资产", subtitle: "Campaign、文章版本与平台最终变体" },
   "/publishing": { title: "投放中心", subtitle: "许可、outbox、回执、配额与熔断" },
+  "/automation": {
+    title: "自动化批次",
+    subtitle: "无人值守内容生成、发布前审计与 Dry-run 预演",
+  },
   "/visibility": { title: "AI 可见性", subtitle: "豆包与千问独立证据和重复样本" },
   "/audit": { title: "审计与证据", subtitle: "阻断项、payload hash 与规则版本" },
   "/settings": { title: "系统设置", subtitle: "平台账号、能力证据和自动化策略" },
 };
 
-const contentImages = [
-  "https://images.unsplash.com/photo-1528360983277-13d401cdc186?auto=format&fit=crop&w=480&q=82",
-  "https://images.unsplash.com/photo-1499856871958-5b9627545d1a?auto=format&fit=crop&w=480&q=82",
-  "https://images.unsplash.com/photo-1488646953014-85cb44e25828?auto=format&fit=crop&w=480&q=82",
+const travelContentImages = [
+  "/demo/travel-tokyo.jpg",
+  "/demo/travel-paris.jpg",
+  "/demo/travel-planning.jpg",
 ];
+
+const neutralContentImages = [
+  "/demo/general-office.jpg",
+  "/demo/general-library.jpg",
+  "/demo/general-team.jpg",
+];
+
+function isTravelIndustry(industry: string): boolean {
+  const normalized = industry.trim().toLocaleLowerCase();
+  return (
+    normalized.includes("travel") || normalized.includes("旅游") || normalized.includes("旅行")
+  );
+}
+
+function contentImagesForIndustry(industry: string): readonly string[] {
+  return isTravelIndustry(industry) ? travelContentImages : neutralContentImages;
+}
 
 function StatusBadge({ children, tone = "neutral" }: { children: ReactNode; tone?: StatusTone }) {
   return <span className={`status-badge status-${tone}`}>{children}</span>;
@@ -426,6 +461,14 @@ function apiErrorText(error: unknown): string {
     return `${error.code}: ${error.message}${request}`;
   }
   return error instanceof Error ? error.message : "未知错误";
+}
+
+function sessionBootstrapErrorText(error: unknown): string {
+  if (error instanceof GeoApiError && (error.status === 0 || error.status >= 500)) {
+    const request = error.requestId === null ? "" : ` · request ${error.requestId}`;
+    return `运营 API 暂时不可用；可稍后重试或进入离线演示（${error.code}${request}）`;
+  }
+  return apiErrorText(error);
 }
 
 function LoginView({
@@ -714,7 +757,7 @@ function OverviewView({
           ) : null}
           {publicationRows.length === 0 ? null : (
             <div className="table-scroll">
-              <table>
+              <table className="queue-table">
                 <thead>
                   <tr>
                     <th>作业</th>
@@ -825,7 +868,7 @@ function OverviewView({
           <div className="content-list">
             {content.slice(0, 4).map((item) => (
               <article className="content-row" key={item.id}>
-                <img src={item.image} alt="旅行文章素材缩略图" />
+                <img src={item.image} alt={item.imageAlt} />
                 <div className="content-copy">
                   <strong>{item.title}</strong>
                   <span>
@@ -851,13 +894,27 @@ function OverviewView({
           <PanelHeading
             title="审计阻断"
             meta={mode === "demo" ? "演示规则命中" : "审计列表状态"}
-            action={mode === "demo" ? <StatusBadge tone="danger">2 阻断</StatusBadge> : null}
+            action={
+              mode === "demo" ? (
+                <StatusBadge tone="danger">2 阻断</StatusBadge>
+              ) : (
+                <NavLink className="text-button" to="/audit">
+                  全部审计 <ChevronRight size={15} />
+                </NavLink>
+              )
+            }
           />
           {mode === "live" ? (
-            <UnsupportedState
-              title="实时审计列表不可用"
-              detail="后端仅提供 GET /api/audits/:artifactId，当前没有审计列表接口"
-            />
+            <>
+              <ResourceState
+                resource={dashboard.audits}
+                empty={dashboard.audits.data.length === 0}
+                emptyLabel="暂无审计运行"
+              />
+              {dashboard.audits.data.length === 0 ? null : (
+                <AuditOperationsList audits={dashboard.audits.data.slice(0, 3)} />
+              )}
+            </>
           ) : (
             <div className="finding-list">
               {auditFindings.map((finding) => (
@@ -981,6 +1038,20 @@ function CustomersView({
   contactsResource,
   contactsEmpty,
   discoveredTenants,
+  brands,
+  members,
+  policies,
+  contacts,
+  accounts,
+  principals,
+  querySets,
+  brandResource,
+  memberResource,
+  policyResource,
+  querySetResource,
+  capabilities,
+  api,
+  onChanged,
 }: {
   mode: ConsoleMode;
   customers: CustomerRow[];
@@ -990,6 +1061,20 @@ function CustomersView({
   contactsResource: ApiResource<unknown>;
   contactsEmpty: boolean;
   discoveredTenants: readonly TenantOption[];
+  brands: readonly Brand[];
+  members: readonly TenantMember[];
+  policies: readonly PolicyBundle[];
+  contacts: readonly TenantContact[];
+  accounts: readonly ChannelAccount[];
+  principals: readonly ServicePrincipal[];
+  querySets: readonly QuerySet[];
+  brandResource: ApiResource<readonly Brand[]>;
+  memberResource: ApiResource<readonly TenantMember[]>;
+  policyResource: ApiResource<readonly PolicyBundle[]>;
+  querySetResource: ApiResource<readonly QuerySet[]>;
+  capabilities: readonly string[];
+  api: GeoApi;
+  onChanged: () => void;
 }) {
   return (
     <div className="view-stack">
@@ -1033,7 +1118,7 @@ function CustomersView({
         ) : null}
         {customers.length === 0 ? null : (
           <div className="table-scroll">
-            <table>
+            <table className="tenant-table">
               <thead>
                 <tr>
                   <th>客户</th>
@@ -1108,6 +1193,141 @@ function CustomersView({
           <SourceCaption endpoint="GET /api/auth/tenants + GET /api/tenant + GET /api/contacts" />
         ) : null}
       </section>
+      {mode === "live" ? (
+        <section className="panel">
+          <PanelHeading title="当前租户治理目录" meta="品牌、成员、策略与国内 AI 问题集" />
+          <div className="customer-governance-grid">
+            <div>
+              <h3>品牌</h3>
+              <ResourceState
+                resource={brandResource}
+                empty={brands.length === 0}
+                emptyLabel="暂无品牌"
+              />
+              <ul className="dense-list">
+                {brands.map((brand) => (
+                  <li key={brand.id}>
+                    <div>
+                      <strong>{brand.displayName}</strong>
+                      <span>{brand.canonicalName}</span>
+                    </div>
+                    <StatusBadge tone={brand.isPrimary ? "success" : "neutral"}>
+                      {brand.isPrimary ? "主品牌" : brand.industry}
+                    </StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3>成员</h3>
+              <ResourceState
+                resource={memberResource}
+                empty={members.length === 0}
+                emptyLabel="暂无成员"
+              />
+              <ul className="dense-list">
+                {members.map((member) => (
+                  <li key={member.id}>
+                    <div>
+                      <strong>{member.displayName}</strong>
+                      <span>{member.email}</span>
+                    </div>
+                    <StatusBadge tone={member.status === "active" ? "success" : "warning"}>
+                      {member.role}
+                    </StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3>策略</h3>
+              <ResourceState
+                resource={policyResource}
+                empty={policies.length === 0}
+                emptyLabel="暂无策略"
+              />
+              <ul className="dense-list">
+                {policies.map((policy) => (
+                  <li key={policy.id}>
+                    <div>
+                      <strong>{policy.version}</strong>
+                      <span>{formatDateTime(policy.effectiveAt)}</span>
+                    </div>
+                    <StatusBadge tone={policy.status === "active" ? "success" : "neutral"}>
+                      {policy.status}
+                    </StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3>问题集</h3>
+              <ResourceState
+                resource={querySetResource}
+                empty={querySets.length === 0}
+                emptyLabel="暂无问题集"
+              />
+              <ul className="dense-list">
+                {querySets.map((querySet) => (
+                  <li key={querySet.id}>
+                    <div>
+                      <strong>{querySet.name}</strong>
+                      <span>
+                        {querySet.industry} · v{querySet.currentVersion}
+                      </span>
+                    </div>
+                    <StatusBadge tone={querySet.status === "active" ? "success" : "neutral"}>
+                      {querySet.status}
+                    </StatusBadge>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
+      ) : null}
+      {mode === "live" ? (
+        <section className="panel">
+          <PanelHeading title="租户治理操作" meta="所有变更均由服务端按租户范围审计" />
+          <TenantGovernance
+            contacts={contacts}
+            members={members}
+            policies={policies}
+            accounts={accounts}
+            principals={principals}
+            capabilities={capabilities}
+            onCreateContact={async (input) => {
+              await api.createContact(input);
+            }}
+            onExpireContact={async (contactId, input) => {
+              await api.expireContact(contactId, input);
+            }}
+            onCreateMember={async (input) => {
+              await api.createMember(input);
+            }}
+            onUpdateMember={async (memberId, input) => {
+              await api.updateMember(memberId, input);
+            }}
+            onTransitionPolicy={async (policyId, input) => {
+              await api.transitionPolicy(policyId, input);
+            }}
+            onCreateChannelAccount={async (input) => {
+              await api.createChannelAccount(input);
+            }}
+            onUpdateChannelAccount={async (accountId, input) => {
+              await api.updateChannelAccount(accountId, input);
+            }}
+            onCreateAutomationPrincipal={async (input) => {
+              await api.createAutomationServicePrincipal(input);
+            }}
+            onSetPrincipalStatus={async (principalId, input) => {
+              await api.setServicePrincipalStatus(principalId, input);
+            }}
+            onChanged={onChanged}
+          />
+          <SourceCaption endpoint="POST/PATCH tenant governance APIs + GET /api/service-principals" />
+        </section>
+      ) : null}
       {mode === "demo" ? (
         <section className="split-band">
           <div>
@@ -1143,13 +1363,61 @@ function CustomersView({
 function ContentView({
   mode,
   items,
-  resource,
+  api,
+  tenantId,
+  capabilities,
+  dashboard,
 }: {
   mode: ConsoleMode;
   items: ContentRow[];
-  resource: ApiResource<unknown>;
+  api: GeoApi;
+  tenantId: string;
+  capabilities: readonly string[];
+  dashboard: LiveDashboard;
 }) {
   const [view, setView] = useState<"all" | "blocked" | "ready">("all");
+  if (mode === "live") {
+    const resources = [
+      dashboard.brands,
+      dashboard.evidenceSources,
+      dashboard.facts,
+      dashboard.campaigns,
+      dashboard.content,
+      dashboard.channelAccounts,
+      dashboard.policies,
+    ];
+    return (
+      <div className="view-stack">
+        {resources.map((item) =>
+          item.status === "error" ? (
+            <ResourceState key={item.endpoint} resource={item} empty={false} emptyLabel="" />
+          ) : null,
+        )}
+        <OperationsWorkspace
+          api={api}
+          tenantId={tenantId}
+          capabilities={capabilities}
+          brands={dashboard.brands.data}
+          evidenceSources={dashboard.evidenceSources.data}
+          facts={dashboard.facts.data}
+          campaigns={dashboard.campaigns.data}
+          contentItems={dashboard.content.data}
+          accounts={dashboard.channelAccounts.data}
+          contacts={dashboard.contacts.data}
+          policies={dashboard.policies.data}
+          resources={{
+            brands: dashboard.brands.status,
+            evidence: dashboard.evidenceSources.status,
+            facts: dashboard.facts.status,
+            campaigns: dashboard.campaigns.status,
+            content: dashboard.content.status,
+            accounts: dashboard.channelAccounts.status,
+            policies: dashboard.policies.status,
+          }}
+        />
+      </div>
+    );
+  }
   const visibleItems = items.filter((item) => {
     if (view === "blocked") return item.statusTone === "warning" || item.statusTone === "danger";
     if (view === "ready") return item.statusTone === "success" || item.statusTone === "info";
@@ -1185,13 +1453,10 @@ function ContentView({
           title={mode === "demo" ? "平台最终变体" : "内容条目"}
           meta={`${visibleItems.length} 个当前结果`}
         />
-        {mode === "live" ? (
-          <ResourceState resource={resource} empty={items.length === 0} emptyLabel="暂无内容资产" />
-        ) : null}
         <div className="asset-grid">
           {visibleItems.map((item) => (
             <article className="asset-card" key={item.id}>
-              <img src={item.image} alt="旅行内容素材" />
+              <img src={item.image} alt={item.imageAlt} />
               <div className="asset-body">
                 <div className="asset-meta">
                   <span>{item.type}</span>
@@ -1213,7 +1478,6 @@ function ContentView({
             </article>
           ))}
         </div>
-        {mode === "live" ? <SourceCaption endpoint="GET /api/content" /> : null}
       </section>
     </div>
   );
@@ -1221,6 +1485,9 @@ function ContentView({
 
 function PublishingView({
   mode,
+  api,
+  tenantId,
+  capabilities,
   accounts,
   rows,
   dashboard,
@@ -1230,6 +1497,9 @@ function PublishingView({
   onToggleKillSwitch,
 }: {
   mode: ConsoleMode;
+  api: GeoApi;
+  tenantId: string;
+  capabilities: readonly string[];
   accounts: AccountRow[];
   rows: PublicationRow[];
   dashboard: LiveDashboard;
@@ -1238,6 +1508,12 @@ function PublishingView({
   killSwitchPending: boolean;
   onToggleKillSwitch: () => void;
 }) {
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [cancelledJobs, setCancelledJobs] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    setSelectedJobId(null);
+    setCancelledJobs(new Set());
+  }, [tenantId]);
   return (
     <div className="view-stack">
       {mode === "live" ? (
@@ -1318,7 +1594,7 @@ function PublishingView({
         ) : null}
         {rows.length === 0 ? null : (
           <div className="table-scroll">
-            <table>
+            <table className="publishing-table">
               <thead>
                 <tr>
                   <th>作业 / 变体</th>
@@ -1343,31 +1619,19 @@ function PublishingView({
                     <td>
                       <StatusBadge tone="info">{row.level}</StatusBadge>
                     </td>
-                    <td>{row.state}</td>
+                    <td>{cancelledJobs.has(row.id) ? "已取消" : row.state}</td>
                     <td>{row.evidence}</td>
                     <td>{row.time}</td>
                     <td>
-                      {row.externalUrl === null ? (
-                        <button
-                          className="icon-button"
-                          title="没有外部回读链接"
-                          aria-label={`作业 ${row.id} 无外部链接`}
-                          disabled
-                        >
-                          <ChevronRight size={17} />
-                        </button>
-                      ) : (
-                        <a
-                          className="icon-button"
-                          href={row.externalUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="打开平台回读"
-                          aria-label={`打开作业 ${row.id} 回读`}
-                        >
-                          <ChevronRight size={17} />
-                        </a>
-                      )}
+                      <button
+                        className="icon-button"
+                        title="查看作业证据"
+                        aria-label={`查看作业 ${row.id} 详情`}
+                        onClick={() => setSelectedJobId(row.id)}
+                        disabled={mode === "demo"}
+                      >
+                        <ChevronRight size={17} />
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1382,6 +1646,17 @@ function PublishingView({
           />
         ) : null}
       </section>
+      {mode === "live" ? (
+        <PublicationJobDetail
+          api={api}
+          tenantId={tenantId}
+          jobId={selectedJobId}
+          canCancel={capabilities.includes("publish:cancel")}
+          onCancelled={(job) => {
+            setCancelledJobs((current) => new Set([...current, job.id]));
+          }}
+        />
+      ) : null}
       <section className="policy-strip">
         <div>
           <LockKeyhole size={18} />
@@ -1403,16 +1678,87 @@ function PublishingView({
   );
 }
 
-function VisibilityView({
+function AutomationView({
   mode,
-  providers,
-  resource,
+  api,
+  tenantId,
+  capabilities,
+  dashboard,
+  onChanged,
+  onCampaignsRead,
 }: {
   mode: ConsoleMode;
+  api: GeoApi;
+  tenantId: string;
+  capabilities: readonly string[];
+  dashboard: LiveDashboard;
+  onChanged: () => void;
+  onCampaignsRead: (campaigns: readonly Campaign[]) => void;
+}) {
+  if (mode === "demo") {
+    return (
+      <div className="view-stack">
+        <UnsupportedState
+          title="离线演示不创建自动化批次"
+          detail="批次、运行和 target 必须来自租户会话范围内的实时 API；演示数据不会伪装成无人值守执行结果"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="view-stack">
+      <ResourceState
+        resource={dashboard.campaigns}
+        empty={dashboard.campaigns.data.length === 0}
+        emptyLabel="当前租户没有 Campaign"
+      />
+      <ResourceState
+        resource={dashboard.channelAccounts}
+        empty={dashboard.channelAccounts.data.length === 0}
+        emptyLabel="当前租户没有平台账号"
+      />
+      <ResourceState
+        resource={dashboard.automation}
+        empty={dashboard.automation.data === null}
+        emptyLabel="当前租户没有自动化控制"
+      />
+      <AutomationOperations
+        api={api}
+        tenantId={tenantId}
+        campaigns={dashboard.campaigns.data}
+        accounts={dashboard.channelAccounts.data}
+        capabilities={capabilities}
+        onChanged={onChanged}
+        onCampaignsRead={onCampaignsRead}
+      />
+    </div>
+  );
+}
+
+function VisibilityView({
+  mode,
+  api,
+  tenantId,
+  querySets,
+  capabilities,
+  onVisibilityChanged,
+  providers,
+  resource,
+  demoTenant,
+}: {
+  mode: ConsoleMode;
+  api: GeoApi;
+  tenantId: string;
+  querySets: readonly QuerySet[];
+  capabilities: readonly string[];
+  onVisibilityChanged: () => void;
   providers: ProviderRow[];
   resource: ApiResource<unknown>;
+  demoTenant: TenantDemo | undefined;
 }) {
   const [provider, setProvider] = useState<"all" | "doubao" | "qwen">("all");
+  const demoQueryRuns = demoTenant === undefined ? [] : queryRunsForTenant(demoTenant);
   const visible =
     provider === "all" ? providers : providers.filter((item) => item.providerKey === provider);
   const observations = visible.reduce((sum, item) => sum + item.samples, 0);
@@ -1448,20 +1794,18 @@ function VisibilityView({
         <StatusBadge tone="warning">
           {mode === "demo" ? "演示证据：Fixture" : "实时 KPI：默认排除 Fixture"}
         </StatusBadge>
-        <button
-          className="button-primary"
-          disabled
-          title="运行接口需要 querySetVersionId，当前后端未提供问题集目录"
-        >
-          <Zap size={16} /> 新建评测运行
-        </button>
       </div>
       {mode === "live" ? (
-        <ResourceState
-          resource={resource}
-          empty={providers.length === 0}
-          emptyLabel="暂无可见性观测"
-        />
+        <>
+          <ResourceState resource={resource} empty={false} emptyLabel="暂无可见性观测" />
+          <VisibilityOperations
+            api={api}
+            tenantId={tenantId}
+            querySets={querySets}
+            capabilities={capabilities}
+            onChanged={onVisibilityChanged}
+          />
+        </>
       ) : null}
       <section className="metric-band visibility-metrics">
         <div className="metric-cell">
@@ -1496,7 +1840,7 @@ function VisibilityView({
             meta="同一 query 按 surface 重复采样，不与 Google 排名合并"
           />
           <div className="table-scroll">
-            <table>
+            <table className="visibility-query-table">
               <thead>
                 <tr>
                   <th>Prompt</th>
@@ -1507,7 +1851,7 @@ function VisibilityView({
                 </tr>
               </thead>
               <tbody>
-                {queryRuns.map((run) => (
+                {demoQueryRuns.map((run) => (
                   <tr key={run.prompt}>
                     <td>
                       <strong>{run.prompt}</strong>
@@ -1531,7 +1875,7 @@ function VisibilityView({
             meta="每行保持 provider / surface / model / search / method / evidence，不与 Google 排名合并"
           />
           <div className="table-scroll">
-            <table>
+            <table className="visibility-summary-table">
               <thead>
                 <tr>
                   <th>Provider / Surface</th>
@@ -1580,16 +1924,38 @@ function VisibilityView({
   );
 }
 
-function AuditView({ mode }: { mode: ConsoleMode }) {
+function AuditView({
+  mode,
+  audits,
+  demoTenant,
+  api,
+  canExport,
+}: {
+  mode: ConsoleMode;
+  audits: ApiResource<readonly AuditArtifact[]>;
+  demoTenant: TenantDemo | undefined;
+  api: GeoApi;
+  canExport: boolean;
+}) {
+  const registeredPhone = demoTenant?.hotline.trim() || "当前租户未登记";
+  const finalDigit = registeredPhone.at(-1);
+  const detectedPhone =
+    finalDigit !== undefined && /^[0-9]$/.test(finalDigit)
+      ? `${registeredPhone.slice(0, -1)}${(Number(finalDigit) + 1) % 10}`
+      : "未登记号码";
   if (mode === "live") {
     return (
       <section className="panel">
-        <PanelHeading title="审计运行" meta="实时数据边界" />
-        <UnsupportedState
-          title="审计列表接口尚未提供"
-          detail="现有 API 只能按 artifactId 查询单个审计；运营台不会显示演示阻断项"
+        <PanelHeading title="审计运行" meta="不可变 artifact、payload hash 与规则发现" />
+        <ResourceState
+          resource={audits}
+          empty={audits.data.length === 0}
+          emptyLabel="暂无审计运行"
         />
-        <SourceCaption endpoint="支持：GET /api/audits/:artifactId · 缺少：审计列表" />
+        {audits.data.length === 0 ? null : (
+          <AuditOperationsList audits={audits.data} api={api} canExport={canExport} />
+        )}
+        <SourceCaption endpoint="GET /api/audits" />
       </section>
     );
   }
@@ -1620,7 +1986,7 @@ function AuditView({ mode }: { mode: ConsoleMode }) {
       <section className="panel audit-detail">
         <PanelHeading
           title="contact.phone.unapproved"
-          meta="演示规则 travel-v1"
+          meta={`演示规则 · ${demoTenant?.industry ?? "通用行业"}`}
           action={<StatusBadge tone="danger">阻断</StatusBadge>}
         />
         <dl className="detail-grid">
@@ -1630,11 +1996,11 @@ function AuditView({ mode }: { mode: ConsoleMode }) {
           </div>
           <div>
             <dt>检测值</dt>
-            <dd className="mono danger-text">4001133987</dd>
+            <dd className="mono danger-text">{detectedPhone}</dd>
           </div>
           <div>
             <dt>登记值</dt>
-            <dd className="mono">4001133986</dd>
+            <dd className="mono">{registeredPhone}</dd>
           </div>
           <div>
             <dt>Payload hash</dt>
@@ -1652,7 +2018,7 @@ function AuditView({ mode }: { mode: ConsoleMode }) {
         <div className="code-evidence">
           <span>payload.bodyMarkdown</span>
           <pre>
-            24小时咨询：<mark>4001133987</mark>
+            24小时咨询：<mark>{detectedPhone}</mark>
           </pre>
         </div>
         <div className="detail-actions">
@@ -1848,28 +2214,44 @@ interface CampaignFormValue {
   readonly brandId: string;
 }
 
+interface CampaignBrandOption {
+  readonly brandId: string;
+  readonly industry: string;
+  readonly label: string;
+}
+
 function NewCampaignDialog({
   mode,
   brandOptions,
+  canCreate,
+  defaultIndustry,
   onClose,
   onCreate,
 }: {
   mode: ConsoleMode;
-  brandOptions: readonly { brandId: string; label: string }[];
+  brandOptions: readonly CampaignBrandOption[];
+  canCreate: boolean;
+  defaultIndustry: string;
   onClose: () => void;
   onCreate: (value: CampaignFormValue) => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
   const [objective, setObjective] = useState("");
-  const [industry, setIndustry] = useState("travel");
+  const [industry, setIndustry] = useState(defaultIndustry);
   const [brandId, setBrandId] = useState(brandOptions[0]?.brandId ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const liveBlocked = mode === "live" && brandOptions.length === 0;
+  const liveBlocked = mode === "live" && (!canCreate || brandOptions.length === 0);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (name.trim().length === 0 || topic.trim().length === 0 || liveBlocked) return;
+    if (
+      name.trim().length === 0 ||
+      topic.trim().length === 0 ||
+      industry.trim().length === 0 ||
+      liveBlocked
+    )
+      return;
     setSubmitting(true);
     setError(null);
     try {
@@ -1877,7 +2259,7 @@ function NewCampaignDialog({
         name: name.trim(),
         topic: topic.trim(),
         objective: objective.trim() || topic.trim(),
-        industry,
+        industry: industry.trim(),
         brandId,
       });
       onClose();
@@ -1914,8 +2296,8 @@ function NewCampaignDialog({
           )}
           {liveBlocked ? (
             <UnsupportedState
-              title="无法确定 brandId"
-              detail="后端没有品牌目录接口，且当前 Campaign 列表中没有可复用品牌"
+              title="当前租户不可创建 Campaign"
+              detail="需要 content:write 权限、可用的品牌目录和已就绪的 Campaign 资源"
             />
           ) : null}
           <label>
@@ -1951,7 +2333,12 @@ function NewCampaignDialog({
                 品牌
                 <select
                   value={brandId}
-                  onChange={(event) => setBrandId(event.target.value)}
+                  onChange={(event) => {
+                    const nextBrandId = event.target.value;
+                    setBrandId(nextBrandId);
+                    const nextBrand = brandOptions.find((brand) => brand.brandId === nextBrandId);
+                    if (nextBrand !== undefined) setIndustry(nextBrand.industry);
+                  }}
                   required
                 >
                   {brandOptions.map((brand) => (
@@ -1964,16 +2351,33 @@ function NewCampaignDialog({
             </>
           ) : null}
           <label>
-            行业包
-            <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
-              <option value="travel">旅游 travel-v1</option>
-            </select>
+            行业
+            <input
+              list="campaign-industry-options"
+              value={industry}
+              onChange={(event) => setIndustry(event.target.value)}
+              placeholder="例如 travel、education、retail"
+              required
+            />
+            <datalist id="campaign-industry-options">
+              <option value="general" />
+              <option value="travel" />
+              <option value="hospitality" />
+              <option value="education" />
+              <option value="professional_services" />
+              <option value="retail" />
+              <option value="technology" />
+            </datalist>
           </label>
           <div className="modal-actions">
             <button type="button" className="button-secondary" onClick={onClose}>
               取消
             </button>
-            <button type="submit" className="button-primary" disabled={submitting || liveBlocked}>
+            <button
+              type="submit"
+              className="button-primary"
+              disabled={submitting || liveBlocked || industry.trim().length === 0}
+            >
               {submitting ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
               {submitting ? "正在创建" : "创建 Campaign"}
             </button>
@@ -2099,22 +2503,28 @@ function demoCampaignRows(items: readonly CampaignDemo[]): CampaignRow[] {
     ...campaign,
     brandId: null,
     objective: campaign.topic,
-    industry: "travel",
   }));
 }
 
-function liveContentRows(items: readonly ContentItem[]): ContentRow[] {
-  return items.map((item, index) => ({
-    id: item.id,
-    title: item.title,
-    type: contentTypeLabel(item.contentType),
-    platform: null,
-    status: stateLabel(item.state),
-    statusTone: stateTone(item.state),
-    updatedAt: item.latestVersion === null ? null : `版本 ${item.latestVersion}`,
-    image: contentImages[index % contentImages.length] ?? contentImages[0] ?? "",
-    campaignId: item.campaignId,
-  }));
+function liveContentRows(items: readonly ContentItem[], brands: readonly Brand[]): ContentRow[] {
+  const industryByBrand = new Map(brands.map((brand) => [brand.id, brand.industry]));
+  return items.map((item, index) => {
+    const images = contentImagesForIndustry(industryByBrand.get(item.brandId) ?? "general");
+    return {
+      id: item.id,
+      title: item.title,
+      type: contentTypeLabel(item.contentType),
+      platform: null,
+      status: stateLabel(item.state),
+      statusTone: stateTone(item.state),
+      updatedAt: item.latestVersion === null ? null : `版本 ${item.latestVersion}`,
+      image: images[index % images.length] ?? images[0] ?? "",
+      imageAlt: isTravelIndustry(industryByBrand.get(item.brandId) ?? "general")
+        ? "旅行内容素材缩略图"
+        : "内容素材缩略图",
+      campaignId: item.campaignId,
+    };
+  });
 }
 
 function livePublicationRows(
@@ -2133,8 +2543,8 @@ function livePublicationRows(
       state: stateLabel(job.state),
       evidence: receipt === undefined ? "尚无回执" : evidenceLabel(receipt.evidenceType),
       time: formatDateTime(job.updatedAt),
-      confirmed: receipt?.confirmed ?? null,
-      externalUrl: receipt?.externalUrl ?? null,
+      confirmed: receipt?.evidenceType === "preview" ? false : (receipt?.confirmed ?? null),
+      externalUrl: receipt?.evidenceType === "preview" ? null : (receipt?.externalUrl ?? null),
     };
   });
 }
@@ -2214,7 +2624,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
         if (!active) return;
         setAuth({
           status: "unauthenticated",
-          error: isAuthenticationError(error) ? null : apiErrorText(error),
+          error: isAuthenticationError(error) ? null : sessionBootstrapErrorText(error),
           tenantSlug: undefined,
         });
       });
@@ -2286,13 +2696,17 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
     mode === "demo" ? demoCampaignRows(demoCampaigns) : liveCampaignRows(dashboard.campaigns.data);
   const contentRows: ContentRow[] =
     mode === "demo"
-      ? demoContentItems.map((item) => ({ ...item, campaignId: null }))
-      : liveContentRows(dashboard.content.data);
+      ? demoContentItems.map((item) => ({
+          ...item,
+          imageAlt: "旅行内容素材缩略图",
+          campaignId: null,
+        }))
+      : liveContentRows(dashboard.content.data, dashboard.brands.data);
   const publicationRows: PublicationRow[] =
     mode === "demo"
       ? demoPublicationRows.map((row) => ({
           ...row,
-          confirmed: row.evidence === "Preview",
+          confirmed: false,
           externalUrl: null,
         }))
       : livePublicationRows(dashboard.publicationJobs.data, dashboard.receipts.data);
@@ -2316,7 +2730,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
       : liveProviderRows(dashboard.visibility.data);
   const accountRows: AccountRow[] =
     mode === "demo"
-      ? demoPlatformAccounts.map((item) => ({
+      ? (demoTenant === undefined ? [] : platformAccountsForTenant(demoTenant)).map((item) => ({
           id: item.platform,
           platform: item.platform,
           account: item.account,
@@ -2366,19 +2780,33 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
       dashboard.automation.data !== null &&
       session?.actor.capabilities.includes("automation:manage") === true);
   const title = routeTitles[location.pathname] ?? routeTitles["/overview"];
-  const brandOptions = [
-    ...new Map(
-      campaignRows
-        .filter((item) => item.brandId !== null)
-        .map((item) => [
-          item.brandId as string,
-          {
-            brandId: item.brandId as string,
-            label: `${shortId(item.brandId as string)} · ${item.name}`,
-          },
-        ]),
-    ).values(),
-  ];
+  const brandOptions: CampaignBrandOption[] =
+    mode === "demo"
+      ? []
+      : [...dashboard.brands.data]
+          .sort((left, right) => Number(right.isPrimary) - Number(left.isPrimary))
+          .map((brand) => ({
+            brandId: brand.id,
+            industry: brand.industry,
+            label: `${brand.displayName}${brand.isPrimary ? " · 主品牌" : ""}`,
+          }));
+  const campaignCreateBlockReason =
+    mode === "demo"
+      ? null
+      : session?.actor.capabilities.includes("content:write") !== true
+        ? "需要 content:write 权限"
+        : dashboard.brands.status !== "ready"
+          ? "品牌目录尚未就绪"
+          : brandOptions.length === 0
+            ? "请先为当前租户创建品牌"
+            : dashboard.campaigns.status !== "ready"
+              ? "Campaign 资源尚未就绪"
+              : null;
+  const canCreateCampaign = campaignCreateBlockReason === null;
+  const defaultCampaignIndustry =
+    mode === "demo"
+      ? (demoTenant?.industry ?? "general")
+      : (brandOptions[0]?.industry ?? tenant?.industry ?? "general");
   const dashboardErrors =
     mode === "live"
       ? Object.values(dashboard).filter(
@@ -2658,15 +3086,8 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
             <button
               className="button-primary"
               onClick={() => setNewCampaignOpen(true)}
-              disabled={
-                mode === "live" &&
-                (dashboard.campaigns.status !== "ready" || brandOptions.length === 0)
-              }
-              title={
-                mode === "live" && brandOptions.length === 0
-                  ? "没有品牌目录或可复用 brandId"
-                  : undefined
-              }
+              disabled={!canCreateCampaign}
+              title={campaignCreateBlockReason ?? undefined}
             >
               <Plus size={16} /> 新建 Campaign
             </button>
@@ -2720,18 +3141,44 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                   contactsResource={dashboard.contacts}
                   contactsEmpty={liveContacts.length === 0}
                   discoveredTenants={knownTenants}
+                  brands={dashboard.brands.data}
+                  members={dashboard.members.data}
+                  policies={dashboard.policies.data}
+                  contacts={dashboard.contacts.data}
+                  accounts={dashboard.channelAccounts.data}
+                  principals={dashboard.servicePrincipals.data}
+                  querySets={dashboard.querySets.data}
+                  brandResource={dashboard.brands}
+                  memberResource={dashboard.members}
+                  policyResource={dashboard.policies}
+                  querySetResource={dashboard.querySets}
+                  capabilities={session?.actor.capabilities ?? []}
+                  api={api}
+                  onChanged={() => setRefreshVersion((version) => version + 1)}
                 />
               }
             />
             <Route
               path="/content"
-              element={<ContentView mode={mode} items={contentRows} resource={dashboard.content} />}
+              element={
+                <ContentView
+                  mode={mode}
+                  items={contentRows}
+                  api={api}
+                  tenantId={currentTenantId}
+                  capabilities={session?.actor.capabilities ?? []}
+                  dashboard={dashboard}
+                />
+              }
             />
             <Route
               path="/publishing"
               element={
                 <PublishingView
                   mode={mode}
+                  api={api}
+                  tenantId={currentTenantId}
+                  capabilities={session?.actor.capabilities ?? []}
                   accounts={accountRows}
                   rows={publicationRows}
                   dashboard={dashboard}
@@ -2746,16 +3193,60 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
               }
             />
             <Route
-              path="/visibility"
+              path="/automation"
               element={
-                <VisibilityView
+                <AutomationView
+                  key={currentTenantId}
                   mode={mode}
-                  providers={providerRows}
-                  resource={dashboard.visibility}
+                  api={api}
+                  tenantId={currentTenantId}
+                  capabilities={session?.actor.capabilities ?? []}
+                  dashboard={dashboard}
+                  onChanged={() => setRefreshVersion((value) => value + 1)}
+                  onCampaignsRead={(campaigns) =>
+                    setDashboard((current) => ({
+                      ...current,
+                      campaigns: {
+                        endpoint: "GET /api/campaigns",
+                        data: campaigns,
+                        error: null,
+                        status: "ready",
+                      },
+                      loadedAt: new Date().toISOString(),
+                    }))
+                  }
                 />
               }
             />
-            <Route path="/audit" element={<AuditView mode={mode} />} />
+            <Route
+              path="/visibility"
+              element={
+                <VisibilityView
+                  key={currentTenantId}
+                  mode={mode}
+                  api={api}
+                  tenantId={currentTenantId}
+                  querySets={dashboard.querySets.data}
+                  capabilities={session?.actor.capabilities ?? []}
+                  onVisibilityChanged={() => setRefreshVersion((value) => value + 1)}
+                  providers={providerRows}
+                  resource={dashboard.visibility}
+                  demoTenant={demoTenant}
+                />
+              }
+            />
+            <Route
+              path="/audit"
+              element={
+                <AuditView
+                  mode={mode}
+                  audits={dashboard.audits}
+                  demoTenant={demoTenant}
+                  api={api}
+                  canExport={session?.actor.capabilities.includes("publish:request") ?? false}
+                />
+              }
+            />
             <Route
               path="/settings"
               element={
@@ -2773,8 +3264,11 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
       </div>
       {newCampaignOpen ? (
         <NewCampaignDialog
+          key={currentTenantId}
           mode={mode}
           brandOptions={brandOptions}
+          canCreate={canCreateCampaign}
+          defaultIndustry={defaultCampaignIndustry}
           onClose={() => setNewCampaignOpen(false)}
           onCreate={async (value) => {
             if (mode === "demo") {
@@ -2783,6 +3277,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                   id: `cmp-${Date.now()}`,
                   name: value.name,
                   topic: value.topic,
+                  industry: value.industry,
                   mode: "Shadow",
                   articles: 0,
                   passRate: 0,

@@ -111,15 +111,8 @@ export async function invokeGeoMcpTool(options: {
         brandId: String(input.brandId),
         campaignId: String(input.campaignId),
         brief: String(input.brief),
-        ...(input.fixtureDraft === undefined
-          ? {}
-          : {
-              fixtureDraft: input.fixtureDraft as {
-                title: string;
-                summary: string;
-                bodyMarkdown: string;
-              },
-            }),
+        idempotencyKey: String(input.idempotencyKey),
+        ...(input.fixtureMode === undefined ? {} : { fixtureMode: input.fixtureMode === true }),
       });
       break;
     case "geo_variant_preview":

@@ -2,12 +2,29 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   actorContextSchema,
+  automationRunStageSchema,
+  automationRunStateSchema,
+  automationRunTargetStateSchema,
   capabilitySchema,
+  executionLevelSchema,
   idSchema,
+  isoDateTimeSchema,
+  platformSchema,
+  publicationJobStateSchema,
   publicationVariantPayloadSchema,
   tenantRoleSchema,
   type ActorContext,
+  type AutomationRunStage,
+  type AutomationRunTargetState,
+  type PublicationVariantPayload,
+  type TenantContact,
 } from "@geo/contracts";
+import {
+  compileAuditPolicy,
+  geoAuditPolicyDocumentSchema,
+  renderCanonicalContent,
+  type FactSnapshot,
+} from "@geo/core";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 
@@ -20,6 +37,13 @@ import type {
   VariantPreviewInput,
   VisibilityRequestInput,
 } from "./api-client.js";
+import type {
+  AutomationGeoApiClient,
+  AutomationLeaseMutationResult,
+  AutomationPublicationJobView,
+  AutomationRunLease,
+  AutomationRunView,
+} from "./automation-api.js";
 
 const SESSION_COOKIE = "geo_session";
 const CSRF_COOKIE = "geo_csrf";
@@ -52,17 +76,32 @@ const loginResponseSchema = z.object({
 const factSchema = z.object({
   id: idSchema,
   brandId: idSchema,
+  normalizedKey: z.string().min(1),
   claim: z.string(),
   status: z.enum(["draft", "verified", "rejected", "expired"]),
   evidenceSourceIds: z.array(idSchema),
+  validFrom: z.string().datetime({ offset: true }),
   validUntil: z.string().datetime({ offset: true }).nullable(),
 });
 
 const contactSchema = z.object({
   id: idSchema,
+  tenantId: idSchema,
   type: z.enum(["phone", "wechat", "email", "website", "address"]),
   label: z.string(),
   value: z.string(),
+  isPrimary: z.boolean(),
+  validFrom: z.string().datetime({ offset: true }),
+  validUntil: z.string().datetime({ offset: true }).nullable(),
+});
+
+const policyBundleSchema = z.object({
+  id: idSchema,
+  version: z.string().min(1),
+  status: z.enum(["draft", "active", "retired"]),
+  policyHash: z.string().regex(/^[a-f0-9]{64}$/u),
+  document: geoAuditPolicyDocumentSchema,
+  effectiveAt: z.string().datetime({ offset: true }),
 });
 
 const contentVersionSchema = z.object({
@@ -84,6 +123,86 @@ const publicationAuthorizationSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+const automationStatusSchema = z.object({
+  control: z.object({
+    mode: z.enum(["shadow", "supervised", "unattended", "paused", "stopped"]),
+    killSwitchEnabled: z.boolean(),
+  }),
+  circuits: z.array(
+    z.object({
+      scopeType: z.enum(["tenant", "platform", "account", "campaign", "topic"]),
+      scopeKey: z.string(),
+      state: z.enum(["closed", "open", "half_open"]),
+    }),
+  ),
+});
+
+const automationTargetViewSchema = z.object({
+  id: idSchema,
+  runId: idSchema,
+  channelAccountId: idSchema,
+  platform: platformSchema,
+  state: automationRunTargetStateSchema,
+  variantId: idSchema.nullable(),
+  auditRunId: idSchema.nullable(),
+  auditArtifactId: idSchema.nullable(),
+  publicationJobId: idSchema.nullable(),
+  lastErrorCode: z.string().nullable(),
+  lastErrorMessage: z.string().nullable(),
+  completedAt: isoDateTimeSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+
+const automationRunViewSchema = z.object({
+  id: idSchema,
+  batchId: idSchema,
+  campaignId: idSchema,
+  brandId: idSchema,
+  slotKey: z.string().min(1),
+  topicKey: z.string().min(1),
+  brief: z.string().min(1),
+  state: automationRunStateSchema,
+  stage: automationRunStageSchema,
+  availableAt: isoDateTimeSchema,
+  attemptCount: z.number().int().positive(),
+  maxAttempts: z.number().int().positive(),
+  leaseOwner: z.string().nullable(),
+  leaseExpiresAt: isoDateTimeSchema.nullable(),
+  heartbeatAt: isoDateTimeSchema.nullable(),
+  checkpoint: z.record(z.string(), z.unknown()),
+  contentItemId: idSchema.nullable(),
+  contentVersionId: idSchema.nullable(),
+  lastErrorCode: z.string().nullable(),
+  lastErrorMessage: z.string().nullable(),
+  completedAt: isoDateTimeSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+  targets: z.array(automationTargetViewSchema),
+});
+
+const automationRunLeaseSchema = automationRunViewSchema.extend({
+  tenantGate: z.object({ allowed: z.literal(true), evaluatedAt: isoDateTimeSchema }),
+});
+
+const automationLeaseMutationSchema = z.object({
+  accepted: z.boolean(),
+  reason: z.string().min(1),
+  leaseExpiresAt: isoDateTimeSchema.nullable(),
+});
+
+const automationPublicationJobSchema = z.object({
+  id: idSchema,
+  auditArtifactId: idSchema,
+  variantId: idSchema,
+  channelAccountId: idSchema,
+  platform: platformSchema,
+  executionLevel: executionLevelSchema,
+  state: publicationJobStateSchema,
+  lastErrorCode: z.string().nullable(),
+  updatedAt: isoDateTimeSchema,
+});
+
 interface ApiSession {
   readonly credentialHash: string;
   readonly cookie: string;
@@ -99,10 +218,56 @@ interface PendingGrant {
   readonly expiresAtMs: number;
 }
 
+interface AuditCheckpoint {
+  readonly auditArtifactId: string;
+  readonly channelAccountId: string;
+  readonly status: "passed" | "failed";
+}
+
 type FetchLike = typeof fetch;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function briefTerms(value: string): ReadonlySet<string> {
+  const normalized = value.normalize("NFKC").toLocaleLowerCase("zh-CN");
+  const terms = new Set(normalized.match(/[a-z0-9]+|\p{Script=Han}+/gu) ?? []);
+  for (const term of [...terms]) {
+    if (!/^\p{Script=Han}+$/u.test(term)) continue;
+    const characters = [...term];
+    for (let index = 0; index < characters.length - 1; index += 1) {
+      terms.add(`${characters[index]}${characters[index + 1]}`);
+    }
+  }
+  return terms;
+}
+
+function factRelevance(brief: ReadonlySet<string>, fact: z.infer<typeof factSchema>): number {
+  const factTerms = briefTerms(`${fact.normalizedKey} ${fact.claim}`);
+  let matches = 0;
+  for (const term of brief) {
+    if (term.length > 1 && factTerms.has(term)) matches += 1;
+  }
+  return matches;
+}
+
+function contentTypeForBrief(
+  brief: string,
+): "question_answer" | "guide" | "local_service" | "comparison" | "risk_avoidance" {
+  if (/risk|avoid|warning|避坑|注意|风险|保证|资质|真假|投诉|骗局/iu.test(brief)) {
+    return "risk_avoidance";
+  }
+  if (/contact|phone|wechat|电话|微信|联系|客服|热线|地址/iu.test(brief)) {
+    return "local_service";
+  }
+  if (/compare|comparison|versus|\bvs\b|对比|比较|哪家|推荐|选择/iu.test(brief)) {
+    return "comparison";
+  }
+  if (/\?|？|what|how|whether|什么|如何|怎么|是否|吗/iu.test(brief)) {
+    return "question_answer";
+  }
+  return "guide";
 }
 
 function safeTokenEqual(left: string, right: string): boolean {
@@ -233,6 +398,31 @@ export class GeoApiSessionRegistry {
     return actorContextSchema.parse({ ...value, requestId });
   }
 
+  async automationPrincipals(): Promise<readonly Readonly<ActorContext>[]> {
+    const principals: Readonly<ActorContext>[] = [];
+    let failedSessions = 0;
+    for (const credential of this.#credentials) {
+      let session: ApiSession;
+      try {
+        session = await this.#sessionForCredential(credential);
+      } catch {
+        failedSessions += 1;
+        continue;
+      }
+      if (!session.principal.capabilities.includes("automation:execute")) continue;
+      principals.push(
+        actorContextSchema.parse({
+          ...session.principal,
+          requestId: "agent-mcp-automation-principal",
+        }),
+      );
+    }
+    if (principals.length === 0 && failedSessions === this.#credentials.length) {
+      throw new GeoApiRequestError("MCP_AUTOMATION_PRINCIPAL_DISCOVERY_FAILED", 503);
+    }
+    return principals;
+  }
+
   async sessionForPrincipal(principal: Readonly<ActorContext>): Promise<ApiSession> {
     const credential = this.#credentialByPrincipal.get(principalKey(principal));
     if (credential === undefined)
@@ -284,10 +474,11 @@ export class GeoApiSessionRegistry {
   }
 }
 
-export class HttpInternalGeoApiClient implements InternalGeoApiClient {
+export class HttpInternalGeoApiClient implements InternalGeoApiClient, AutomationGeoApiClient {
   readonly #sessions: GeoApiSessionRegistry;
   readonly #fetch: FetchLike;
   readonly #pendingGrants = new Map<string, PendingGrant>();
+  readonly #auditCheckpoints = new Map<string, AuditCheckpoint>();
 
   constructor(options: { sessions: GeoApiSessionRegistry; fetchImpl?: FetchLike }) {
     this.#sessions = options.sessions;
@@ -297,7 +488,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
   async #request(
     principal: Readonly<ActorContext>,
     path: string,
-    options: { method?: "GET" | "POST"; body?: unknown } = {},
+    options: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal } = {},
   ): Promise<unknown> {
     const session = await this.#sessions.sessionForPrincipal(principal);
     const url = new URL(path.replace(/^\//u, ""), this.#sessions.baseUrl);
@@ -305,18 +496,33 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
       throw new GeoApiRequestError("GEO_API_DESTINATION_DENIED", 403);
     }
     const method = options.method ?? "GET";
-    const response = await this.#fetch(url, {
-      method,
-      headers: {
-        accept: "application/json",
-        cookie: session.cookie,
-        ...(method === "POST"
-          ? { "content-type": "application/json", "x-csrf-token": session.csrfToken }
-          : {}),
-      },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
-      redirect: "error",
-    });
+    let response: Response;
+    try {
+      response = await this.#fetch(url, {
+        method,
+        headers: {
+          accept: "application/json",
+          cookie: session.cookie,
+          ...(method === "POST"
+            ? { "content-type": "application/json", "x-csrf-token": session.csrfToken }
+            : {}),
+        },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        redirect: "error",
+      });
+    } catch (error) {
+      if (
+        options.signal?.aborted === true ||
+        (typeof error === "object" &&
+          error !== null &&
+          "name" in error &&
+          error.name === "AbortError")
+      ) {
+        throw error;
+      }
+      throw new GeoApiRequestError("GEO_API_TRANSPORT_FAILED", 503);
+    }
     const declaredLength = Number(response.headers.get("content-length") ?? 0);
     if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
       throw new GeoApiRequestError("GEO_API_RESPONSE_TOO_LARGE", 502);
@@ -373,59 +579,147 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
     principal: Readonly<ActorContext>,
     input: Readonly<DraftProposalInput>,
   ): Promise<unknown> {
-    const [factsResult, contactsResult] = await Promise.all([
+    const [factsResult, contactsResult, policiesResult, automationResult] = await Promise.all([
       this.#request(
         principal,
         `/api/facts?${new URLSearchParams({ brandId: input.brandId, limit: "20" }).toString()}`,
       ),
       this.#request(principal, "/api/contacts"),
+      this.#request(principal, "/api/policies"),
+      this.#request(principal, "/api/automation"),
     ]);
     const facts = z.object({ items: z.array(factSchema) }).parse(factsResult).items;
     const contacts = z.object({ items: z.array(contactSchema) }).parse(contactsResult).items;
+    const policyBundles = z
+      .object({ items: z.array(policyBundleSchema) })
+      .parse(policiesResult).items;
+    const automation = automationStatusSchema.parse(automationResult);
+    const topicKey = `agent:${sha256(input.brief.normalize("NFKC").trim().toLocaleLowerCase("zh-CN")).slice(0, 32)}`;
+    const generationCircuitOpen = automation.circuits.some(
+      (circuit) =>
+        circuit.state !== "closed" &&
+        ((circuit.scopeType === "tenant" && circuit.scopeKey === "*") ||
+          (circuit.scopeType === "campaign" && circuit.scopeKey === input.campaignId) ||
+          (circuit.scopeType === "topic" && circuit.scopeKey === topicKey)),
+    );
+    if (
+      automation.control.killSwitchEnabled ||
+      automation.control.mode === "paused" ||
+      automation.control.mode === "stopped" ||
+      generationCircuitOpen
+    ) {
+      throw new GeoApiRequestError("AUTOMATION_GENERATION_BLOCKED", 409);
+    }
+    const now = Date.now();
+    const activePolicyBundle = policyBundles.find(
+      (bundle) => bundle.status === "active" && Date.parse(bundle.effectiveAt) <= now,
+    );
+    if (activePolicyBundle === undefined) {
+      throw new GeoApiRequestError("ACTIVE_AUDIT_POLICY_NOT_FOUND", 422);
+    }
+    const policy = compileAuditPolicy({
+      version: activePolicyBundle.version,
+      policyHash: activePolicyBundle.policyHash,
+      document: activePolicyBundle.document,
+    });
     const currentFacts = facts.filter(
       (fact) =>
         fact.status === "verified" &&
         fact.evidenceSourceIds.length > 0 &&
-        (fact.validUntil === null || Date.parse(fact.validUntil) > Date.now()),
+        Date.parse(fact.validFrom) <= now &&
+        (fact.validUntil === null || Date.parse(fact.validUntil) > now),
     );
-    const contactLine = contacts.map((contact) => `${contact.label}：${contact.value}`).join("；");
-    const suppliedBody = input.fixtureDraft?.bodyMarkdown.trim() ?? "";
-    const verifiedFactBlock = currentFacts.map((fact) => `- ${fact.claim}`).join("\n");
-    const bodyMarkdown = [
-      "## 当前可核验信息",
-      verifiedFactBlock.length > 0
-        ? verifiedFactBlock
-        : "以下草稿只使用当前租户已登记的事实。涉及日期、价格、库存、资质或服务范围时，必须在发布前核对对应证据及有效期。",
-      ...(suppliedBody.length > 0 ? [suppliedBody] : []),
-      "## 咨询与服务边界",
-      `${contactLine}。最终安排以签约前提供且仍在有效期内的材料为准；不要把历史页面、推测或模型生成内容写成当前承诺。`,
-      "## 发布前复核",
-      "逐项确认出发日期、交通、住宿、用餐、步行强度、自由活动、费用包含项和退改条件。对价格、库存、班次、签证或资质等会变化的信息，记录核验时间和来源；证据过期、联系方式不一致或服务边界不清时，内容只能退回修正，不能进入投放队列。",
-    ].join("\n\n");
-    const title = (input.fixtureDraft?.title ?? input.brief).slice(0, 30);
-    const summary = input.fixtureDraft?.summary ?? "基于租户当前事实和证据生成的待审计内容草稿。";
+    const currentContacts = contacts.filter(
+      (contact) =>
+        Date.parse(contact.validFrom) <= now &&
+        (contact.validUntil === null || Date.parse(contact.validUntil) > now),
+    );
+    const terms = briefTerms(input.brief);
+    const selectedFacts = currentFacts
+      .map((fact, index) => ({ fact, index, relevance: factRelevance(terms, fact) }))
+      .filter((candidate) => candidate.relevance > 0)
+      .sort((left, right) => right.relevance - left.relevance || left.index - right.index)
+      .slice(0, 8)
+      .map((candidate) => candidate.fact);
+    if (selectedFacts.length === 0) {
+      throw new GeoApiRequestError("NO_RELEVANT_VERIFIED_FACTS", 422);
+    }
+    const claims = selectedFacts.map((fact) => ({
+      id: fact.id,
+      text: fact.claim,
+      evidenceSourceIds: fact.evidenceSourceIds,
+      validUntil: fact.validUntil,
+    }));
+    const canonicalInput: PublicationVariantPayload = {
+      title: "placeholder",
+      summary: "placeholder",
+      bodyMarkdown: "placeholder",
+      titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+      summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
+      bodyBlocks: [
+        { type: "template", templateId: "generic.body.heading.verified" },
+        { type: "template", templateId: "generic.body.guidance.verified" },
+        ...selectedFacts.map(
+          (fact) => ({ type: "claim", claimId: fact.id, presentation: "bullet" }) as const,
+        ),
+        { type: "template", templateId: "generic.body.heading.contact" },
+        ...currentContacts.map(
+          (contact) =>
+            ({ type: "contact", contactId: contact.id, presentation: "paragraph" }) as const,
+        ),
+        { type: "template", templateId: "generic.body.guidance.contact" },
+      ],
+      tagTemplateIds: ["generic.tag.verified"],
+      media: [],
+      claims,
+      contactIds: currentContacts.map((contact) => contact.id),
+      tags: [],
+    };
+    const factSnapshot: FactSnapshot = {
+      tenantId: principal.tenantId,
+      capturedAt: new Date(now).toISOString(),
+      facts: selectedFacts.map((fact) => ({
+        id: fact.id,
+        brandId: fact.brandId,
+        text: fact.claim,
+        evidenceSourceIds: fact.evidenceSourceIds,
+        validFrom: fact.validFrom,
+        validUntil: fact.validUntil,
+      })),
+      sources: [],
+    };
+    const rendered = renderCanonicalContent({
+      payload: canonicalInput,
+      policy,
+      factSnapshot,
+      contacts: currentContacts as readonly TenantContact[],
+    });
+    if (
+      rendered.issues.length > 0 ||
+      rendered.title === null ||
+      rendered.summary === null ||
+      rendered.bodyMarkdown === null ||
+      rendered.tags === null
+    ) {
+      throw new GeoApiRequestError("CANONICAL_CONTENT_RENDER_FAILED", 422);
+    }
+    const payload: PublicationVariantPayload = {
+      ...canonicalInput,
+      title: rendered.title,
+      summary: rendered.summary,
+      bodyMarkdown: rendered.bodyMarkdown,
+      tags: [...rendered.tags],
+    };
     const result = await this.#request(principal, "/api/content", {
       method: "POST",
       body: {
         campaignId: input.campaignId,
         brandId: input.brandId,
-        title,
-        contentType: "guide",
-        topicKey: `agent:${input.campaignId}`,
-        payload: {
-          title,
-          summary,
-          bodyMarkdown,
-          media: [],
-          claims: currentFacts.map((fact) => ({
-            id: fact.id,
-            text: fact.claim,
-            evidenceSourceIds: fact.evidenceSourceIds,
-            validUntil: fact.validUntil,
-          })),
-          contactIds: contacts.map((contact) => contact.id),
-          tags: ["事实核验", "服务边界"],
-        },
+        title: payload.title,
+        contentType: contentTypeForBrief(input.brief),
+        topicKey,
+        idempotencyKey: input.idempotencyKey,
+        payload,
       },
     });
     const content = z
@@ -435,7 +729,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
       contentItemId: content.id,
       contentVersionId: content.latestVersionId,
       version: content.latestVersion,
-      providerMode: input.fixtureDraft === undefined ? "agent_proposal" : "fixture",
+      providerMode: input.fixtureMode === true ? "fixture" : "agent_proposal",
     };
   }
 
@@ -461,14 +755,19 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
     ) {
       throw new GeoApiRequestError("CHANNEL_ACCOUNT_SCOPE_DENIED", 403);
     }
-    return this.#request(principal, `/api/content/${version.contentItemId}/variants`, {
-      method: "POST",
-      body: {
-        contentVersionId: version.id,
-        channelAccountId: input.channelAccountId,
-        payload: version.payload,
+    const result = await this.#request(
+      principal,
+      `/api/content/${version.contentItemId}/variants`,
+      {
+        method: "POST",
+        body: {
+          contentVersionId: version.id,
+          channelAccountId: input.channelAccountId,
+        },
       },
-    });
+    );
+    const variantId = z.object({ id: idSchema }).parse(result).id;
+    return { ...(result as Readonly<Record<string, unknown>>), variantId };
   }
 
   async requestAudit(
@@ -482,6 +781,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
     );
     const parsed = z
       .object({
+        auditRunId: idSchema,
         artifact: z.object({
           id: idSchema,
           status: z.enum(["passed", "failed"]),
@@ -491,8 +791,15 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
         publicationAuthorization: publicationAuthorizationSchema.nullable(),
       })
       .parse(result);
+    const key = grantKey(principal, input.variantId);
+    this.#pendingGrants.delete(key);
+    this.#auditCheckpoints.set(key, {
+      auditArtifactId: parsed.artifact.id,
+      channelAccountId: parsed.artifact.channelAccountId,
+      status: parsed.artifact.status,
+    });
     if (parsed.publicationAuthorization !== null) {
-      this.#pendingGrants.set(grantKey(principal, input.variantId), {
+      this.#pendingGrants.set(key, {
         grantId: parsed.publicationAuthorization.grantId,
         token: parsed.publicationAuthorization.token,
         channelAccountId: parsed.artifact.channelAccountId,
@@ -500,7 +807,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
       });
     }
     return {
-      auditRunId: parsed.artifact.id,
+      auditRunId: parsed.auditRunId,
       auditArtifactId: parsed.artifact.id,
       status: parsed.artifact.status,
       findings: parsed.artifact.findings,
@@ -513,6 +820,39 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
     input: Readonly<PublicationRequestInput>,
   ): Promise<unknown> {
     const key = grantKey(principal, input.variantId);
+    const checkpoint = this.#auditCheckpoints.get(key);
+    if (checkpoint?.status === "passed" && checkpoint.channelAccountId === input.channelAccountId) {
+      const replayResult = await this.#request(principal, "/api/publication-replays/resolve", {
+        method: "POST",
+        body: {
+          idempotencyKey: input.idempotencyKey,
+          variantId: input.variantId,
+          auditArtifactId: checkpoint.auditArtifactId,
+          channelAccountId: input.channelAccountId,
+          executionLevel: input.executionLevel,
+        },
+      });
+      const replay = z
+        .object({
+          publication: z
+            .object({
+              publicationJobId: idSchema,
+              publicationOutboxEventId: idSchema,
+              wasCreated: z.literal(false),
+            })
+            .nullable(),
+        })
+        .parse(replayResult).publication;
+      if (replay !== null) {
+        this.#pendingGrants.delete(key);
+        return {
+          publicationRequestId: replay.publicationJobId,
+          publicationJobId: replay.publicationJobId,
+          outboxEventId: replay.publicationOutboxEventId,
+          wasCreated: false,
+        };
+      }
+    }
     const grant = this.#pendingGrants.get(key);
     if (
       grant === undefined ||
@@ -554,6 +894,195 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient {
       method: "POST",
       body: input,
     });
+  }
+
+  async claimAutomationRuns(
+    principal: Readonly<ActorContext>,
+    input: {
+      readonly producerId: string;
+      readonly limit: number;
+      readonly leaseSeconds: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<readonly AutomationRunLease[]> {
+    const result = await this.#request(principal, "/api/automation-runs/claim", {
+      method: "POST",
+      body: {
+        producerId: input.producerId,
+        limit: input.limit,
+        leaseSeconds: input.leaseSeconds,
+      },
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    return z.object({ items: z.array(automationRunLeaseSchema) }).parse(result)
+      .items as readonly AutomationRunLease[];
+  }
+
+  async getAutomationRun(
+    principal: Readonly<ActorContext>,
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<AutomationRunView> {
+    return automationRunViewSchema.parse(
+      await this.#request(principal, `/api/automation-runs/${encodeURIComponent(runId)}`, {
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    ) as AutomationRunView;
+  }
+
+  async heartbeatAutomationRun(
+    principal: Readonly<ActorContext>,
+    runId: string,
+    input: {
+      readonly producerId: string;
+      readonly attempt: number;
+      readonly stage: AutomationRunStage;
+      readonly checkpoint: Readonly<Record<string, unknown>>;
+      readonly leaseSeconds: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<AutomationLeaseMutationResult> {
+    return automationLeaseMutationSchema.parse(
+      await this.#request(
+        principal,
+        `/api/automation-runs/${encodeURIComponent(runId)}/heartbeat`,
+        {
+          method: "POST",
+          body: {
+            producerId: input.producerId,
+            attempt: input.attempt,
+            stage: input.stage,
+            checkpoint: input.checkpoint,
+            leaseSeconds: input.leaseSeconds,
+          },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
+      ),
+    );
+  }
+
+  async checkpointAutomationDraft(
+    principal: Readonly<ActorContext>,
+    runId: string,
+    input: {
+      readonly producerId: string;
+      readonly attempt: number;
+      readonly contentItemId: string;
+      readonly contentVersionId: string;
+      readonly checkpoint: Readonly<Record<string, unknown>>;
+      readonly leaseSeconds: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<AutomationLeaseMutationResult> {
+    return automationLeaseMutationSchema.parse(
+      await this.#request(
+        principal,
+        `/api/automation-runs/${encodeURIComponent(runId)}/draft-checkpoint`,
+        {
+          method: "POST",
+          body: {
+            producerId: input.producerId,
+            attempt: input.attempt,
+            contentItemId: input.contentItemId,
+            contentVersionId: input.contentVersionId,
+            checkpoint: input.checkpoint,
+            leaseSeconds: input.leaseSeconds,
+          },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
+      ),
+    );
+  }
+
+  async checkpointAutomationTarget(
+    principal: Readonly<ActorContext>,
+    runId: string,
+    targetId: string,
+    input: {
+      readonly producerId: string;
+      readonly attempt: number;
+      readonly state: Exclude<AutomationRunTargetState, "pending" | "cancelled">;
+      readonly variantId?: string;
+      readonly auditRunId?: string;
+      readonly auditArtifactId?: string;
+      readonly publicationJobId?: string;
+      readonly errorCode?: string;
+      readonly errorMessage?: string;
+      readonly checkpoint: Readonly<Record<string, unknown>>;
+      readonly leaseSeconds: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<AutomationLeaseMutationResult> {
+    return automationLeaseMutationSchema.parse(
+      await this.#request(
+        principal,
+        `/api/automation-runs/${encodeURIComponent(runId)}/targets/${encodeURIComponent(targetId)}/checkpoint`,
+        {
+          method: "POST",
+          body: {
+            producerId: input.producerId,
+            attempt: input.attempt,
+            state: input.state,
+            ...(input.variantId === undefined ? {} : { variantId: input.variantId }),
+            ...(input.auditRunId === undefined ? {} : { auditRunId: input.auditRunId }),
+            ...(input.auditArtifactId === undefined
+              ? {}
+              : { auditArtifactId: input.auditArtifactId }),
+            ...(input.publicationJobId === undefined
+              ? {}
+              : { publicationJobId: input.publicationJobId }),
+            ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
+            ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
+            checkpoint: input.checkpoint,
+            leaseSeconds: input.leaseSeconds,
+          },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
+      ),
+    );
+  }
+
+  async reconcileAutomationRun(
+    principal: Readonly<ActorContext>,
+    runId: string,
+    input: {
+      readonly producerId: string;
+      readonly attempt: number;
+      readonly retryAfter?: string;
+      readonly errorCode?: string;
+      readonly errorMessage?: string;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<AutomationRunView> {
+    return automationRunViewSchema.parse(
+      await this.#request(
+        principal,
+        `/api/automation-runs/${encodeURIComponent(runId)}/reconcile`,
+        {
+          method: "POST",
+          body: {
+            producerId: input.producerId,
+            attempt: input.attempt,
+            ...(input.retryAfter === undefined ? {} : { retryAfter: input.retryAfter }),
+            ...(input.errorCode === undefined ? {} : { errorCode: input.errorCode }),
+            ...(input.errorMessage === undefined ? {} : { errorMessage: input.errorMessage }),
+          },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
+      ),
+    ) as AutomationRunView;
+  }
+
+  async getAutomationPublicationJob(
+    principal: Readonly<ActorContext>,
+    jobId: string,
+    signal?: AbortSignal,
+  ): Promise<AutomationPublicationJobView> {
+    return automationPublicationJobSchema.parse(
+      await this.#request(principal, `/api/publication-jobs/${encodeURIComponent(jobId)}`, {
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    ) as AutomationPublicationJobView;
   }
 
   async authorizeResourceScope(

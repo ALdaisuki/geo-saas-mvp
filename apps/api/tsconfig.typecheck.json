@@ -9,6 +9,7 @@
       ],
       "@geo/authz": ["../../packages/authz/src/index.ts"],
       "@geo/config": ["../../packages/config/src/index.ts"],
+      "@geo/connectors": ["../../packages/connectors/src/index.ts"],
       "@geo/contracts": ["../../packages/contracts/src/index.ts"],
       "@geo/core": ["../../packages/core/src/index.ts"],
       "@geo/db": ["../../packages/db/src/index.ts"],

@@ -16,10 +16,13 @@ const actorId = "00000000-0000-4000-8000-000000000002";
 const brandId = "00000000-0000-4000-8000-000000000003";
 const campaignId = "00000000-0000-4000-8000-000000000004";
 const accountId = "00000000-0000-4000-8000-000000000005";
+const contentItemId = "00000000-0000-4000-8000-000000000010";
 const contentVersionId = "00000000-0000-4000-8000-000000000006";
 const variantId = "00000000-0000-4000-8000-000000000007";
 const auditRunId = "00000000-0000-4000-8000-000000000008";
+const auditArtifactId = "00000000-0000-4000-8000-000000000012";
 const publicationRequestId = "00000000-0000-4000-8000-000000000009";
+const outboxEventId = "00000000-0000-4000-8000-000000000011";
 
 const principal: ActorContext = {
   actorId,
@@ -156,15 +159,28 @@ describe("Plastic Promise bridge", () => {
 describe("fixture drafting runtime", () => {
   it("runs the governed draft-to-publication-request flow without privileged tools", async () => {
     const called: string[] = [];
+    const calledArgs = new Map<string, Readonly<Record<string, unknown>>>();
     const geo: GeoApplicationToolInvoker = {
-      invoke: async (name) => {
+      invoke: async (name, args) => {
         called.push(name);
-        if (name === "geo_draft_proposal") return { contentVersionId };
+        calledArgs.set(name, args);
+        if (name === "geo_draft_proposal") return { contentItemId, contentVersionId };
         if (name === "geo_variant_preview") return { variantId };
         if (name === "geo_audit_request") {
-          return { auditRunId, eligibleForPublicationRequest: true };
+          return {
+            auditRunId,
+            auditArtifactId,
+            status: "passed",
+            eligibleForPublicationRequest: false,
+          };
         }
-        if (name === "geo_publication_request") return { publicationRequestId };
+        if (name === "geo_publication_request") {
+          return {
+            publicationRequestId,
+            publicationJobId: publicationRequestId,
+            outboxEventId,
+          };
+        }
         return { ok: true };
       },
     };
@@ -177,7 +193,20 @@ describe("fixture drafting runtime", () => {
             {
               type: "text",
               text: JSON.stringify(
-                name === "audit_pre_check" ? { passed: true } : { decision: "allow" },
+                name === "audit_pre_check"
+                  ? { passed: true }
+                  : name === "defense"
+                    ? {
+                        decision: "allow",
+                        tool_name: "geo_publication_request",
+                        risk_level: "high",
+                        required_trust: 0.6,
+                        manifest: {
+                          name: "geo_publication_request",
+                          side_effects: ["external_publish"],
+                        },
+                      }
+                    : { context: "fixture" },
               ),
             },
           ],
@@ -204,10 +233,14 @@ describe("fixture drafting runtime", () => {
 
     expect(result).toMatchObject({
       providerMode: "fixture",
+      contentItemId,
       contentVersionId,
       variantId,
       auditRunId,
+      auditArtifactId,
       publicationRequestId,
+      publicationJobId: publicationRequestId,
+      outboxEventId,
     });
     expect(governanceCalls).toEqual(["context_supply", "audit_pre_check", "defense"]);
     expect(called).toEqual([
@@ -218,6 +251,10 @@ describe("fixture drafting runtime", () => {
       "geo_audit_request",
       "geo_publication_request",
     ]);
+    expect(calledArgs.get("geo_draft_proposal")).toMatchObject({
+      brief: "Shanghai weekend travel",
+      idempotencyKey: "fixture-flow-1:draft",
+    });
     expect([...governanceCalls, ...called].join(" ")).not.toMatch(/grant|connector|browser/);
   });
 
@@ -277,7 +314,13 @@ describe("fixture drafting runtime", () => {
       governance: new PlasticPromiseGovernanceClient({ callTool: async () => ({}) }),
       authorizeResourceScope: () => true,
     });
-    const args = { tenantId, brandId, campaignId, brief: "test" };
+    const args = {
+      tenantId,
+      brandId,
+      campaignId,
+      brief: "test",
+      idempotencyKey: "concurrent-draft",
+    };
     await Promise.all([
       runtime.invoke("geo_draft_proposal", args),
       runtime.invoke("geo_draft_proposal", args),

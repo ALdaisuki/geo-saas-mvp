@@ -30,19 +30,29 @@ class SequentialExecutor {
 
 function governanceToolCall(
   client: PlasticPromiseGovernanceClient,
+  principal: Readonly<ActorContext>,
   toolName: AgentToolName,
   args: Readonly<Record<string, unknown>>,
 ): Promise<unknown> {
+  const projectId = `project:geo-saas:tenant:${principal.tenantId}`;
   if (toolName === "plastic_context_supply") {
     return client.contextSupply({
       task_description: args.taskDescription,
       task_type: args.taskType,
+      project_id: projectId,
+      project_policy: "strict",
+      retrieval_mode: "project",
     });
   }
   if (toolName === "plastic_audit_pre_check") {
     return client.auditPreCheck({
       action_type: "write",
-      action_description: JSON.stringify({ action: args.action, context: args.context }),
+      action_description: JSON.stringify({
+        action: args.action,
+        tenantId: principal.tenantId,
+        projectId,
+        context: args.context,
+      }),
     });
   }
   if (toolName === "plastic_defense") {
@@ -83,6 +93,7 @@ export class GovernedAgentRuntime {
     const operation = async (): Promise<unknown> => {
       if (authorized.toolName === "geo_publication_request") {
         const decision = await new PlasticPromisePublicationGate(this.#governance).evaluate({
+          phase: "pre_authorization",
           tenantId: this.principal.tenantId,
           actorId: this.principal.actorId,
           resourceId: String(authorized.args.variantId),
@@ -95,7 +106,12 @@ export class GovernedAgentRuntime {
       }
       const result = authorized.toolName.startsWith("geo_")
         ? await this.#geo.invoke(authorized.toolName as GeoAgentToolName, authorized.args)
-        : await governanceToolCall(this.#governance, authorized.toolName, authorized.args);
+        : await governanceToolCall(
+            this.#governance,
+            this.principal,
+            authorized.toolName,
+            authorized.args,
+          );
       return redactSensitiveDetails(result);
     };
     return AGENT_TOOL_POLICIES[authorized.toolName].sequential

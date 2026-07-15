@@ -114,6 +114,10 @@ export function isAgentToolName(value: string): value is AgentToolName {
   return (AGENT_TOOL_ALLOWLIST as readonly string[]).includes(value);
 }
 
+export function isPlasticPromiseAgentToolName(value: string): value is PlasticPromiseAgentToolName {
+  return (PLASTIC_PROMISE_TOOL_NAMES as readonly string[]).includes(value);
+}
+
 function assertPrincipal(principal: Readonly<ActorContext>): void {
   if (
     principal.actorId.trim().length === 0 ||

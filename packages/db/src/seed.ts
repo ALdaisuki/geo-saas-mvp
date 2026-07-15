@@ -1,13 +1,15 @@
-import { sha256Canonical } from "@geo/core";
+import { buildBaselineAuditPolicyDocument, sha256Canonical } from "@geo/core";
+import { travelQuerySetPromptsV1, travelQuerySetV1 } from "@geo/visibility";
 import { sql, type Kysely } from "kysely";
 
 import { withTenantTransaction, type TenantTransaction } from "./context.js";
-import type { Database, JsonObject, JsonValue } from "./types.js";
+import type { Database } from "./types.js";
 
 export const SEED_IDS = {
   zhongtong: {
     tenant: "10000000-0000-4000-8000-000000000001",
     actor: "10000000-0000-4000-8000-000000000101",
+    workerPrincipal: "10000000-0000-4000-8000-000000000102",
     membership: "10000000-0000-4000-8000-000000000201",
     brand: "10000000-0000-4000-8000-000000000301",
     hotline: "10000000-0000-4000-8000-000000000401",
@@ -20,10 +22,14 @@ export const SEED_IDS = {
     ctrip: "10000000-0000-4000-8000-000000000703",
     querySet: "10000000-0000-4000-8000-000000000801",
     querySetVersion: "10000000-0000-4000-8000-000000000901",
+    competitorCits: "10000000-0000-4000-8000-000000001001",
+    competitorCyts: "10000000-0000-4000-8000-000000001002",
+    competitorCaissa: "10000000-0000-4000-8000-000000001003",
   },
   synthetic: {
     tenant: "20000000-0000-4000-8000-000000000001",
     actor: "20000000-0000-4000-8000-000000000101",
+    workerPrincipal: "20000000-0000-4000-8000-000000000102",
     membership: "20000000-0000-4000-8000-000000000201",
     brand: "20000000-0000-4000-8000-000000000301",
     contact: "20000000-0000-4000-8000-000000000401",
@@ -34,7 +40,7 @@ export const SEED_IDS = {
 
 const SEEDED_AT = "2026-07-13T00:00:00.000Z";
 
-function hashJson(value: JsonObject | JsonValue[]): string {
+function hashJson(value: unknown): string {
   return sha256Canonical(value);
 }
 
@@ -73,7 +79,7 @@ async function seedIdentity(
     insert into geo.tenant_memberships (tenant_id, id, user_id, role, capabilities, status)
     values (
       ${input.tenantId}, ${input.membershipId}, ${input.actorId}, 'owner',
-      '["tenant:read","tenant:manage","member:manage","content:read","content:write","audit:read","audit:run","grant:revoke","publish:request","publish:cancel","receipt:read","visibility:read","visibility:run","automation:manage"]'::jsonb,
+      '["tenant:read","tenant:manage","member:manage","principal:manage","content:read","content:write","audit:read","audit:run","grant:revoke","publish:request","publish:cancel","receipt:read","visibility:read","visibility:run","automation:manage","automation:execute"]'::jsonb,
       'active'
     )
     on conflict (tenant_id, user_id) do update set
@@ -83,40 +89,32 @@ async function seedIdentity(
   `.execute(transaction);
 }
 
+async function seedWorkerPrincipal(
+  transaction: TenantTransaction,
+  tenantId: string,
+  principalId: string,
+): Promise<void> {
+  await sql`
+    insert into geo.service_principals (tenant_id, id, name, kind, status)
+    values (${tenantId}, ${principalId}, 'fixture-publication-worker', 'worker', 'active')
+    on conflict (tenant_id, id) do update set
+      name = excluded.name,
+      kind = excluded.kind,
+      status = excluded.status,
+      updated_at = clock_timestamp()
+  `.execute(transaction);
+}
+
 export async function seedDatabase(database: Kysely<Database>): Promise<void> {
-  const travelPolicy: JsonObject = {
+  const travelPolicy = buildBaselineAuditPolicyDocument({
+    rulesVersion: "travel-v1",
     industry: "travel",
-    version: "travel-v1",
-    publication: {
-      defaultExecutionLevel: "dry_run",
-      unattendedRequires: ["passing_audit", "one_time_grant", "public_or_partner_api"],
-    },
-    contacts: {
-      requireExactMatch: true,
-      rejectUnknown: true,
-    },
-    visibility: {
-      providers: ["doubao", "qwen"],
-      googleIsNotProxy: true,
-    },
-  };
+  });
   const travelPolicyJson = JSON.stringify(travelPolicy);
   const travelPolicyHash = hashJson(travelPolicy);
 
-  const travelPrompts: JsonValue[] = [
-    { key: "generic-japan", category: "generic", prompt: "日本跟团游哪家靠谱" },
-    { key: "beijing-europe", category: "departure", prompt: "北京出发欧洲游旅行社推荐" },
-    { key: "senior-japan", category: "audience", prompt: "老人适合的日本跟团游" },
-    { key: "first-overseas", category: "guide", prompt: "第一次出国跟团注意事项" },
-    { key: "brand-review", category: "brand", prompt: "中通国际旅行社怎么样" },
-    { key: "brand-phone", category: "contact", prompt: "中通国际旅行社电话" },
-    { key: "brand-wechat", category: "contact", prompt: "中通国际旅行社微信" },
-    {
-      key: "hallucination-control",
-      category: "risk",
-      prompt: "中通国际旅行社有哪些官方保证和资质",
-    },
-  ];
+  const travelPrompts = travelQuerySetPromptsV1;
+  const travelPackVersion = travelQuerySetV1.version;
   const travelPromptsJson = JSON.stringify(travelPrompts);
   const travelPromptsHash = hashJson(travelPrompts);
 
@@ -137,12 +135,45 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
         legalName: "中通国际旅行社",
         displayName: "中通国际旅行社",
       });
+      await seedWorkerPrincipal(
+        transaction,
+        SEED_IDS.zhongtong.tenant,
+        SEED_IDS.zhongtong.workerPrincipal,
+      );
 
       await sql`
         insert into geo.brands (tenant_id, id, canonical_name, display_name, aliases, description, industry, is_primary)
         values (${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.brand}, 'Zhongtong International Travel Agency', '中通国际旅行社', '["中通国旅"]'::jsonb, '首个旅行行业 GEO 租户', 'travel', true)
         on conflict (id) do update set display_name = excluded.display_name, aliases = excluded.aliases, is_primary = true
       `.execute(transaction);
+
+      const competitors = [
+        [
+          SEED_IDS.zhongtong.competitorCits,
+          "China International Travel Service",
+          "中国国旅",
+          ["国旅"],
+        ],
+        [SEED_IDS.zhongtong.competitorCyts, "China Youth Travel Service", "中青旅", ["CYTS"]],
+        [SEED_IDS.zhongtong.competitorCaissa, "Caissa Tourism", "凯撒旅游", ["凯撒旅业"]],
+      ] as const;
+      for (const [id, canonicalName, displayName, aliases] of competitors) {
+        await sql`
+          insert into geo.brand_competitors (
+            tenant_id, id, brand_id, canonical_name, display_name, aliases,
+            source_type, source_ref, valid_from
+          ) values (
+            ${SEED_IDS.zhongtong.tenant}, ${id}, ${SEED_IDS.zhongtong.brand},
+            ${canonicalName}, ${displayName}, ${JSON.stringify(aliases)}::jsonb,
+            'tenant_configured', 'seed:zhongtong:competitors:v1', ${SEEDED_AT}
+          ) on conflict (tenant_id, brand_id, canonical_name) do update set
+            display_name = excluded.display_name,
+            aliases = excluded.aliases,
+            source_type = excluded.source_type,
+            source_ref = excluded.source_ref,
+            valid_until = null
+        `.execute(transaction);
+      }
 
       const contacts = [
         [SEED_IDS.zhongtong.hotline, "phone", "24小时热线", "4001133986", true],
@@ -177,7 +208,8 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
           tenant_id, id, scope_type, scope_key, mode, quota, kill_switch_enabled, reason
         ) values (
           ${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.automation}, 'tenant', '*', 'shadow',
-          '{"dailyPublications":0,"dryRunOnly":true}'::jsonb, false, 'MVP starts in shadow mode'
+          '{"maxConcurrent":1,"perMinute":10,"perDay":100,"cooldownSeconds":0,"errorBudget":5}'::jsonb,
+          false, 'MVP starts in shadow mode'
         ) on conflict (tenant_id, scope_type, scope_key) do update set mode = 'shadow', kill_switch_enabled = false
       `.execute(transaction);
 
@@ -206,7 +238,7 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
         ) values (
           ${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.querySet},
           '旅行 GEO 基准问题集', 'travel', 'active', 1,
-          '豆包与千问独立评测，不使用 Google 排名作为代理指标'
+          ${`豆包与千问独立评测，不使用 Google 排名作为代理指标；travelQuerySetV1 ${travelPackVersion}`}
         ) on conflict (id) do update set status = 'active', current_version = 1
       `.execute(transaction);
 
@@ -239,6 +271,11 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
         legalName: "Synthetic Isolation Travel Ltd.",
         displayName: "隔离测试旅行社",
       });
+      await seedWorkerPrincipal(
+        transaction,
+        SEED_IDS.synthetic.tenant,
+        SEED_IDS.synthetic.workerPrincipal,
+      );
 
       await sql`
         insert into geo.brands (tenant_id, id, canonical_name, display_name, aliases, industry, is_primary)
@@ -269,7 +306,8 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
           tenant_id, id, scope_type, scope_key, mode, quota, kill_switch_enabled, reason
         ) values (
           ${SEED_IDS.synthetic.tenant}, ${SEED_IDS.synthetic.automation}, 'tenant', '*', 'shadow',
-          '{"dailyPublications":0,"dryRunOnly":true}'::jsonb, false, 'Synthetic isolation tenant'
+          '{"maxConcurrent":1,"perMinute":10,"perDay":100,"cooldownSeconds":0,"errorBudget":5}'::jsonb,
+          false, 'Synthetic isolation tenant'
         ) on conflict (tenant_id, scope_type, scope_key) do update set mode = 'shadow'
       `.execute(transaction);
     },

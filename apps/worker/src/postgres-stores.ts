@@ -9,7 +9,10 @@ import {
 import { setTenantContext, type Database, type TenantTransaction } from "@geo/db";
 import { sql, type Kysely, type Transaction } from "kysely";
 
+import { RetryableWorkerError } from "./errors.js";
 import type {
+  AcquirePublicationExecutionInput,
+  AcquirePublicationExecutionResult,
   ClaimedOutboxEvent,
   ClaimOptions,
   CompletePublicationInput,
@@ -17,6 +20,7 @@ import type {
   DispatcherStore,
   PublicationWork,
   RecordFailureInput,
+  RecordReconciliationFailureInput,
   RecordUncertainInput,
   ResolveUncertainInput,
   RetryOptions,
@@ -35,6 +39,12 @@ interface ClaimRow {
 
 interface BooleanRow {
   value: boolean | null;
+}
+
+interface AcquisitionRow {
+  allowed: boolean;
+  reason: string | null;
+  half_open_probe: boolean;
 }
 
 interface WorkRow {
@@ -82,6 +92,25 @@ interface LockedJobRow {
 
 interface AttemptNumberRow {
   attempt_no: number;
+}
+
+interface AttemptStateRow {
+  state: "started" | "succeeded" | "failed" | "uncertain" | "reconciled";
+}
+
+interface ReconciliationAttemptRow {
+  id: string;
+  request_hash: string;
+  response_hash: string | null;
+}
+
+interface AuditEntryInput {
+  context: TenantContext;
+  action: string;
+  resourceId: string;
+  beforeHash: string | null;
+  afterHash: string | null;
+  details: Readonly<Record<string, unknown>>;
 }
 
 function asIso(value: Date): string {
@@ -195,6 +224,24 @@ export class PostgresTenantJobStore implements TenantJobStore {
     return this.#database.transaction().execute(async (transaction) => {
       await sql`set local role geo_runtime`.execute(transaction);
       await setTenantContext(transaction, context);
+      const actor = await sql<BooleanRow>`
+        select exists (
+          select 1
+          from geo.service_principals as principal
+          join geo.tenants as tenant on tenant.id = principal.tenant_id
+          where principal.tenant_id = ${context.tenantId}::uuid
+            and principal.id = ${context.actorId}::uuid
+            and principal.kind = 'worker'
+            and principal.status = 'active'
+            and tenant.status = 'active'
+        ) as value
+      `.execute(transaction);
+      if (actor.rows[0]?.value !== true) {
+        throw new RetryableWorkerError(
+          "WORKER_ACTOR_NOT_AUTHORIZED",
+          "Worker service principal or tenant is not active",
+        );
+      }
       return operation(transaction);
     });
   }
@@ -230,6 +277,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
             from geo.circuit_breakers as circuit
             where circuit.tenant_id = job.tenant_id
               and circuit.state = 'open'
+              and (circuit.retry_at is null or circuit.retry_at > clock_timestamp())
               and (
                 (circuit.scope_type = 'tenant' and circuit.scope_key = '*')
                 or (circuit.scope_type = 'platform' and circuit.scope_key = job.platform)
@@ -313,35 +361,70 @@ export class PostgresTenantJobStore implements TenantJobStore {
     });
   }
 
+  async acquirePublicationExecution(
+    input: AcquirePublicationExecutionInput,
+  ): Promise<AcquirePublicationExecutionResult> {
+    return this.#withRuntimeTenant(input.context, async (transaction) => {
+      const result = await sql<AcquisitionRow>`
+        select *
+        from geo.acquire_publication_execution(
+          ${input.jobId}::uuid,
+          ${input.attemptId}::uuid,
+          ${input.workerId}
+        )
+      `.execute(transaction);
+      const row = result.rows[0];
+      if (row === undefined) throw new Error("Publication execution gate returned no decision");
+      return {
+        allowed: row.allowed,
+        reason: row.reason,
+        halfOpenProbe: row.half_open_probe,
+      };
+    });
+  }
+
   async complete(input: CompletePublicationInput): Promise<CompletePublicationResult> {
     return this.#withRuntimeTenant(input.context, async (transaction) => {
+      await this.#finishPublicationExecution(transaction, input, "succeeded");
       const job = await this.#lockJob(transaction, input.context, input.jobId);
       if (job.state === "confirmed" || job.state === "preview_completed") {
         const existing = await this.#latestReceipt(transaction, input.context, input.jobId);
         if (existing === null) throw new Error("Completed job has no receipt");
         return { alreadyCompleted: true, receipt: existing };
       }
-      if (job.state !== "queued" && job.state !== "dispatching" && job.state !== "retry_wait") {
+      if (job.state !== "dispatching") {
         throw new Error(`Cannot complete publication job from state ${job.state}`);
       }
+      const attemptResult = await sql<AttemptStateRow>`
+        select state
+        from geo.publication_attempts
+        where tenant_id = ${input.context.tenantId}::uuid
+          and job_id = ${input.jobId}::uuid
+          and id = ${input.attemptId}::uuid
+        for update
+      `.execute(transaction);
+      const attempt = attemptResult.rows[0];
+      if (attempt === undefined || attempt.state !== "succeeded") {
+        throw new Error(
+          `Cannot complete publication attempt from state ${attempt?.state ?? "missing"}`,
+        );
+      }
 
-      const attemptNo = await this.#nextAttemptNumber(transaction, input.context, input.jobId);
       await sql`
-        insert into geo.publication_attempts (
-          tenant_id, id, job_id, attempt_no, state, request_hash, response_hash,
-          started_at, finished_at
-        ) values (
-          ${input.context.tenantId}::uuid, ${input.attemptId}::uuid, ${input.jobId}::uuid,
-          ${attemptNo}, 'succeeded', ${input.receipt.requestHash}, ${input.receipt.responseHash},
-          ${input.startedAt}, ${input.finishedAt}
-        )
+        update geo.publication_attempts
+        set request_hash = ${input.receipt.requestHash},
+            response_hash = ${input.receipt.responseHash}
+        where tenant_id = ${input.context.tenantId}::uuid
+          and job_id = ${input.jobId}::uuid
+          and id = ${input.attemptId}::uuid
+          and state = 'succeeded'
       `.execute(transaction);
 
       const receiptPayload = JSON.stringify({
         connectorOutcome: input.connectorOutcome,
         evidenceHash: input.evidenceHash,
         previewHash: input.previewHash,
-        readback: { required: false, reason: "dry_run_preview_only" },
+        readback: { status: "not_required", required: false, reason: "dry_run_preview_only" },
       });
       await sql`
         insert into geo.publication_receipts (
@@ -364,31 +447,138 @@ export class PostgresTenantJobStore implements TenantJobStore {
             lease_owner = null, lease_expires_at = null, last_error_code = null
         where tenant_id = ${input.context.tenantId}::uuid and id = ${input.jobId}::uuid
       `.execute(transaction);
+      await sql`
+        select *
+        from geo.schedule_publication_readback(
+          ${input.jobId}::uuid,
+          ${input.receipt.id}::uuid,
+          null
+        )
+      `.execute(transaction);
+      await this.#appendAudit(transaction, {
+        context: input.context,
+        action: "publication_job.preview_completed",
+        resourceId: input.jobId,
+        beforeHash: job.request_hash,
+        afterHash: input.receipt.responseHash,
+        details: {
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          receiptId: input.receipt.id,
+          platform: input.receipt.platform,
+          executionLevel: input.receipt.executionLevel,
+          requestHash: input.receipt.requestHash,
+          responseHash: input.receipt.responseHash,
+          evidenceHash: input.evidenceHash,
+          previewHash: input.previewHash,
+          connectorOutcome: input.connectorOutcome,
+          readbackStatus: "not_required",
+        },
+      });
       return { alreadyCompleted: false, receipt: input.receipt };
     });
   }
 
   async recordFailure(input: RecordFailureInput): Promise<void> {
     await this.#withRuntimeTenant(input.context, async (transaction) => {
-      const job = await this.#lockJob(transaction, input.context, input.jobId);
-      if (job.state === "confirmed" || job.state === "preview_completed") return;
-      const attemptNo = await this.#nextAttemptNumber(transaction, input.context, input.jobId);
-      await sql`
-        insert into geo.publication_attempts (
-          tenant_id, id, job_id, attempt_no, state, request_hash,
-          error_code, error_message, started_at, finished_at
-        ) values (
-          ${input.context.tenantId}::uuid, ${input.attemptId}::uuid, ${input.jobId}::uuid,
-          ${attemptNo}, 'failed', ${job.request_hash}, ${input.code},
-          ${input.message.slice(0, 4000)}, ${input.occurredAt}, ${input.occurredAt}
-        )
+      const attemptResult = await sql<AttemptStateRow>`
+        select state
+        from geo.publication_attempts
+        where tenant_id = ${input.context.tenantId}::uuid
+          and job_id = ${input.jobId}::uuid
+          and id = ${input.attemptId}::uuid
       `.execute(transaction);
+      const attempt = attemptResult.rows[0];
+      if (attempt?.state === "started") {
+        await this.#finishPublicationExecution(transaction, input, "failed");
+      }
+
+      const job = await this.#lockJob(transaction, input.context, input.jobId);
+      if (
+        job.state === "confirmed" ||
+        job.state === "preview_completed" ||
+        job.state === "cancelled" ||
+        job.state === "permanent_failure" ||
+        job.state === "needs_review"
+      ) {
+        return;
+      }
+      if (attempt?.state === "started") {
+        const persisted = await sql<{ id: string }>`
+          update geo.publication_attempts
+          set error_code = ${input.code}, error_message = ${input.message.slice(0, 4000)}
+          where tenant_id = ${input.context.tenantId}::uuid
+            and job_id = ${input.jobId}::uuid
+            and id = ${input.attemptId}::uuid
+            and state = 'failed'
+            and error_code = ${input.code}
+          returning id
+        `.execute(transaction);
+        if (persisted.rows[0] === undefined) return;
+      } else if (attempt === undefined) {
+        const attemptNo = await this.#nextAttemptNumber(transaction, input.context, input.jobId);
+        await sql`
+          insert into geo.publication_attempts (
+            tenant_id, id, job_id, attempt_no, state, request_hash,
+            error_code, error_message, started_at, finished_at
+          ) values (
+            ${input.context.tenantId}::uuid, ${input.attemptId}::uuid, ${input.jobId}::uuid,
+            ${attemptNo}, 'failed', ${job.request_hash}, ${input.code},
+            ${input.message.slice(0, 4000)}, ${input.occurredAt}, ${input.occurredAt}
+          )
+        `.execute(transaction);
+      } else {
+        return;
+      }
       await sql`
         update geo.publication_jobs
-        set state = ${input.final ? "permanent_failure" : "retry_wait"},
+        set state = ${
+          input.final
+            ? input.code === "PUBLICATION_AUTHORIZATION_INVALID"
+              ? "needs_review"
+              : "permanent_failure"
+            : "retry_wait"
+        },
             available_at = ${input.occurredAt}, last_error_code = ${input.code}
-        where tenant_id = ${input.context.tenantId}::uuid and id = ${input.jobId}::uuid
+        where tenant_id = ${input.context.tenantId}::uuid
+          and id = ${input.jobId}::uuid
+          and state in ('queued', 'dispatching', 'retry_wait')
       `.execute(transaction);
+      await this.#appendAudit(transaction, {
+        context: input.context,
+        action: "publication_job.attempt_failed",
+        resourceId: input.jobId,
+        beforeHash: job.request_hash,
+        afterHash: null,
+        details: {
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          requestHash: job.request_hash,
+          errorCode: input.code,
+          final: input.final,
+        },
+      });
+    });
+  }
+
+  async recordReconciliationFailure(input: RecordReconciliationFailureInput): Promise<void> {
+    await this.#withRuntimeTenant(input.context, async (transaction) => {
+      const job = await this.#lockJob(transaction, input.context, input.jobId);
+      await this.#appendAudit(transaction, {
+        context: input.context,
+        action: "publication_job.reconciliation_failed",
+        resourceId: input.jobId,
+        beforeHash: job.request_hash,
+        afterHash: input.responseHash,
+        details: {
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          receiptId: input.receiptId,
+          requestHash: input.requestHash,
+          responseHash: input.responseHash,
+          errorCode: input.code,
+        },
+      });
     });
   }
 
@@ -400,18 +590,18 @@ export class PostgresTenantJobStore implements TenantJobStore {
       `.execute(transaction);
       if (existing.rows[0] !== undefined) return;
 
-      await this.#lockJob(transaction, input.context, input.jobId);
-      const attemptNo = await this.#nextAttemptNumber(transaction, input.context, input.jobId);
+      await this.#finishPublicationExecution(transaction, input, "uncertain");
+      const job = await this.#lockJob(transaction, input.context, input.jobId);
       await sql`
-        insert into geo.publication_attempts (
-          tenant_id, id, job_id, attempt_no, state, request_hash, response_hash,
-          error_code, error_message, started_at, finished_at
-        ) values (
-          ${input.context.tenantId}::uuid, ${input.attemptId}::uuid, ${input.jobId}::uuid,
-          ${attemptNo}, 'uncertain', ${input.receipt.requestHash}, ${input.receipt.responseHash},
-          'PUBLICATION_UNCERTAIN', ${input.message.slice(0, 4000)},
-          ${input.occurredAt}, ${input.occurredAt}
-        )
+        update geo.publication_attempts
+        set request_hash = ${input.receipt.requestHash},
+            response_hash = ${input.receipt.responseHash},
+            error_code = 'PUBLICATION_UNCERTAIN',
+            error_message = ${input.message.slice(0, 4000)}
+        where tenant_id = ${input.context.tenantId}::uuid
+          and job_id = ${input.jobId}::uuid
+          and id = ${input.attemptId}::uuid
+          and state = 'uncertain'
       `.execute(transaction);
       await sql`
         insert into geo.publication_receipts (
@@ -425,7 +615,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
           ${input.receipt.responseHash}, ${input.receipt.externalId},
           ${input.receipt.externalUrl}, ${input.receipt.publishedAt},
           ${input.receipt.recordedAt}, false,
-          '{"outcome":"uncertain","readback":{"required":true,"reason":"reconcile_before_retry"}}'::jsonb
+          '{"outcome":"uncertain","readback":{"status":"not_required","required":false,"reason":"dry_run_preview_only"},"reconciliation":{"required":true,"reason":"reconcile_before_retry"}}'::jsonb
         )
       `.execute(transaction);
       await sql`
@@ -433,12 +623,37 @@ export class PostgresTenantJobStore implements TenantJobStore {
         set state = 'uncertain', last_error_code = 'PUBLICATION_UNCERTAIN'
         where tenant_id = ${input.context.tenantId}::uuid and id = ${input.jobId}::uuid
       `.execute(transaction);
+      await this.#appendAudit(transaction, {
+        context: input.context,
+        action: "publication_job.uncertain_recorded",
+        resourceId: input.jobId,
+        beforeHash: job.request_hash,
+        afterHash: input.receipt.responseHash,
+        details: {
+          jobId: input.jobId,
+          attemptId: input.attemptId,
+          receiptId: input.receipt.id,
+          requestHash: input.receipt.requestHash,
+          responseHash: input.receipt.responseHash,
+          errorCode: "PUBLICATION_UNCERTAIN",
+        },
+      });
     });
   }
 
   async resolveUncertain(input: ResolveUncertainInput): Promise<void> {
     await this.#withRuntimeTenant(input.context, async (transaction) => {
-      await this.#lockJob(transaction, input.context, input.jobId);
+      const job = await this.#lockJob(transaction, input.context, input.jobId);
+      const attemptResult = await sql<ReconciliationAttemptRow>`
+        select id, request_hash, response_hash
+        from geo.publication_attempts
+        where tenant_id = ${input.context.tenantId}::uuid
+          and job_id = ${input.jobId}::uuid
+          and state = 'uncertain'
+        order by attempt_no desc
+        limit 1
+      `.execute(transaction);
+      const attempt = attemptResult.rows[0];
       const retryable = input.result.outcome === "not_published";
       if (retryable) {
         await sql`
@@ -466,7 +681,60 @@ export class PostgresTenantJobStore implements TenantJobStore {
             }
         where tenant_id = ${input.context.tenantId}::uuid and id = ${input.jobId}::uuid
       `.execute(transaction);
+      await this.#appendAudit(transaction, {
+        context: input.context,
+        action: "publication_job.reconciled",
+        resourceId: input.jobId,
+        beforeHash: job.request_hash,
+        afterHash: attempt?.response_hash ?? null,
+        details: {
+          jobId: input.jobId,
+          attemptId: attempt?.id ?? null,
+          requestHash: attempt?.request_hash ?? job.request_hash,
+          responseHash: attempt?.response_hash ?? null,
+          outcome: input.result.outcome,
+          confirmed: input.result.confirmed,
+          errorCode: retryable ? "RECONCILED_NOT_PUBLISHED" : "UNCERTAIN_REQUIRES_MANUAL_REVIEW",
+        },
+      });
     });
+  }
+
+  async #appendAudit(transaction: TenantTransaction, input: AuditEntryInput): Promise<void> {
+    const details = JSON.stringify(input.details);
+    await sql`
+      insert into geo.audit_log (
+        tenant_id, actor_id, action, resource_type, resource_id,
+        request_id, before_hash, after_hash, details
+      ) values (
+        ${input.context.tenantId}::uuid,
+        ${input.context.actorId}::uuid,
+        ${input.action},
+        'publication_job',
+        ${input.resourceId}::uuid,
+        ${input.context.requestId},
+        ${input.beforeHash},
+        ${input.afterHash},
+        ${details}::jsonb
+      )
+    `.execute(transaction);
+  }
+
+  async #finishPublicationExecution(
+    transaction: TenantTransaction,
+    input: { context: TenantContext; jobId: string; attemptId: string; code?: string },
+    outcome: "succeeded" | "failed" | "uncertain",
+  ): Promise<void> {
+    const errorCode = outcome === "uncertain" ? "PUBLICATION_UNCERTAIN" : (input.code ?? null);
+    await sql`
+      select *
+      from geo.finish_publication_execution(
+        ${input.jobId}::uuid,
+        ${input.attemptId}::uuid,
+        ${outcome}::text,
+        ${errorCode}::text
+      )
+    `.execute(transaction);
   }
 
   async #lockJob(

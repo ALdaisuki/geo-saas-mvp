@@ -96,6 +96,17 @@ export interface BrandsTable extends TenantRow, MutableRow {
   is_primary: Generated<boolean>;
 }
 
+export interface BrandCompetitorsTable extends TenantRow, CreatedRow {
+  brand_id: string;
+  canonical_name: string;
+  display_name: string;
+  aliases: JsonColumn<JsonValue[]>;
+  source_type: "tenant_configured" | "verified_public" | "manual_import";
+  source_ref: string;
+  valid_from: DbTimestamp;
+  valid_until: NullableDbTimestamp;
+}
+
 export interface TenantContactsTable extends TenantRow, CreatedRow {
   type: "phone" | "wechat" | "email" | "website" | "address";
   label: string;
@@ -123,6 +134,87 @@ export interface AutomationControlsTable extends TenantRow, MutableRow {
   quota: JsonColumn<JsonObject>;
   kill_switch_enabled: Generated<boolean>;
   reason: string | null;
+}
+
+export interface AutomationBatchesTable extends TenantRow, MutableRow {
+  campaign_id: string;
+  idempotency_key: string;
+  request_hash: string;
+  state: Generated<"scheduled" | "running" | "completed" | "partially_failed" | "cancelled">;
+  execution_level: Generated<"dry_run">;
+  scheduled_for: DbTimestamp;
+  configuration: JsonColumn<JsonObject>;
+  created_by_actor_id: string;
+  started_at: NullableDbTimestamp;
+  completed_at: NullableDbTimestamp;
+  cancelled_at: NullableDbTimestamp;
+  cancelled_by_actor_id: string | null;
+  cancellation_reason: string | null;
+}
+
+export interface AutomationRunsTable extends TenantRow, MutableRow {
+  batch_id: string;
+  campaign_id: string;
+  slot_key: string;
+  topic_key: string;
+  brief: JsonColumn<JsonObject>;
+  idempotency_key: string;
+  request_hash: string;
+  state: Generated<
+    | "scheduled"
+    | "running"
+    | "retry_wait"
+    | "awaiting_delivery"
+    | "completed"
+    | "partially_failed"
+    | "blocked"
+    | "failed"
+    | "cancelled"
+  >;
+  stage: Generated<"planning" | "draft" | "targets" | "delivery">;
+  available_at: DbTimestamp;
+  attempt_count: Generated<number>;
+  max_attempts: Generated<number>;
+  lease_owner: string | null;
+  lease_expires_at: NullableDbTimestamp;
+  heartbeat_at: NullableDbTimestamp;
+  checkpoint: JsonColumn<JsonObject>;
+  content_item_id: string | null;
+  content_version_id: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  completed_at: NullableDbTimestamp;
+  cancelled_at: NullableDbTimestamp;
+  cancelled_by_actor_id: string | null;
+  cancellation_reason: string | null;
+}
+
+export interface AutomationRunTargetsTable extends TenantRow, MutableRow {
+  run_id: string;
+  channel_account_id: string;
+  platform: "toutiao" | "sohu" | "ctrip_community";
+  state: Generated<
+    | "pending"
+    | "variant_ready"
+    | "audit_failed"
+    | "awaiting_delivery"
+    | "preview_completed"
+    | "confirmed"
+    | "blocked"
+    | "failed"
+    | "cancelled"
+  >;
+  variant_id: string | null;
+  audit_run_id: string | null;
+  audit_artifact_id: string | null;
+  publication_job_id: string | null;
+  variant_idempotency_key: string;
+  audit_idempotency_key: string;
+  publication_idempotency_key: string;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  completed_at: NullableDbTimestamp;
+  cancelled_at: NullableDbTimestamp;
 }
 
 export interface ChannelAccountsTable extends TenantRow, MutableRow {
@@ -169,9 +261,43 @@ export interface EvidenceSourcesTable extends TenantRow, CreatedRow {
   title: string;
   source_url: string | null;
   content_hash: string;
+  content_text: string | null;
   captured_at: RequiredDbTimestamp;
   valid_until: NullableDbTimestamp;
   metadata: JsonColumn<JsonObject>;
+}
+
+export interface ResearchSourcePoliciesTable extends TenantRow, CreatedRow {
+  source_key: string;
+  version: number;
+  display_name: string;
+  origin: string;
+  allowed_hosts: TextArrayColumn;
+  user_agent: string;
+  max_bytes: number;
+  robots_max_bytes: number;
+  timeout_ms: number;
+  max_redirects: number;
+  max_discovered_urls: number;
+  respect_robots: Generated<true>;
+  status: Generated<"active" | "retired">;
+  created_by_actor_id: string;
+  retired_by_actor_id: string | null;
+  retirement_reason: string | null;
+  retired_at: NullableDbTimestamp;
+}
+
+export interface ResearchCaptureRecordsTable extends TenantRow, CreatedRow {
+  source_policy_id: string;
+  operation: "page_capture" | "sitemap_discovery";
+  status: "succeeded" | "failed";
+  request_url_hash: string;
+  evidence_source_id: string | null;
+  error_code: string | null;
+  result_metadata: JsonColumn<JsonObject>;
+  captured_by_actor_id: string;
+  started_at: RequiredDbTimestamp;
+  completed_at: RequiredDbTimestamp;
 }
 
 export interface ContentItemsTable extends TenantRow, MutableRow {
@@ -297,6 +423,7 @@ export interface PublicationJobsTable extends TenantRow, MutableRow {
     | "retry_wait"
     | "uncertain"
     | "reconciling"
+    | "preview_completed"
     | "confirmed"
     | "needs_review"
     | "permanent_failure"
@@ -304,10 +431,15 @@ export interface PublicationJobsTable extends TenantRow, MutableRow {
   idempotency_key: string;
   request_hash: string;
   payload_hash: string;
+  scheduled_for: RequiredDbTimestamp;
   available_at: DbTimestamp;
   lease_owner: string | null;
   lease_expires_at: NullableDbTimestamp;
+  preview_completed_at: NullableDbTimestamp;
   confirmed_at: NullableDbTimestamp;
+  cancelled_at: NullableDbTimestamp;
+  cancelled_by_actor_id: string | null;
+  cancellation_reason: string | null;
   last_error_code: string | null;
 }
 
@@ -315,12 +447,15 @@ export interface PublicationAttemptsTable extends TenantRow {
   job_id: string;
   attempt_no: number;
   state: "started" | "succeeded" | "failed" | "uncertain" | "reconciled";
+  worker_id: string | null;
+  half_open_probe: Generated<boolean>;
   request_hash: string;
   response_hash: string | null;
   error_code: string | null;
   error_message: string | null;
   started_at: DbTimestamp;
   finished_at: NullableDbTimestamp;
+  governance_finished_at: NullableDbTimestamp;
   created_at: DbTimestamp;
 }
 
@@ -344,6 +479,18 @@ export interface PublicationReceiptsTable extends TenantRow {
   recorded_at: DbTimestamp;
   confirmed: Generated<boolean>;
   payload: JsonColumn<JsonObject>;
+}
+
+export interface PublicationReadbacksTable extends TenantRow, MutableRow {
+  job_id: string;
+  receipt_id: string;
+  execution_level: "dry_run" | "assisted" | "unattended";
+  status: "not_required" | "pending" | "processing" | "succeeded" | "failed" | "cancelled";
+  required: boolean;
+  reason: string | null;
+  scheduled_for: RequiredDbTimestamp;
+  completed_at: NullableDbTimestamp;
+  last_error: string | null;
 }
 
 export interface OutboxEventsTable extends TenantRow {
@@ -389,6 +536,8 @@ export interface CircuitBreakersTable extends TenantRow {
   failure_count: Generated<number>;
   opened_at: NullableDbTimestamp;
   retry_at: NullableDbTimestamp;
+  probe_attempt_id: string | null;
+  probe_started_at: NullableDbTimestamp;
   reason: string | null;
   updated_at: DbTimestamp;
 }
@@ -447,13 +596,18 @@ export interface VisibilityObservationsTable extends TenantRow {
     | "browser_screenshot"
     | "api_response"
     | "platform_readback";
+  request_started_at: RequiredDbTimestamp;
+  response_received_at: RequiredDbTimestamp;
   observed_at: RequiredDbTimestamp;
   brand_mentioned: boolean;
   answer_position: number | null;
   contact_accuracy: NumericColumn;
   competitor_mentions: JsonColumn<JsonValue[]>;
+  sentiment: "positive" | "neutral" | "negative" | "mixed";
+  hallucination_findings: JsonColumn<JsonValue[]>;
   harmful_error: boolean;
   extractor_version: string;
+  evaluator_version: string;
   metadata: JsonColumn<JsonObject>;
   created_at: DbTimestamp;
 }
@@ -469,6 +623,18 @@ export interface VisibilityMetricsTable extends TenantRow {
   created_at: DbTimestamp;
 }
 
+export interface TenantProvisioningReceiptsTable extends CreatedRow {
+  id: Generated<string>;
+  idempotency_key: string;
+  request_hash: string;
+  tenant_id: string;
+  brand_id: string;
+  worker_service_principal_id: string;
+  policy_bundle_id: string;
+  query_set_id: string;
+  query_set_version_id: string;
+}
+
 export interface Database {
   users: UsersTable;
   tenants: TenantsTable;
@@ -477,13 +643,19 @@ export interface Database {
   api_keys: ApiKeysTable;
   sessions: SessionsTable;
   brands: BrandsTable;
+  brand_competitors: BrandCompetitorsTable;
   tenant_contacts: TenantContactsTable;
   policy_bundles: PolicyBundlesTable;
   automation_controls: AutomationControlsTable;
+  automation_batches: AutomationBatchesTable;
+  automation_runs: AutomationRunsTable;
+  automation_run_targets: AutomationRunTargetsTable;
   channel_accounts: ChannelAccountsTable;
   campaigns: CampaignsTable;
   claim_facts: ClaimFactsTable;
   evidence_sources: EvidenceSourcesTable;
+  research_source_policies: ResearchSourcePoliciesTable;
+  research_capture_records: ResearchCaptureRecordsTable;
   content_items: ContentItemsTable;
   content_versions: ContentVersionsTable;
   media_assets: MediaAssetsTable;
@@ -495,6 +667,7 @@ export interface Database {
   publication_jobs: PublicationJobsTable;
   publication_attempts: PublicationAttemptsTable;
   publication_receipts: PublicationReceiptsTable;
+  publication_readbacks: PublicationReadbacksTable;
   outbox_events: OutboxEventsTable;
   inbox_events: InboxEventsTable;
   idempotency_records: IdempotencyRecordsTable;
@@ -504,6 +677,7 @@ export interface Database {
   visibility_runs: VisibilityRunsTable;
   visibility_observations: VisibilityObservationsTable;
   visibility_metrics: VisibilityMetricsTable;
+  tenant_provisioning_receipts: TenantProvisioningReceiptsTable;
 }
 
 export const TENANT_TABLES = [
@@ -512,13 +686,19 @@ export const TENANT_TABLES = [
   "api_keys",
   "sessions",
   "brands",
+  "brand_competitors",
   "tenant_contacts",
   "policy_bundles",
   "automation_controls",
+  "automation_batches",
+  "automation_runs",
+  "automation_run_targets",
   "channel_accounts",
   "campaigns",
   "claim_facts",
   "evidence_sources",
+  "research_source_policies",
+  "research_capture_records",
   "content_items",
   "content_versions",
   "media_assets",
@@ -530,6 +710,7 @@ export const TENANT_TABLES = [
   "publication_jobs",
   "publication_attempts",
   "publication_receipts",
+  "publication_readbacks",
   "outbox_events",
   "inbox_events",
   "idempotency_records",

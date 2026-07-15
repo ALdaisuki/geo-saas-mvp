@@ -29,7 +29,7 @@ docker compose exec -T postgres rm -f /tmp/verify.dump
 
 Store the dump, checksum, image tag, Git commit, migration list, timestamp and operator ticket in encrypted off-host storage. A backup containing customer content, contact data, password hashes or tokens is confidential. Do not commit it or attach it to an unencrypted issue.
 
-The dump excludes role definitions and ACLs. `db-migrate` and `db-bootstrap` are the reproducible source for NOLOGIN roles, login roles and grants; database passwords stay in the secret manager.
+The dump excludes global role definitions and object ACLs. `ensure-application-roles.sql` is the reproducible source for the three NOLOGIN roles, and `reconcile-application-acls.sql` is the independent, idempotent source for schema/table/function grants. `db-bootstrap` runs both reconciliation files before it creates or rotates login roles; database passwords stay in the secret manager.
 
 ## Restore rehearsal
 
@@ -42,7 +42,15 @@ Rehearse on an isolated host/network with different secrets. A restore has not s
 docker compose stop agent-mcp worker api web
 ```
 
-3. Take and preserve a pre-restore dump. Copy the approved restore artifact into PostgreSQL:
+3. Take and preserve a pre-restore dump. On a new PostgreSQL instance, create and harden the fixed NOLOGIN roles before `pg_restore`; restored RLS policies refer to `geo_runtime` by name even though the archive excludes ACLs:
+
+```powershell
+docker compose --profile restore-tools run --rm db-restore-roles
+```
+
+This role-only step is safe to repeat and does not require the application schema to exist.
+
+4. Copy the approved restore artifact into PostgreSQL:
 
 ```powershell
 docker compose cp .\backups\approved.dump postgres:/tmp/restore.dump
@@ -52,16 +60,18 @@ docker compose exec -T postgres rm -f /tmp/restore.dump
 
 When invoking `pg_restore` outside the container shell, ensure the admin password is supplied by the existing container environment or an interactive prompt; never add it to the command line.
 
-4. Reconcile schema and recreate/rotate least-privilege login roles:
+5. Reconcile schema, replay every application object ACL, and recreate/rotate least-privilege login roles:
 
 ```powershell
 docker compose run --rm --no-deps db-migrate
 docker compose run --rm --no-deps db-bootstrap
 ```
 
+The restored Kysely migration table can make `db-migrate` a no-op. That is expected and is why ACL recovery does not pretend to rerun historical migrations: `db-bootstrap` always executes the standalone role and ACL reconciliation files, then fails if their privilege assertions do not hold.
+
 Do **not** run `db-seed` after a restore. The fixture seed can rewrite example automation controls and is not production recovery data.
 
-5. Inspect before restart:
+6. Inspect before restart:
 
 - the Kysely migration table contains every shipped migration;
 - `geo_api` can `SET LOCAL ROLE geo_runtime` but cannot become `geo_dispatcher`;
@@ -71,7 +81,7 @@ Do **not** run `db-seed` after a restore. The fixture seed can rewrite example a
 - issued grants and queued/retry/uncertain jobs match the recovery decision;
 - append-only receipts and audit log counts match the backup evidence.
 
-6. Start the API first, execute an authenticated read and cross-tenant denial test, then start worker/MCP/web in that order. Do not resume unattended work automatically.
+7. Start the API first, execute an authenticated read and cross-tenant denial test, then start worker/MCP/web in that order. Do not resume unattended work automatically.
 
 ## Volume snapshots
 

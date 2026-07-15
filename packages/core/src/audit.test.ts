@@ -4,11 +4,18 @@ import type { Platform, PublicationVariantPayload, TenantContact } from "@geo/co
 
 import {
   auditPublicationVariant,
+  DEFAULT_AUDIT_POLICY,
   type AuditPolicy,
   type FactSnapshot,
   type PriorPublicationVariant,
 } from "./audit.js";
+import {
+  compileAuditPolicy,
+  GEO_AUDIT_POLICY_SCHEMA_VERSION,
+} from "./audit-policy-document.js";
 import { sha256Canonical } from "./canonical.js";
+import { renderCanonicalContent } from "./content-renderer.js";
+import { CoreInvariantError } from "./errors.js";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
 const variantId = "00000000-0000-4000-8000-000000000002";
@@ -97,6 +104,7 @@ const policy: AuditPolicy = {
   duplicateThreshold: 0.82,
   minDuplicateCharacters: 60,
   prohibitedGuarantees: ["百分百", "保证签证", "包过"],
+  contentTemplates: DEFAULT_AUDIT_POLICY.contentTemplates,
   platformLimits: {
     toutiao: limits,
     sohu: limits,
@@ -104,17 +112,58 @@ const policy: AuditPolicy = {
   },
 };
 
+function compilePolicyDocument(version: string, minClaims: number): AuditPolicy {
+  const document = {
+    schemaVersion: GEO_AUDIT_POLICY_SCHEMA_VERSION,
+    rulesVersion: version,
+    industry: "travel",
+    contentTemplates: {
+      title: { ...policy.contentTemplates.title },
+      summary: { ...policy.contentTemplates.summary },
+      body: { ...policy.contentTemplates.body },
+      tag: { ...policy.contentTemplates.tag },
+    },
+    editorialProfiles: DEFAULT_AUDIT_POLICY.editorialProfiles!,
+    platformEditorialStyles: DEFAULT_AUDIT_POLICY.platformEditorialStyles!,
+    audit: {
+      artifactTtlMs: policy.artifactTtlMs,
+      maxEvidenceAgeMs: policy.maxEvidenceAgeMs,
+      minClaims,
+      duplicateThreshold: policy.duplicateThreshold,
+      minDuplicateCharacters: policy.minDuplicateCharacters,
+      prohibitedGuarantees: [...policy.prohibitedGuarantees],
+      platformLimits: {
+        toutiao: { ...policy.platformLimits.toutiao },
+        sohu: { ...policy.platformLimits.sohu },
+        ctrip_community: { ...policy.platformLimits.ctrip_community },
+      },
+    },
+  };
+  return compileAuditPolicy({
+    version,
+    policyHash: sha256Canonical(document),
+    document,
+  });
+}
+
 function payload(overrides: Partial<PublicationVariantPayload> = {}): PublicationVariantPayload {
-  return {
-    title: "日本跟团游怎么选：先核验证据和服务边界",
-    summary: "用行程证据、费用边界和适配人群来比较方案，并提供可核验的咨询方式。",
-    bodyMarkdown: [
-      "## 先看可核验的行程信息",
-      "出发日期、交通安排和住宿标准应以签约前提供的最终行程单为准。本文把来源和有效期一起记录，方便读者复核，不用模糊宣传替代事实。",
-      "行程安排以签约前的最终行程单为准。",
-      "## 再判断服务是否适合",
-      "老人或第一次出境的游客，应重点确认步行强度、自由活动时长和退改条件。24小时热线：4001133986。微信咨询：ZTGL3411 或 ZTGL6431。",
-    ].join("\n\n"),
+  const canonical: PublicationVariantPayload = {
+    title: "placeholder",
+    summary: "placeholder",
+    bodyMarkdown: "placeholder",
+    titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+    summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
+    bodyBlocks: [
+      { type: "template", templateId: "generic.body.heading.verified" },
+      { type: "template", templateId: "generic.body.guidance.verified" },
+      { type: "claim", claimId: factId, presentation: "paragraph" },
+      { type: "template", templateId: "generic.body.heading.contact" },
+      { type: "contact", contactId: phoneId, presentation: "paragraph" },
+      { type: "contact", contactId: wechatOneId, presentation: "paragraph" },
+      { type: "contact", contactId: wechatTwoId, presentation: "paragraph" },
+      { type: "template", templateId: "generic.body.guidance.contact" },
+    ],
+    tagTemplateIds: ["generic.tag.verified"],
     media: [],
     claims: [
       {
@@ -125,7 +174,28 @@ function payload(overrides: Partial<PublicationVariantPayload> = {}): Publicatio
       },
     ],
     contactIds: [phoneId, wechatOneId, wechatTwoId],
-    tags: ["日本旅游", "跟团游"],
+    tags: [],
+  };
+  const rendered = renderCanonicalContent({
+    payload: canonical,
+    policy,
+    factSnapshot,
+    contacts,
+  });
+  if (
+    rendered.title === null ||
+    rendered.summary === null ||
+    rendered.bodyMarkdown === null ||
+    rendered.tags === null
+  ) {
+    throw new Error("Canonical audit fixture did not render");
+  }
+  return {
+    ...canonical,
+    title: rendered.title,
+    summary: rendered.summary,
+    bodyMarkdown: rendered.bodyMarkdown,
+    tags: [...rendered.tags],
     ...overrides,
   };
 }
@@ -136,6 +206,7 @@ function run(
     contacts?: readonly TenantContact[];
     factSnapshot?: FactSnapshot;
     platform?: Platform;
+    policy?: AuditPolicy;
     priorVariants?: readonly PriorPublicationVariant[];
   } = {},
 ) {
@@ -149,7 +220,7 @@ function run(
     payload: payloadOverride,
     contacts: overrides.contacts ?? contacts,
     factSnapshot: overrides.factSnapshot ?? factSnapshot,
-    policy,
+    policy: overrides.policy ?? policy,
     priorVariants: overrides.priorVariants ?? [],
     createdAt,
   });
@@ -173,18 +244,40 @@ describe("publication variant audit", () => {
     expect(Object.isFrozen(artifact.findings)).toBe(true);
   });
 
-  it("does not treat prose after a WeChat sentence as additional contact IDs", () => {
-    const englishContactSentence = payload({
-      bodyMarkdown: payload().bodyMarkdown.replace(
-        "微信咨询：ZTGL3411 或 ZTGL6431。",
-        "WeChat: ZTGL3411 and ZTGL6431. The current itinerary remains the source of truth.",
-      ),
+  it("makes compiled document changes affect audit behavior and preserves legacy hashing", () => {
+    const permissivePolicy = compilePolicyDocument("mvp-test-v1", 1);
+    const restrictivePolicy = compilePolicyDocument("mvp-test-v2", 2);
+    const permissiveArtifact = run(payload(), { policy: permissivePolicy });
+    const restrictiveArtifact = run(payload(), { policy: restrictivePolicy });
+
+    expect(permissiveArtifact.status).toBe("passed");
+    expect(permissiveArtifact.policyHash).toBe(permissivePolicy.sourceHash);
+    expect(restrictiveArtifact.status).toBe("failed");
+    expect(ruleIds(restrictiveArtifact)).toContain("evidence.claims.insufficient");
+    expect(restrictiveArtifact.policyHash).toBe(restrictivePolicy.sourceHash);
+    expect(restrictiveArtifact.policyHash).not.toBe(permissiveArtifact.policyHash);
+    expect(run().policyHash).toBe(sha256Canonical(policy));
+  });
+
+  it("rejects a cloned compiled policy whose rules no longer match its source provenance", () => {
+    const compiledPolicy = compilePolicyDocument("mvp-test-v1", 1);
+    const forgedPolicy: AuditPolicy = { ...compiledPolicy, minClaims: 0 };
+
+    expect(() => run(payload(), { policy: forgedPolicy })).toThrowError(CoreInvariantError);
+    expect(() => run(payload(), { policy: forgedPolicy })).toThrowError(
+      expect.objectContaining({ code: "AUDIT_POLICY_SOURCE_UNTRUSTED" }),
+    );
+  });
+
+  it("blocks arbitrary prose appended after a canonical contact", () => {
+    const appendedProse = payload({
+      bodyMarkdown: `${payload().bodyMarkdown}\n\nThe current itinerary remains the source of truth.`,
     });
 
-    const artifact = run(englishContactSentence);
+    const artifact = run(appendedProse);
 
-    expect(artifact.status).toBe("passed");
-    expect(artifact.findings).toEqual([]);
+    expect(artifact.status).toBe("failed");
+    expect(ruleIds(artifact)).toContain("body.render_mismatch");
   });
 
   it("blocks unapproved contact values and missing referenced contacts", () => {
@@ -206,8 +299,9 @@ describe("publication variant audit", () => {
   });
 
   it("detects an unapproved hotline even when the number has no contact label", () => {
+    const phoneLine = `${contacts[0]?.label}: 4001133986`;
     const wrong = payload({
-      bodyMarkdown: payload().bodyMarkdown.replace("24小时热线：4001133986", "4001133987"),
+      bodyMarkdown: payload().bodyMarkdown.replace(phoneLine, "4001133987"),
     });
     const artifact = run(wrong);
 

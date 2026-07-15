@@ -20,14 +20,8 @@ export const geoMcpToolSchemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: z.string().trim().min(1).max(10_000),
-      fixtureDraft: z
-        .object({
-          title: z.string().trim().min(1).max(200),
-          summary: z.string().trim().min(1).max(500),
-          bodyMarkdown: z.string().trim().min(1).max(100_000),
-        })
-        .strict()
-        .optional(),
+      idempotencyKey,
+      fixtureMode: z.boolean().optional(),
     })
     .strict(),
   geo_variant_preview: z

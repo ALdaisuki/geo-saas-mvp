@@ -1,4 +1,5 @@
 import type {
+  AuditArtifact,
   ConnectorCapabilityReport,
   EvidenceType,
   ExecutionLevel,
@@ -115,8 +116,7 @@ export interface ConnectorEvidence {
 
 export interface ManualPackageInput {
   renderedDraft: RenderedDraft;
-  payloadHash: string;
-  auditHash: string;
+  auditArtifact: Readonly<AuditArtifact>;
   exportedAt: string;
 }
 
@@ -127,10 +127,14 @@ export interface ManualPublicationPackage {
   tenantId: string;
   channelAccountId: string;
   variantId: string;
-  executionLevel: "assisted";
+  executionLevel: "dry_run";
+  auditArtifactId: string;
   payloadHash: string;
   auditHash: string;
   previewHash: string;
+  requiresManualAction: true;
+  publicationStatus: "not_published";
+  confirmed: false;
   exportedAt: string;
   files: Readonly<Record<string, string>>;
   packageHash: string;

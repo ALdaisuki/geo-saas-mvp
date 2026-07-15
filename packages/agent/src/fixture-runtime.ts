@@ -15,10 +15,14 @@ export interface FixtureDraftFlowInput {
 
 export interface FixtureDraftFlowResult {
   providerMode: "fixture";
+  contentItemId: string;
   contentVersionId: string;
   variantId: string;
   auditRunId: string;
+  auditArtifactId: string;
   publicationRequestId: string;
+  publicationJobId: string;
+  outboxEventId: string;
   steps: readonly string[];
 }
 
@@ -44,10 +48,12 @@ export class FixtureDraftingRuntime {
     this.#runtime = runtime;
   }
 
-  async run(input: FixtureDraftFlowInput): Promise<FixtureDraftFlowResult> {
+  async run(input: FixtureDraftFlowInput, signal?: AbortSignal): Promise<FixtureDraftFlowResult> {
     const steps: string[] = [];
     const invoke = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+      if (signal?.aborted) throw new Error("Fixture agent run was aborted");
       const result = await this.#runtime.invoke(name, args);
+      if (signal?.aborted) throw new Error("Fixture agent run was aborted");
       steps.push(name);
       return result;
     };
@@ -71,14 +77,12 @@ export class FixtureDraftingRuntime {
         brandId: input.brandId,
         campaignId: input.campaignId,
         brief: input.topic,
-        fixtureDraft: {
-          title: `${input.topic}: verified travel guidance`,
-          summary: "A fixture draft for deterministic integration testing.",
-          bodyMarkdown: "Verify current facts and applicable conditions before publication.",
-        },
+        idempotencyKey: `${input.idempotencyKey}:draft`,
+        fixtureMode: true,
       }),
       "draft",
     );
+    const contentItemId = requireString(draft.contentItemId, "contentItemId");
     const contentVersionId = requireString(draft.contentVersionId, "contentVersionId");
 
     const preview = requireRecord(
@@ -101,8 +105,9 @@ export class FixtureDraftingRuntime {
       "audit",
     );
     const auditRunId = requireString(audit.auditRunId, "auditRunId");
-    if (audit.eligibleForPublicationRequest !== true) {
-      throw new Error("Fixture audit did not authorize a publication request");
+    const auditArtifactId = requireString(audit.auditArtifactId, "auditArtifactId");
+    if (audit.status !== "passed") {
+      throw new Error("Fixture audit did not pass");
     }
 
     const publication = requireRecord(
@@ -115,13 +120,24 @@ export class FixtureDraftingRuntime {
       }),
       "publication",
     );
+    const publicationRequestId = requireString(
+      publication.publicationRequestId,
+      "publicationRequestId",
+    );
 
     return {
       providerMode: "fixture",
+      contentItemId,
       contentVersionId,
       variantId,
       auditRunId,
-      publicationRequestId: requireString(publication.publicationRequestId, "publicationRequestId"),
+      auditArtifactId,
+      publicationRequestId,
+      publicationJobId: requireString(
+        publication.publicationJobId ?? publicationRequestId,
+        "publicationJobId",
+      ),
+      outboxEventId: requireString(publication.outboxEventId, "outboxEventId"),
       steps,
     };
   }

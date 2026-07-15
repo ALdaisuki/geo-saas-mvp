@@ -26,9 +26,13 @@ The MVP includes:
    `PublicationGrant` created only from a passing audit.
 5. A transactional outbox, idempotent publisher worker, platform rate limits,
    receipts, retries, dead-letter handling, and kill switches.
-6. Platform connector contracts plus dry-run connectors. Live connectors are
-   enabled only when a supported API or an explicitly configured browser
-   session is available and verified.
+6. Platform connector contracts plus dry-run connectors. The current Toutiao,
+   Sohu, and Ctrip Community adapters are `manual_only` and support only
+   `dry_run`. Any `assisted` or `unattended` request returns
+   `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before grant consumption, job
+   creation, or outbox insertion. Live API, browser-assisted delivery, and
+   external platform readback remain future capability models, not configurable
+   MVP features.
 7. Doubao and Qwen visibility probes with prompt sets, raw response evidence,
    cited sources, brand/contact accuracy, hallucination, and competitor metrics.
 8. A Chinese operations console for customer setup, content review, audit,
@@ -68,22 +72,30 @@ non-null `tenant_id`. API requests establish tenant context, and PostgreSQL RLS
 is the second isolation boundary. Background jobs carry tenant identity in the
 signed job payload and establish the same database context before work.
 
-## Core publication flow
+## Current MVP publication flow
 
 ```text
 draft
   -> content version frozen
+  -> canonical references resolve only through active-policy templates, verified facts, and tenant contacts
+  -> server renders an account-derived platform variant; clients cannot submit final variant text
   -> audit requested
+  -> compare cross-platform publication history and same-version sibling variants
   -> audit pass (report + evidence + content hash)
   -> single-use PublicationGrant issued
-  -> publication job and outbox event committed atomically
+  -> grant consumed; publication job and outbox event committed atomically
   -> worker claims job with lease
   -> connector validates account, grant, hash and idempotency key
-  -> platform publish or dry-run
-  -> immutable receipt and evidence recorded
-  -> grant consumed
-  -> post-publication readback scheduled
+  -> dry-run preview generated; no external platform write occurs
+  -> immutable unconfirmed Preview receipt recorded
+  -> durable readback marked not_required / dry_run_preview_only
 ```
+
+Live delivery and external readback extend this flow only after a documented
+public or partner API connector is implemented and verified. A browser session
+or enum value alone cannot activate live delivery. The current API hard-rejects
+all non-dry-run execution with `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before
+any publication side effect.
 
 Any content mutation invalidates prior audits and grants. A grant cannot cross
 tenant, asset version, platform, platform account, or policy revision. Expired,
@@ -103,10 +115,27 @@ atomic compare-and-set operation.
 Publication jobs: `pending -> leased -> succeeded | retry_wait | dead_letter |
 cancelled`. Retries use a stable idempotency key and bounded exponential delay.
 
-Campaign automation: `shadow -> supervised -> unattended -> paused | stopped`.
-Only passing operational health gates can promote a campaign to unattended.
+Campaign automation target model: `shadow -> supervised -> unattended -> paused
+| stopped`. In the current MVP, the three seeded platforms remain in `shadow`
+with dry-run execution. `supervised` and `unattended` describe future live
+capabilities and cannot bypass the API hard gate.
 
 ## Audit policy
+
+Publishable content uses a closed canonical reference union. Title and summary
+blocks may reference only an active-policy template, verified claim, or tenant
+contact; body claim/contact blocks additionally declare paragraph or bullet
+presentation, and tags reference policy template IDs. The rendered text and
+claim/contact metadata must match those references exactly. Legacy free text is
+readable for migration but cannot produce a new platform variant or grant.
+
+Variant creation accepts only `contentVersionId` and `channelAccountId`. The
+server derives the platform, recompiles the effective active policy with
+canonical-hash and exact-object provenance checks, and renders the platform
+profile. A tenant/version/account advisory lock makes an identical retry reuse
+the deterministic variant. Near-duplicate candidates include completed preview
+or confirmed history across platforms plus draft/frozen siblings from the same
+content version, covering the parallel first-wave case.
 
 The deterministic audit checks at least:
 
@@ -137,9 +166,11 @@ error budgets, and a kill switch. Automatic pause triggers include:
 - Visibility probes showing harmful misinformation or negative amplification.
 - Missing or inconsistent post-publication readback.
 
-Browser automation, when explicitly enabled, runs in an isolated worker with an
-allowlisted origin, encrypted session secret, bounded navigation, screenshot
-evidence, redacted logs, and no CAPTCHA bypass. API connectors are preferred.
+Future browser-assisted delivery, if separately implemented and approved, must
+run in an isolated worker with an allowlisted origin, encrypted session secret,
+bounded navigation, screenshot evidence, redacted logs, and no CAPTCHA bypass.
+It is not present in the current MVP. Documented API connectors remain the
+preferred prerequisite for any future live capability.
 
 ## AI visibility evaluation
 
@@ -183,6 +214,9 @@ The MVP is complete only when a clean environment can:
 5. Pause publication automatically when a configured circuit breaker trips.
 6. Pass unit, integration, RLS, API, worker idempotency, and browser smoke tests.
 
-Live platform publishing and live Doubao/Qwen calls require external accounts,
-credentials, and provider availability. The MVP must expose capability status
-and remain fully testable without misrepresenting fixture or dry-run execution.
+Live platform publishing and live Doubao/Qwen calls are not shipped by this MVP.
+They require separate connector implementation, external accounts, credentials,
+provider availability, and renewed verification. Configuration alone cannot
+enable them. The MVP must expose capability status and remain fully testable
+without misrepresenting fixture, Preview, dry-run, or `not_required` readback as
+external execution evidence.

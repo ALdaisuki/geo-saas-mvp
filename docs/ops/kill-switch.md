@@ -9,7 +9,7 @@ The primary control is the tenant-scoped HTTP API:
 
 The database publication-grant function blocks new non-dry-run grant consumption while the tenant switch is enabled. The worker also re-reads the tenant switch before connector execution and blocks loaded jobs when it is enabled. The switch survives service restarts.
 
-The API changes only `kill_switch_enabled` and `reason`. It does not change automation mode or quotas, revoke already issued grants, cancel queued jobs, interrupt a connector request already sent to a platform or reconcile an uncertain outcome. Campaign/topic control rows exist in the schema but are not enforced by the current worker query. Use the tenant switch for incidents and add the infrastructure/database procedures below when the risk is active or uncertain.
+The Kill Switch route changes only `kill_switch_enabled` and `reason`. Separate authenticated routes can revoke a known unconsumed grant and cancel an unlocked `queued`/`retry_wait` job, but neither action happens automatically when the switch is enabled. Cancellation returns `409` while an outbox lease is active and cannot interrupt a connector request already sent to a platform. The HTTP control plane also does not change automation mode or quotas, inventory every issued grant, reconcile an uncertain outcome, or enforce campaign/topic control rows. Use the tenant switch first, then apply the scoped controls and infrastructure/database procedures below according to the incident.
 
 ## Primary API stop
 
@@ -61,6 +61,47 @@ $readback | ConvertTo-Json -Depth 8
 ```
 
 Preserve the change response, independent readback, tenant, actor, reason, UTC timestamp and incident ticket. The API transaction writes the audit row; commercial evidence still needs the operator-side response/readback artifacts.
+
+## Scoped grant and queue controls
+
+After the durable switch is verified, revoke every still-unconsumed grant ID retained in the incident/audit records. There is no HTTP grant inventory endpoint, so an incomplete inventory requires the database fallback below.
+
+```powershell
+$grantId = 'REPLACE-KNOWN-GRANT-UUID'
+
+$revoked = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$baseUri/api/publication-grants/$grantId/revoke" `
+  -WebSession $webSession `
+  -Headers @{ 'x-csrf-token' = $login.csrfToken } `
+  -ContentType 'application/json' `
+  -Body (@{ reason = $reason } | ConvertTo-Json -Compress)
+
+if ($revoked.status -ne 'revoked') {
+  throw "Grant revoke was not confirmed: $grantId"
+}
+```
+
+Then list the tenant's publication jobs and cancel each unlocked queue item. A `409` is an explicit failed cancellation, not proof that the work stopped; stop the worker/API mutation path and reconcile that job separately.
+
+```powershell
+$jobs = (Invoke-RestMethod `
+  -Method Get `
+  -Uri "$baseUri/api/publication-jobs" `
+  -WebSession $webSession).items
+
+foreach ($job in $jobs | Where-Object { $_.state -in @('queued', 'retry_wait') }) {
+  Invoke-RestMethod `
+    -Method Post `
+    -Uri "$baseUri/api/publication-jobs/$($job.id)/cancel" `
+    -WebSession $webSession `
+    -Headers @{ 'x-csrf-token' = $login.csrfToken } `
+    -ContentType 'application/json' `
+    -Body (@{ reason = $reason } | ConvertTo-Json -Compress)
+}
+```
+
+Preserve each revoke/cancel response and confirm job state through `GET /api/publication-jobs/:jobId`. These APIs do not make an already sent external request disappear.
 
 For an active external-write incident, or when readback cannot be trusted, stop the mutation path after attempting the durable switch:
 

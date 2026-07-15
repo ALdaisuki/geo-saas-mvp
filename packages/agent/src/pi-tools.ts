@@ -26,16 +26,8 @@ const schemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: Type.String({ minLength: 1, maxLength: 10_000 }),
-      fixtureDraft: Type.Optional(
-        Type.Object(
-          {
-            title: Type.String({ minLength: 1, maxLength: 200 }),
-            summary: Type.String({ minLength: 1, maxLength: 500 }),
-            bodyMarkdown: Type.String({ minLength: 1, maxLength: 100_000 }),
-          },
-          { additionalProperties: false },
-        ),
-      ),
+      idempotencyKey,
+      fixtureMode: Type.Optional(Type.Boolean()),
     },
     { additionalProperties: false },
   ),

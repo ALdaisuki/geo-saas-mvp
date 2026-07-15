@@ -5,6 +5,7 @@ import {
   calculateVisibilityMetrics,
   FixtureVisibilityAdapter,
   ManualVisibilityAdapter,
+  travelQuerySetPromptsV1,
   travelQuerySetV1,
 } from "./index.js";
 import type { BrandTruth, VisibilitySampleRequest } from "./types.js";
@@ -17,9 +18,17 @@ const ids = {
 
 const truth: BrandTruth = {
   tenantId: ids.tenant,
+  brandId: "00000000-0000-4000-8000-000000000004",
   brandNames: ["中通国际旅行社"],
   expectedContacts: ["4001133986", "ZTGL3411", "ZTGL6431"],
-  knownCompetitors: ["测试竞品旅行社"],
+  competitors: [
+    {
+      canonicalName: "测试竞品旅行社",
+      aliases: ["测试竞品"],
+      sourceType: "tenant_configured",
+      sourceRef: "test:competitor:v1",
+    },
+  ],
 };
 
 function request(provider: "doubao" | "qwen", queryId = "brand-phone"): VisibilitySampleRequest {
@@ -64,6 +73,11 @@ describe("domestic AI visibility evaluation", () => {
     expect(observation.brandMentioned).toBe(true);
     expect(observation.contactAccuracy).toBe(1);
     expect(observation.harmfulError).toBe(false);
+    expect(observation.requestStartedAt).toBe("2026-07-13T12:00:00.000Z");
+    expect(observation.responseReceivedAt).toBe("2026-07-13T12:00:00.000Z");
+    expect(observation.sentiment).toBe("neutral");
+    expect(observation.hallucinationFindings).toEqual([]);
+    expect(observation.evaluatorVersion).toBe("geo-visibility-evaluator-v1");
   });
 
   it("flags a fabricated Qwen contact as a harmful error", async () => {
@@ -77,6 +91,28 @@ describe("domestic AI visibility evaluation", () => {
 
     expect(observation.contactAccuracy).toBe(0);
     expect(observation.harmfulError).toBe(true);
+    expect(observation.hallucinationFindings).toEqual([
+      expect.objectContaining({
+        code: "unexpected_contact",
+        category: "contact",
+        severity: "high",
+        observedValue: "4009999999",
+      }),
+    ]);
+  });
+
+  it("does not misclassify a negated recommendation as positive sentiment", () => {
+    const observation = analyzeVisibilityEvidence(request("qwen", "brand-reputation"), {
+      rawAnswer: "没有足够证据时不推荐该服务，也不能据此判断其不靠谱。",
+      citedUrls: [],
+      requestStartedAt: "2026-07-13T12:00:00.000Z",
+      responseReceivedAt: "2026-07-13T12:00:01.000Z",
+      observedAt: "2026-07-13T12:00:01.000Z",
+      observationMethod: "manual",
+      evidenceType: "manual_import",
+    });
+
+    expect(observation.sentiment).toBe("negative");
   });
 
   it("does not classify English brand prose as WeChat IDs", () => {
@@ -84,6 +120,8 @@ describe("domestic AI visibility evaluation", () => {
       rawAnswer:
         "Zhongtong International Travel Agency is the English brand name. 中通国际旅行社热线 4001133986。微信咨询：ZTGL3411 或 ZTGL6431。",
       citedUrls: [],
+      requestStartedAt: "2026-07-13T11:59:59.000Z",
+      responseReceivedAt: "2026-07-13T12:00:00.000Z",
       observedAt: "2026-07-13T12:00:00.000Z",
       observationMethod: "fixture",
       evidenceType: "fixture",
@@ -97,6 +135,8 @@ describe("domestic AI visibility evaluation", () => {
     const adapter = new ManualVisibilityAdapter("doubao", async () => ({
       rawAnswer: "manual answer",
       citedUrls: [],
+      requestStartedAt: "2026-07-13T11:59:59.000Z",
+      responseReceivedAt: "2026-07-13T12:00:00.000Z",
       observedAt: "2026-07-13T12:00:00.000Z",
       observationMethod: "official_api",
       evidenceType: "api_response",
@@ -112,6 +152,8 @@ describe("domestic AI visibility evaluation", () => {
       ...analyzeVisibilityEvidence(request("doubao"), {
         rawAnswer: "中通国际旅行社热线 4001133986。",
         citedUrls: ["https://one.example/source"],
+        requestStartedAt: "2026-07-13T11:59:59.000Z",
+        responseReceivedAt: "2026-07-13T12:00:00.000Z",
         observedAt: "2026-07-13T12:00:00.000Z",
         observationMethod: "fixture" as const,
         evidenceType: "fixture" as const,
@@ -125,6 +167,18 @@ describe("domestic AI visibility evaluation", () => {
       brandMentioned: false,
       competitorMentions: ["测试竞品旅行社"],
       contactAccuracy: 1,
+      answerPosition: null,
+      sentiment: "negative" as const,
+      hallucinationFindings: [
+        {
+          code: "unsupported_claim",
+          category: "brand" as const,
+          severity: "medium" as const,
+          statement: "没有可靠联系方式",
+          observedValue: null,
+          expectedValues: [],
+        },
+      ],
     };
 
     const metrics = calculateVisibilityMetrics([base, second]);
@@ -133,12 +187,40 @@ describe("domestic AI visibility evaluation", () => {
     expect(metrics.brandMentionRate).toBe(0.5);
     expect(metrics.sourceDiversity).toBe(2);
     expect(metrics.shareOfVoice).toBe(0.5);
+    expect(metrics.averageAnswerPosition).toBe(base.answerPosition);
+    expect(metrics.negativeSentimentRate).toBe(0.5);
+    expect(metrics.hallucinationFindingRate).toBe(0.5);
     expect(metrics.brandMentionWilsonLow).toBeLessThan(metrics.brandMentionRate);
     expect(metrics.brandMentionWilsonHigh).toBeGreaterThan(metrics.brandMentionRate);
   });
 
-  it("ships both brand/contact prompts and negative controls", () => {
+  it("ships one canonical versioned travel pack with comparison, negative and blank controls", () => {
+    expect(travelQuerySetV1.version).toBe("1.0.0");
     expect(travelQuerySetV1.queries.some((query) => query.intent === "contact")).toBe(true);
-    expect(travelQuerySetV1.queries.some((query) => query.isControl)).toBe(true);
+    expect(travelQuerySetV1.queries.some((query) => query.intent === "comparison")).toBe(true);
+    expect(travelQuerySetV1.queries.some((query) => query.intent === "negative_control")).toBe(
+      true,
+    );
+    expect(travelQuerySetV1.queries.some((query) => query.intent === "blank_control")).toBe(true);
+    expect(travelQuerySetPromptsV1).toHaveLength(travelQuerySetV1.queries.length);
+    expect(travelQuerySetPromptsV1.every((prompt) => prompt.packVersion === "1.0.0")).toBe(true);
+    expect(new Set(travelQuerySetPromptsV1.map((prompt) => prompt.key)).size).toBe(
+      travelQuerySetPromptsV1.length,
+    );
+  });
+
+  it("uses tenant-scoped competitor truth and canonicalizes alias mentions", () => {
+    const observation = analyzeVisibilityEvidence(request("qwen", "brand-comparison"), {
+      rawAnswer: "中通国际旅行社和测试竞品都值得比较，推荐先核验退改规则。",
+      citedUrls: [],
+      requestStartedAt: "2026-07-13T12:00:00.000Z",
+      responseReceivedAt: "2026-07-13T12:00:01.000Z",
+      observedAt: "2026-07-13T12:00:01.000Z",
+      observationMethod: "manual",
+      evidenceType: "manual_import",
+    });
+
+    expect(observation.competitorMentions).toEqual(["测试竞品旅行社"]);
+    expect(observation.sentiment).toBe("positive");
   });
 });

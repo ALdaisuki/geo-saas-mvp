@@ -1,6 +1,10 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it } from "vitest";
 
-import { serverEnvSchema } from "./index.js";
+import { productionDeploymentEnvSchema, serverEnvSchema } from "./index.js";
+
+const composeSource = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
 
 describe("serverEnvSchema", () => {
   it("defaults external providers to fixtures and browser automation to disabled", () => {
@@ -23,5 +27,105 @@ describe("serverEnvSchema", () => {
         APP_ORIGIN: "http://127.0.0.1:4173",
       }),
     ).toThrow();
+  });
+
+  it("rejects visibility adapter modes that have no implementation", () => {
+    const base = {
+      DATABASE_URL: "postgresql://localhost/geo",
+      SESSION_SECRET: "a-secure-test-secret-that-is-long-enough",
+      APP_ORIGIN: "http://127.0.0.1:4173",
+    };
+    expect(() => serverEnvSchema.parse({ ...base, DOUBAO_ADAPTER: "api" })).toThrow();
+    expect(() => serverEnvSchema.parse({ ...base, QWEN_ADAPTER: "manual" })).toThrow();
+  });
+
+  it("rejects checked-in placeholder secrets in production server configuration", () => {
+    expect(() =>
+      serverEnvSchema.parse({
+        NODE_ENV: "production",
+        DATABASE_URL:
+          "postgresql://geo_api:replace-api-with-random-url-safe-value@postgres:5432/geo_saas",
+        DATABASE_IDENTITY_URL:
+          "postgresql://geo_identity_login:identity-production-secret@postgres:5432/geo_saas",
+        SESSION_SECRET: "a-real-production-session-secret-value",
+        APP_ORIGIN: "https://geo.example.test",
+      }),
+    ).toThrow(/placeholder/iu);
+
+    expect(() =>
+      serverEnvSchema.parse({
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://geo_api:api-production-secret@postgres:5432/geo_saas",
+        DATABASE_IDENTITY_URL:
+          "postgresql://geo_identity_login:identity-production-secret@postgres:5432/geo_saas",
+        SESSION_SECRET: "replace-session-secret-with-at-least-32-random-bytes",
+        APP_ORIGIN: "https://geo.example.test",
+      }),
+    ).toThrow(/placeholder/iu);
+  });
+});
+
+describe("productionDeploymentEnvSchema", () => {
+  const validProductionEnvironment = {
+    POSTGRES_ADMIN_PASSWORD: "admin-production-secret",
+    GEO_API_DB_PASSWORD: "api-production-secret",
+    GEO_WORKER_DB_PASSWORD: "worker-production-secret",
+    GEO_IDENTITY_DB_PASSWORD: "identity-production-secret",
+    SESSION_SECRET: "a-real-production-session-secret-value",
+    MCP_PRINCIPALS_JSON: JSON.stringify([
+      {
+        accessToken: "a-real-mcp-access-token-with-32-characters",
+        clientId: "geo-operator",
+        email: "operator@customer.test",
+        password: "a-real-operator-password",
+        tenantSlug: "customer-tenant",
+      },
+    ]),
+  };
+
+  it("rejects the checked-in deployment placeholders before startup", () => {
+    expect(() =>
+      productionDeploymentEnvSchema.parse({
+        ...validProductionEnvironment,
+        POSTGRES_ADMIN_PASSWORD: "replace-admin-with-random-url-safe-value",
+        GEO_API_DB_PASSWORD: "replace-api-with-random-url-safe-value",
+        GEO_WORKER_DB_PASSWORD: "replace-worker-with-random-url-safe-value",
+        GEO_IDENTITY_DB_PASSWORD: "replace-identity-with-random-url-safe-value",
+        SESSION_SECRET: "replace-session-secret-with-at-least-32-random-bytes",
+        MCP_PRINCIPALS_JSON:
+          '[{"accessToken":"replace-with-at-least-32-random-characters","password":"replace-after-provisioning"}]',
+        AGENT_API_KEY: "replace-agent-api-key",
+      }),
+    ).toThrow(/placeholder/iu);
+  });
+
+  it("accepts independently supplied production secrets", () => {
+    expect(productionDeploymentEnvSchema.parse(validProductionEnvironment)).toMatchObject(
+      validProductionEnvironment,
+    );
+  });
+
+  it("passes the optional Pi provider key through production preflight", () => {
+    const preflightBlock = composeSource.slice(
+      composeSource.indexOf("  config-preflight:"),
+      composeSource.indexOf("  postgres:"),
+    );
+    const agentMcpBlock = composeSource.slice(
+      composeSource.indexOf("  agent-mcp:"),
+      composeSource.indexOf("  web:"),
+    );
+
+    expect(preflightBlock).toContain("- AGENT_API_KEY");
+    expect(agentMcpBlock).toContain("AGENT_API_KEY: ${AGENT_API_KEY:-}");
+    expect(agentMcpBlock).toContain("AGENT_RUN_TIMEOUT_MS: ${AGENT_RUN_TIMEOUT_MS:-120000}");
+    expect(agentMcpBlock).toContain(
+      "AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:?set true or false explicitly}",
+    );
+    expect(agentMcpBlock).toContain(
+      "AUTOMATION_PRODUCER_ID: ${AUTOMATION_PRODUCER_ID:-geo-automation-primary}",
+    );
+    expect(agentMcpBlock).toContain(
+      "AUTOMATION_PRODUCER_CONCURRENCY: ${AUTOMATION_PRODUCER_CONCURRENCY:-1}",
+    );
   });
 });

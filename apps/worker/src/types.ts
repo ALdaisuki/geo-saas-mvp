@@ -96,6 +96,19 @@ export interface PublicationWork {
   existingReceipt: PublicationReceipt | null;
 }
 
+export interface AcquirePublicationExecutionInput {
+  context: TenantContext;
+  jobId: string;
+  attemptId: string;
+  workerId: string;
+}
+
+export interface AcquirePublicationExecutionResult {
+  allowed: boolean;
+  reason: string | null;
+  halfOpenProbe: boolean;
+}
+
 export interface CompletePublicationInput {
   context: TenantContext;
   jobId: string;
@@ -132,6 +145,17 @@ export interface RecordUncertainInput {
   message: string;
 }
 
+export interface RecordReconciliationFailureInput {
+  context: TenantContext;
+  jobId: string;
+  attemptId: string;
+  receiptId: string;
+  requestHash: string;
+  responseHash: string;
+  code: "RECONCILIATION_FAILED";
+  occurredAt: Date;
+}
+
 export interface ResolveUncertainInput {
   context: TenantContext;
   jobId: string;
@@ -141,8 +165,12 @@ export interface ResolveUncertainInput {
 
 export interface TenantJobStore {
   load(context: TenantContext, jobId: string): Promise<PublicationWork | null>;
+  acquirePublicationExecution(
+    input: AcquirePublicationExecutionInput,
+  ): Promise<AcquirePublicationExecutionResult>;
   complete(input: CompletePublicationInput): Promise<CompletePublicationResult>;
   recordFailure(input: RecordFailureInput): Promise<void>;
+  recordReconciliationFailure(input: RecordReconciliationFailureInput): Promise<void>;
   recordUncertain(input: RecordUncertainInput): Promise<void>;
   resolveUncertain(input: ResolveUncertainInput): Promise<void>;
 }

@@ -78,11 +78,8 @@ export class DryRunConnector implements PlatformConnector {
     return {
       validForPreview: true,
       externalWriteAvailable: false,
-      requiresManualAction: input.executionLevel === "assisted",
-      reason:
-        input.executionLevel === "assisted"
-          ? "This connector can export a manual package but cannot operate the platform session."
-          : "Dry-run preview does not require a platform session.",
+      requiresManualAction: false,
+      reason: "Dry-run preview does not require or operate a platform session.",
     };
   }
 
@@ -166,17 +163,14 @@ export class DryRunConnector implements PlatformConnector {
         idempotencyKey: input.idempotencyKey,
         previewHash: input.renderedDraft.previewHash,
       }),
-      requiresManualAction: input.executionLevel === "assisted",
-      reason:
-        input.executionLevel === "assisted"
-          ? "Export the audited package and complete the final platform action manually."
-          : "Dry-run connector intentionally did not submit a platform draft.",
+      requiresManualAction: false,
+      reason: "Dry-run connector intentionally did not submit a platform draft.",
     };
   }
 
   async publish(input: PublishInput): Promise<PublishResult> {
     const submission = await this.submitDraft(input);
-    const outcome = input.executionLevel === "assisted" ? "manual_action_required" : "preview_only";
+    const outcome = "preview_only";
     const responseHash = stableSha256({
       schemaVersion: "geo.connector.response.v1",
       operation: "publish",
@@ -209,7 +203,7 @@ export class DryRunConnector implements PlatformConnector {
   async pollStatus(input: PollStatusInput): Promise<PollStatusResult> {
     await this.#assertAllowed(input.executionLevel);
     return {
-      status: input.executionLevel === "assisted" ? "manual_confirmation_required" : "preview_only",
+      status: "preview_only",
       confirmed: false,
       externalId: null,
       externalUrl: null,
@@ -226,8 +220,7 @@ export class DryRunConnector implements PlatformConnector {
       );
     }
     return {
-      outcome:
-        input.executionLevel === "assisted" ? "manual_confirmation_required" : "not_published",
+      outcome: "not_published",
       confirmed: false,
       externalId: null,
       externalUrl: null,

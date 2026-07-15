@@ -13,15 +13,19 @@
     "bootstrap:operator": "tsx src/cli/bootstrap-operator.ts",
     "build": "tsc -p tsconfig.json",
     "migrate": "tsx src/cli/migrate.ts",
+    "preflight:production": "tsx src/cli/validate-production.ts",
+    "provision:tenant": "tsx src/cli/provision-tenant.ts",
     "seed": "tsx src/cli/seed.ts",
-    "test": "vitest run tests/bootstrap-contract.test.ts tests/migration-contract.test.ts tests/seed-contract.test.ts",
-    "test:contracts": "vitest run tests/migration-contract.test.ts tests/seed-contract.test.ts",
+    "test": "vitest run tests/acl-contract.test.ts tests/bootstrap-contract.test.ts tests/provisioning-contract.test.ts tests/migration-contract.test.ts tests/seed-contract.test.ts",
+    "test:contracts": "vitest run tests/acl-contract.test.ts tests/provisioning-contract.test.ts tests/migration-contract.test.ts tests/seed-contract.test.ts",
     "test:integration": "vitest run tests/postgres.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@geo/authz": "workspace:*",
+    "@geo/config": "workspace:*",
     "@geo/core": "workspace:*",
+    "@geo/visibility": "workspace:*",
     "argon2": "0.44.0",
     "kysely": "0.28.8",
     "pg": "8.16.3"

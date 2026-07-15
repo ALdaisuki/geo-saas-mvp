@@ -15,7 +15,10 @@ import type {
   VisibilityProvider,
 } from "@geo/contracts";
 import type { FactSnapshot, PriorPublicationVariant } from "@geo/core";
-import type { VisibilityMetrics } from "@geo/visibility";
+import type { CompetitorTruth, VisibilityMetrics } from "@geo/visibility";
+
+import type { AutomationRepository } from "./automation-repository.js";
+import type { ManualPublicationPackageRepository } from "./manual-publication-package.js";
 
 export interface RequestContext {
   readonly actorId: string;
@@ -78,6 +81,113 @@ export interface TenantView {
   readonly defaultLocale: string;
 }
 
+export interface BrandView {
+  readonly id: string;
+  readonly canonicalName: string;
+  readonly displayName: string;
+  readonly aliases: readonly string[];
+  readonly description: string | null;
+  readonly industry: string;
+  readonly websiteUrl: string | null;
+  readonly isPrimary: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CreateBrandInput {
+  readonly id: string;
+  readonly canonicalName: string;
+  readonly displayName: string;
+  readonly aliases: readonly string[];
+  readonly description: string | null;
+  readonly industry: string;
+  readonly websiteUrl: string | null;
+  readonly isPrimary: boolean;
+}
+
+export interface TenantMemberView {
+  readonly id: string;
+  readonly userId: string;
+  readonly email: string;
+  readonly displayName: string;
+  readonly role: TenantRole;
+  readonly capabilities: readonly Capability[];
+  readonly status: "active" | "suspended";
+  readonly createdAt: string;
+}
+
+export interface CreateTenantMemberInput {
+  readonly membershipId: string;
+  readonly userId: string;
+  readonly email: string;
+  readonly displayName: string;
+  readonly passwordHash: string;
+  readonly role: TenantRole;
+}
+
+export interface UpdateTenantMemberInput {
+  readonly membershipId: string;
+  readonly role?: TenantRole;
+  readonly status?: "active" | "suspended";
+  readonly reason: string;
+}
+
+export interface PolicyBundleView {
+  readonly id: string;
+  readonly version: string;
+  readonly status: "draft" | "active" | "retired";
+  readonly policyHash: string;
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly effectiveAt: string;
+  readonly retiredAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface CreatePolicyBundleInput {
+  readonly id: string;
+  readonly version: string;
+  readonly policyHash: string;
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly effectiveAt: string;
+}
+
+export interface TransitionPolicyBundleInput {
+  readonly policyBundleId: string;
+  readonly targetStatus: "active" | "retired";
+  readonly reason: string;
+  readonly changedAt: string;
+}
+
+export interface TransitionPolicyBundleResult {
+  readonly policy: PolicyBundleView;
+  readonly previousStatus: PolicyBundleView["status"];
+  readonly wasChanged: boolean;
+}
+
+export interface QuerySetView {
+  readonly id: string;
+  readonly name: string;
+  readonly industry: string;
+  readonly status: "draft" | "active" | "retired";
+  readonly currentVersion: number;
+  readonly description: string;
+  readonly currentVersionId: string | null;
+  readonly prompts: unknown;
+  readonly promptHash: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CreateQuerySetInput {
+  readonly querySetId: string;
+  readonly versionId: string;
+  readonly name: string;
+  readonly industry: string;
+  readonly description: string;
+  readonly prompts: readonly Readonly<Record<string, unknown>>[];
+  readonly promptHash: string;
+}
+
 export interface AutomationControlView {
   readonly id: string;
   readonly mode: "shadow" | "supervised" | "unattended" | "paused" | "stopped";
@@ -122,13 +232,87 @@ export interface ChannelAccountView {
   readonly lastVerifiedAt: string | null;
 }
 
+export interface CreateTenantContactInput {
+  readonly id: string;
+  readonly type: TenantContact["type"];
+  readonly label: string;
+  readonly value: string;
+  readonly normalizedValue: string;
+  readonly isPrimary: boolean;
+  readonly validFrom: string;
+}
+
+export interface ExpireTenantContactInput {
+  readonly contactId: string;
+  readonly reason: string;
+  readonly validUntil: string;
+}
+
+export interface CreateChannelAccountInput {
+  readonly id: string;
+  readonly platform: Platform;
+  readonly displayName: string;
+  readonly capability: ConnectorCapability;
+  readonly supportedExecutionLevels: readonly ExecutionLevel[];
+  readonly credentialRef: string | null;
+  readonly evidenceType: EvidenceType;
+  readonly evidenceRefs: readonly string[];
+  readonly status: "active" | "disabled" | "needs_verification";
+  readonly lastVerifiedAt: string | null;
+}
+
+export interface UpdateChannelAccountInput {
+  readonly channelAccountId: string;
+  readonly displayName?: string;
+  readonly capability?: ConnectorCapability;
+  readonly supportedExecutionLevels?: readonly ExecutionLevel[];
+  readonly credentialRef?: string | null;
+  readonly evidenceType?: EvidenceType;
+  readonly evidenceRefs?: readonly string[];
+  readonly status?: "active" | "disabled" | "needs_verification";
+  readonly lastVerifiedAt?: string | null;
+  readonly reason: string;
+}
+
+export interface ServicePrincipalView {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly name: string;
+  readonly kind: "api" | "worker" | "agent" | "integration";
+  readonly profile: "custom" | "automation_producer";
+  readonly capabilities: readonly Capability[];
+  readonly status: "active" | "disabled";
+  readonly credentialStatus: "not_issued" | "active" | "expired" | "revoked";
+  readonly lastUsedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface CreateAutomationServicePrincipalInput {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface SetServicePrincipalStatusInput {
+  readonly servicePrincipalId: string;
+  readonly status: "active" | "disabled";
+  readonly reason: string;
+}
+
+export interface SetServicePrincipalStatusResult {
+  readonly principal: ServicePrincipalView;
+  readonly wasChanged: boolean;
+}
+
+export type CampaignStatus = "draft" | "active" | "paused" | "completed";
+
 export interface CampaignView {
   readonly id: string;
   readonly brandId: string;
   readonly name: string;
   readonly objective: string;
   readonly industry: string;
-  readonly status: string;
+  readonly status: CampaignStatus;
   readonly topicKey: string;
 }
 
@@ -139,6 +323,19 @@ export interface CreateCampaignInput {
   readonly objective: string;
   readonly industry: string;
   readonly topicKey: string;
+}
+
+export interface TransitionCampaignInput {
+  readonly campaignId: string;
+  readonly targetStatus: Exclude<CampaignStatus, "draft">;
+  readonly reason: string | null;
+  readonly auditHash: string;
+}
+
+export interface TransitionCampaignResult {
+  readonly campaign: CampaignView;
+  readonly previousStatus: CampaignStatus;
+  readonly wasChanged: boolean;
 }
 
 export interface ContentView {
@@ -231,6 +428,8 @@ export interface ResourceScopeResult {
 export interface CreateContentInput {
   readonly contentId: string;
   readonly versionId: string;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
   readonly campaignId: string;
   readonly brandId: string;
   readonly title: string;
@@ -282,6 +481,8 @@ export interface AuditContextRecord {
   readonly policyBundle: {
     readonly id: string;
     readonly version: string;
+    readonly policyHash: string;
+    readonly document: unknown;
   };
 }
 
@@ -295,9 +496,37 @@ export interface PersistAuditInput {
 }
 
 export interface PersistAuditResult {
+  readonly auditRunId: string;
   readonly artifact: Readonly<AuditArtifact>;
   readonly grant: Readonly<PublicationGrant> | null;
   readonly wasCreated: boolean;
+}
+
+export interface AuditListInput {
+  readonly limit: number;
+  readonly before?: string;
+  readonly status?: "passed" | "failed" | "errored";
+  readonly platform?: Platform;
+}
+
+export interface AuditLogInput {
+  readonly limit: number;
+  readonly before?: string;
+  readonly action?: string;
+  readonly resourceType?: string;
+}
+
+export interface AuditLogView {
+  readonly id: string;
+  readonly actorId: string;
+  readonly action: string;
+  readonly resourceType: string;
+  readonly resourceId: string | null;
+  readonly requestId: string;
+  readonly beforeHash: string | null;
+  readonly afterHash: string | null;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
 }
 
 export interface PublicationRequestInput {
@@ -306,6 +535,39 @@ export interface PublicationRequestInput {
   readonly idempotencyKey: string;
   readonly requestHash: string;
   readonly executionLevel: ExecutionLevel;
+  readonly scheduledFor: string | null;
+}
+
+export interface PublicationReplayInput {
+  readonly idempotencyKey: string;
+  readonly variantId: string;
+  readonly auditArtifactId: string;
+  readonly channelAccountId: string;
+  readonly executionLevel: ExecutionLevel;
+}
+
+export interface RevokePublicationGrantInput {
+  readonly grantId: string;
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface RevokePublicationGrantResult {
+  readonly grantId: string;
+  readonly status: "revoked";
+  readonly revokedAt: string;
+  readonly wasChanged: boolean;
+}
+
+export interface CancelPublicationJobInput {
+  readonly jobId: string;
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface CancelPublicationJobResult {
+  readonly job: PublicationJobView;
+  readonly wasChanged: boolean;
 }
 
 export interface PublicationGovernanceAuditInput {
@@ -318,6 +580,16 @@ export interface PublicationGovernanceAuditInput {
   readonly reason: string;
 }
 
+export interface PublicationGovernanceContext {
+  readonly grant: {
+    readonly id: string;
+    readonly status: "issued" | "consumed" | "expired" | "revoked";
+    readonly issuedAt: string;
+    readonly expiresAt: string;
+  };
+  readonly artifact: Readonly<AuditArtifact>;
+}
+
 export interface PublicationRequestResult {
   readonly publicationJobId: string;
   readonly publicationOutboxEventId: string;
@@ -326,24 +598,64 @@ export interface PublicationRequestResult {
 
 export interface PublicationJobView {
   readonly id: string;
+  readonly grantId: string;
+  readonly auditArtifactId: string;
   readonly variantId: string;
+  readonly channelAccountId: string;
   readonly platform: Platform;
   readonly executionLevel: ExecutionLevel;
   readonly state: PublicationJobState;
   readonly payloadHash: string;
+  readonly scheduledFor: string;
+  readonly availableAt: string;
+  readonly attemptCount: number;
+  readonly lastErrorCode: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface PublicationAttemptView {
+  readonly id: string;
+  readonly jobId: string;
+  readonly attemptNo: number;
+  readonly state: "started" | "succeeded" | "failed" | "uncertain" | "reconciled";
+  readonly requestHash: string;
+  readonly responseHash: string | null;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly startedAt: string;
+  readonly finishedAt: string | null;
 }
 
 export interface PublicationReceiptView {
   readonly id: string;
   readonly jobId: string;
+  readonly attemptId: string;
   readonly platform: Platform;
   readonly executionLevel: ExecutionLevel;
   readonly evidenceType: EvidenceType;
+  readonly requestHash: string;
+  readonly responseHash: string;
+  readonly externalId: string | null;
   readonly externalUrl: string | null;
+  readonly publishedAt: string | null;
   readonly confirmed: boolean;
+  readonly payload: Readonly<Record<string, unknown>>;
   readonly recordedAt: string;
+}
+
+export interface PublicationReadbackView {
+  readonly id: string;
+  readonly jobId: string;
+  readonly receiptId: string;
+  readonly status: "not_required" | "pending" | "processing" | "succeeded" | "failed" | "cancelled";
+  readonly required: boolean;
+  readonly reason: string | null;
+  readonly scheduledFor: string;
+  readonly completedAt: string | null;
+  readonly lastError: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface VisibilityProviderSummary {
@@ -356,15 +668,67 @@ export interface VisibilityProviderSummary {
   readonly observations: number;
   readonly brandMentionRate: number;
   readonly contactAccuracy: number;
+  readonly averageAnswerPosition: number;
+  readonly competitorMentionRate: number;
+  readonly negativeSentimentRate: number;
+  readonly hallucinationFindings: number;
   readonly harmfulErrors: number;
+}
+
+export interface VisibilityRunListInput {
+  readonly limit: number;
+  readonly provider?: VisibilityProvider;
+  readonly observationMethod?: ObservationMethod;
+}
+
+export interface VisibilityRunView {
+  readonly id: string;
+  readonly querySetVersionId: string;
+  readonly provider: VisibilityProvider;
+  readonly productSurface: string;
+  readonly model: string;
+  readonly searchMode: "on" | "off" | "unknown";
+  readonly observationMethod: ObservationMethod;
+  readonly status: "queued" | "running" | "completed" | "failed";
+  readonly locale: string;
+  readonly geo: string | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly errorMessage: string | null;
+  readonly observationCount: number;
+  readonly createdAt: string;
+}
+
+export interface VisibilityObservationView extends VisibilityObservation {
+  readonly extractorVersion: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+}
+
+export interface VisibilityMetricView {
+  readonly name: string;
+  readonly value: number;
+  readonly sampleCount: number;
+  readonly confidenceLow: number | null;
+  readonly confidenceHigh: number | null;
+  readonly dimensions: Readonly<Record<string, unknown>>;
+  readonly createdAt: string;
+}
+
+export interface VisibilityRunDetailView {
+  readonly run: VisibilityRunView;
+  readonly observations: readonly VisibilityObservationView[];
+  readonly metrics: readonly VisibilityMetricView[];
 }
 
 export interface VisibilityRunContextRecord {
   readonly querySetVersionId: string;
-  readonly querySetVersion: number;
+  readonly querySetVersion: string;
   readonly prompts: unknown;
+  readonly brandId: string;
   readonly brandNames: readonly string[];
   readonly expectedContacts: readonly string[];
+  readonly competitors: readonly CompetitorTruth[];
   readonly evidenceUrls: readonly string[];
 }
 
@@ -404,7 +768,7 @@ export class RepositoryConflictError extends Error {
   }
 }
 
-export interface ApiRepository {
+export interface ApiRepository extends AutomationRepository, ManualPublicationPackageRepository {
   isReady(): Promise<boolean>;
   findLoginIdentity(email: string): Promise<LoginIdentity | null>;
   findLoginIdentityByUserId(userId: string): Promise<LoginIdentity | null>;
@@ -413,13 +777,48 @@ export interface ApiRepository {
   revokeSession(context: RequestContext, sessionId: string): Promise<void>;
 
   getTenant(context: RequestContext): Promise<TenantView>;
+  listBrands(context: RequestContext): Promise<readonly BrandView[]>;
+  createBrand(context: RequestContext, input: CreateBrandInput): Promise<BrandView>;
+  listMembers(context: RequestContext): Promise<readonly TenantMemberView[]>;
+  createMember(context: RequestContext, input: CreateTenantMemberInput): Promise<TenantMemberView>;
+  updateMember(context: RequestContext, input: UpdateTenantMemberInput): Promise<TenantMemberView>;
+  listPolicyBundles(context: RequestContext): Promise<readonly PolicyBundleView[]>;
+  createPolicyBundle(
+    context: RequestContext,
+    input: CreatePolicyBundleInput,
+  ): Promise<PolicyBundleView>;
+  transitionPolicyBundle(
+    context: RequestContext,
+    input: TransitionPolicyBundleInput,
+  ): Promise<TransitionPolicyBundleResult>;
+  listQuerySets(context: RequestContext): Promise<readonly QuerySetView[]>;
+  createQuerySet(context: RequestContext, input: CreateQuerySetInput): Promise<QuerySetView>;
   getAutomationStatus(context: RequestContext): Promise<AutomationStatusView>;
   setTenantKillSwitch(
     context: RequestContext,
     input: SetTenantKillSwitchInput,
   ): Promise<AutomationControlView>;
   listContacts(context: RequestContext): Promise<readonly TenantContact[]>;
+  createContact(context: RequestContext, input: CreateTenantContactInput): Promise<TenantContact>;
+  expireContact(context: RequestContext, input: ExpireTenantContactInput): Promise<TenantContact>;
   listChannelAccounts(context: RequestContext): Promise<readonly ChannelAccountView[]>;
+  createChannelAccount(
+    context: RequestContext,
+    input: CreateChannelAccountInput,
+  ): Promise<ChannelAccountView>;
+  updateChannelAccount(
+    context: RequestContext,
+    input: UpdateChannelAccountInput,
+  ): Promise<ChannelAccountView>;
+  listServicePrincipals(context: RequestContext): Promise<readonly ServicePrincipalView[]>;
+  createAutomationServicePrincipal(
+    context: RequestContext,
+    input: CreateAutomationServicePrincipalInput,
+  ): Promise<ServicePrincipalView>;
+  setServicePrincipalStatus(
+    context: RequestContext,
+    input: SetServicePrincipalStatusInput,
+  ): Promise<SetServicePrincipalStatusResult>;
   listEvidenceSources(context: RequestContext): Promise<readonly EvidenceSourceView[]>;
   createEvidenceSource(
     context: RequestContext,
@@ -433,6 +832,10 @@ export interface ApiRepository {
   ): Promise<ResourceScopeResult>;
   listCampaigns(context: RequestContext): Promise<readonly CampaignView[]>;
   createCampaign(context: RequestContext, input: CreateCampaignInput): Promise<CampaignView>;
+  transitionCampaign(
+    context: RequestContext,
+    input: TransitionCampaignInput,
+  ): Promise<TransitionCampaignResult>;
   listContent(context: RequestContext): Promise<readonly ContentView[]>;
   createContent(context: RequestContext, input: CreateContentInput): Promise<ContentView>;
   createContentVersion(
@@ -458,17 +861,54 @@ export interface ApiRepository {
   ): Promise<PersistAuditResult | null>;
   persistAudit(context: RequestContext, input: PersistAuditInput): Promise<PersistAuditResult>;
   getAudit(context: RequestContext, artifactId: string): Promise<Readonly<AuditArtifact> | null>;
+  listAudits(
+    context: RequestContext,
+    input: AuditListInput,
+  ): Promise<readonly Readonly<AuditArtifact>[]>;
+  listAuditLog(context: RequestContext, input: AuditLogInput): Promise<readonly AuditLogView[]>;
 
   consumePublicationGrant(
     context: RequestContext,
     input: PublicationRequestInput,
   ): Promise<PublicationRequestResult>;
+  resolvePublicationReplay(
+    context: RequestContext,
+    input: PublicationReplayInput,
+  ): Promise<PublicationRequestResult | null>;
+  revokePublicationGrant(
+    context: RequestContext,
+    input: RevokePublicationGrantInput,
+  ): Promise<RevokePublicationGrantResult>;
   recordPublicationGovernanceDecision(
     context: RequestContext,
     input: PublicationGovernanceAuditInput,
   ): Promise<void>;
+  getPublicationGovernanceContext(
+    context: RequestContext,
+    grantId: string,
+  ): Promise<PublicationGovernanceContext | null>;
   listPublicationJobs(context: RequestContext): Promise<readonly PublicationJobView[]>;
-  listPublicationReceipts(context: RequestContext): Promise<readonly PublicationReceiptView[]>;
+  getPublicationJob(context: RequestContext, jobId: string): Promise<PublicationJobView | null>;
+  cancelPublicationJob(
+    context: RequestContext,
+    input: CancelPublicationJobInput,
+  ): Promise<CancelPublicationJobResult>;
+  listPublicationAttempts(
+    context: RequestContext,
+    jobId: string,
+  ): Promise<readonly PublicationAttemptView[]>;
+  listPublicationReceipts(
+    context: RequestContext,
+    jobId?: string,
+  ): Promise<readonly PublicationReceiptView[]>;
+  getPublicationReceipt(
+    context: RequestContext,
+    receiptId: string,
+  ): Promise<PublicationReceiptView | null>;
+  listPublicationReadbacks(
+    context: RequestContext,
+    jobId?: string,
+  ): Promise<readonly PublicationReadbackView[]>;
   findVisibilityRunByIdempotency(
     context: RequestContext,
     idempotencyKey: string,
@@ -479,6 +919,11 @@ export interface ApiRepository {
     querySetVersionId: string,
   ): Promise<VisibilityRunContextRecord | null>;
   persistVisibilityRun(context: RequestContext, input: PersistVisibilityRunInput): Promise<void>;
+  listVisibilityRuns(
+    context: RequestContext,
+    input: VisibilityRunListInput,
+  ): Promise<readonly VisibilityRunView[]>;
+  getVisibilityRun(context: RequestContext, runId: string): Promise<VisibilityRunDetailView | null>;
   getVisibilitySummary(
     context: RequestContext,
     options: { readonly includeFixture: boolean },

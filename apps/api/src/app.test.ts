@@ -5,18 +5,37 @@ import type {
   TenantContact,
   TenantRole,
 } from "@geo/contracts";
-import { sha256Canonical, sha256Text } from "@geo/core";
+import {
+  buildBaselineAuditPolicyDocument,
+  compileAuditPolicy,
+  renderCanonicalContent,
+  sha256Canonical,
+  sha256Text,
+  type FactSnapshot,
+} from "@geo/core";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildApp, type PasswordService, type PublicationGovernanceGate } from "./app.js";
+import type {
+  AutomationBatchView,
+  AutomationRunView,
+  CreateAutomationBatchInput,
+} from "./automation-repository.js";
+import type {
+  ManualPublicationPackageSource,
+  RecordManualPublicationPackageExportInput,
+} from "./manual-publication-package.js";
 import {
   RepositoryConflictError,
+  RepositoryNotFoundError,
   type ApiRepository,
   type AuditContextRecord,
   type CreateSessionInput,
   type LoginIdentity,
   type PersistAuditInput,
   type PublicationGovernanceAuditInput,
+  type PublicationGovernanceContext,
+  type PublicationJobView,
   type PublicationRequestInput,
   type RequestContext,
   type ResolveSessionInput,
@@ -31,16 +50,30 @@ const ids = {
   wechatOne: "10000000-0000-4000-8000-000000000402",
   wechatTwo: "10000000-0000-4000-8000-000000000403",
   source: "10000000-0000-4000-8000-000000000501",
+  fact: "10000000-0000-4000-8000-000000000502",
   content: "10000000-0000-4000-8000-000000000601",
   version: "10000000-0000-4000-8000-000000000602",
   variant: "10000000-0000-4000-8000-000000000603",
   account: "10000000-0000-4000-8000-000000000701",
+  automationBatch: "10000000-0000-4000-8000-000000000711",
+  automationRun: "10000000-0000-4000-8000-000000000712",
+  automationTarget: "10000000-0000-4000-8000-000000000713",
   policy: "10000000-0000-4000-8000-000000000801",
   brand: "10000000-0000-4000-8000-000000000901",
 };
 
 const fixedNow = new Date("2026-07-14T01:00:00.000Z");
 const tokenValue = "test-token-value-that-is-longer-than-thirty-two-bytes";
+const travelPolicyDocument = buildBaselineAuditPolicyDocument({
+  rulesVersion: "travel-v1",
+  industry: "travel",
+});
+const travelPolicyHash = sha256Canonical(travelPolicyDocument);
+const travelPolicy = compileAuditPolicy({
+  version: travelPolicyDocument.rulesVersion,
+  policyHash: travelPolicyHash,
+  document: travelPolicyDocument,
+});
 
 const contacts: readonly TenantContact[] = [
   {
@@ -75,27 +108,79 @@ const contacts: readonly TenantContact[] = [
   },
 ];
 
-const articlePayload: PublicationVariantPayload = {
-  title: "Japan group tour checks",
-  summary: "Verify the itinerary, service boundary, and current contact details before booking.",
-  bodyMarkdown: [
-    "## Verify current evidence",
-    "The final itinerary should identify transport, accommodation, walking intensity, free time, and cancellation terms. Readers should compare the dated source with the signed itinerary instead of relying on an unsupported promotional promise. This paragraph deliberately contains enough concrete guidance for the minimum quality floor.",
-    "The signed itinerary is the final service boundary.",
-    "## Check whether the service fits",
-    "Older travelers and first-time international travelers should confirm pace and assistance before signing. Hotline: 4001133986. WeChat: ZTGL3411 and ZTGL6431. The current evidence remains the source of truth.",
-  ].join("\n\n"),
+const articleFactSnapshot: FactSnapshot = {
+  tenantId: ids.tenant,
+  capturedAt: fixedNow.toISOString(),
+  facts: [
+    {
+      id: ids.fact,
+      brandId: ids.brand,
+      text: "The signed itinerary is the final service boundary",
+      evidenceSourceIds: [ids.source],
+      validFrom: "2026-07-13T00:00:00.000Z",
+      validUntil: "2026-08-01T00:00:00.000Z",
+    },
+  ],
+  sources: [
+    {
+      id: ids.source,
+      locator: "https://example.test/current-itinerary",
+      contentHash: "c".repeat(64),
+      observedAt: "2026-07-13T01:00:00.000Z",
+      validUntil: "2026-08-01T00:00:00.000Z",
+    },
+  ],
+};
+
+const articlePayloadInput: PublicationVariantPayload = {
+  title: "placeholder",
+  summary: "placeholder",
+  bodyMarkdown: "placeholder",
+  titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+  summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
+  bodyBlocks: [
+    { type: "template", templateId: "generic.body.heading.verified" },
+    { type: "template", templateId: "generic.body.guidance.verified" },
+    { type: "claim", claimId: ids.fact, presentation: "paragraph" },
+    { type: "template", templateId: "generic.body.heading.contact" },
+    { type: "contact", contactId: ids.phone, presentation: "paragraph" },
+    { type: "contact", contactId: ids.wechatOne, presentation: "paragraph" },
+    { type: "contact", contactId: ids.wechatTwo, presentation: "paragraph" },
+    { type: "template", templateId: "generic.body.guidance.contact" },
+  ],
+  tagTemplateIds: ["generic.tag.verified"],
   media: [],
   claims: [
     {
-      id: "10000000-0000-4000-8000-000000000502",
+      id: ids.fact,
       text: "The signed itinerary is the final service boundary",
       evidenceSourceIds: [ids.source],
       validUntil: "2026-08-01T00:00:00.000Z",
     },
   ],
   contactIds: [ids.phone, ids.wechatOne, ids.wechatTwo],
-  tags: ["Japan travel", "group tour"],
+  tags: [],
+};
+const renderedArticlePayload = renderCanonicalContent({
+  payload: articlePayloadInput,
+  policy: travelPolicy,
+  factSnapshot: articleFactSnapshot,
+  contacts,
+});
+if (
+  renderedArticlePayload.title === null ||
+  renderedArticlePayload.summary === null ||
+  renderedArticlePayload.bodyMarkdown === null ||
+  renderedArticlePayload.tags === null
+) {
+  throw new Error("Canonical API fixture did not render");
+}
+const articlePayload: PublicationVariantPayload = {
+  ...articlePayloadInput,
+  title: renderedArticlePayload.title,
+  summary: renderedArticlePayload.summary,
+  bodyMarkdown: renderedArticlePayload.bodyMarkdown,
+  tags: [...renderedArticlePayload.tags],
 };
 
 function identity(role: TenantRole): LoginIdentity {
@@ -127,11 +212,50 @@ class FakeRepository implements ApiRepository {
     { readonly requestHash: string; readonly input: PersistAuditInput }
   >();
   readonly publicationRequests: PublicationRequestInput[] = [];
+  readonly publicationReplayRequests: Parameters<ApiRepository["resolvePublicationReplay"]>[1][] =
+    [];
+  readonly publicationRevocations: Parameters<ApiRepository["revokePublicationGrant"]>[1][] = [];
+  readonly publicationCancellations: Parameters<ApiRepository["cancelPublicationJob"]>[1][] = [];
   readonly governanceDecisions: PublicationGovernanceAuditInput[] = [];
+  readonly manualPublicationPackageExports: RecordManualPublicationPackageExportInput[] = [];
   readonly evidenceSourceInputs: Parameters<ApiRepository["createEvidenceSource"]>[1][] = [];
   readonly factInputs: Parameters<ApiRepository["createFact"]>[1][] = [];
+  readonly contentInputs: Parameters<ApiRepository["createContent"]>[1][] = [];
+  readonly contentIdempotency = new Map<
+    string,
+    {
+      readonly requestHash: string;
+      readonly content: Awaited<ReturnType<ApiRepository["createContent"]>>;
+    }
+  >();
   readonly contentVersionInputs: Parameters<ApiRepository["createContentVersion"]>[1][] = [];
+  readonly variantInputs: Parameters<ApiRepository["createVariant"]>[1][] = [];
   readonly visibilityRuns: Parameters<ApiRepository["persistVisibilityRun"]>[1][] = [];
+  readonly brandInputs: Parameters<ApiRepository["createBrand"]>[1][] = [];
+  readonly policyInputs: Parameters<ApiRepository["createPolicyBundle"]>[1][] = [];
+  readonly memberCreateInputs: Parameters<ApiRepository["createMember"]>[1][] = [];
+  readonly memberUpdateInputs: Parameters<ApiRepository["updateMember"]>[1][] = [];
+  readonly policyTransitionInputs: Parameters<ApiRepository["transitionPolicyBundle"]>[1][] = [];
+  readonly contactCreateInputs: Parameters<ApiRepository["createContact"]>[1][] = [];
+  readonly contactExpireInputs: Parameters<ApiRepository["expireContact"]>[1][] = [];
+  readonly channelAccountCreateInputs: Parameters<ApiRepository["createChannelAccount"]>[1][] = [];
+  readonly channelAccountUpdateInputs: Parameters<ApiRepository["updateChannelAccount"]>[1][] = [];
+  readonly servicePrincipalCreateInputs: Parameters<
+    ApiRepository["createAutomationServicePrincipal"]
+  >[1][] = [];
+  readonly servicePrincipalStatusInputs: Parameters<
+    ApiRepository["setServicePrincipalStatus"]
+  >[1][] = [];
+  readonly querySetInputs: Parameters<ApiRepository["createQuerySet"]>[1][] = [];
+  readonly automationBatchInputs: CreateAutomationBatchInput[] = [];
+  readonly automationClaimInputs: Parameters<ApiRepository["claimAutomationRuns"]>[1][] = [];
+  readonly automationHeartbeatInputs: Parameters<ApiRepository["heartbeatAutomationRun"]>[1][] = [];
+  readonly automationDraftCheckpoints: Parameters<ApiRepository["checkpointAutomationDraft"]>[1][] =
+    [];
+  readonly automationTargetCheckpoints: Parameters<
+    ApiRepository["checkpointAutomationTarget"]
+  >[1][] = [];
+  readonly campaignTransitionInputs: Parameters<ApiRepository["transitionCampaign"]>[1][] = [];
   automationControl = {
     id: "10000000-0000-4000-8000-000000000951",
     mode: "shadow" as const,
@@ -143,6 +267,13 @@ class FakeRepository implements ApiRepository {
   lastContext: RequestContext | null = null;
   loginIdentity: LoginIdentity | null;
   auditPayload: PublicationVariantPayload = articlePayload;
+  auditPolicyHash = travelPolicyHash;
+  auditPolicyDocument: unknown = travelPolicyDocument;
+  publicationJobState: PublicationJobView["state"] = "queued";
+  publicationRequestError: (Error & { code?: string }) | null = null;
+  publicationReplayResult: Awaited<ReturnType<ApiRepository["resolvePublicationReplay"]>> = null;
+  automationBatchState: AutomationBatchView["state"] = "scheduled";
+  campaign: Awaited<ReturnType<ApiRepository["createCampaign"]>> | null = null;
 
   constructor(role: TenantRole = "owner") {
     this.loginIdentity = identity(role);
@@ -206,6 +337,172 @@ class FakeRepository implements ApiRepository {
     };
   }
 
+  async listBrands() {
+    return [
+      {
+        id: ids.brand,
+        canonicalName: "Zhongtong International Travel Agency",
+        displayName: "中通国际旅行社",
+        aliases: ["中通国旅"],
+        description: "首个旅行行业 GEO 租户",
+        industry: "travel",
+        websiteUrl: null,
+        isPrimary: true,
+        createdAt: fixedNow.toISOString(),
+        updatedAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createBrand(_context: RequestContext, input: Parameters<ApiRepository["createBrand"]>[1]) {
+    this.brandInputs.push(input);
+    return {
+      ...input,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  async listMembers() {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000102",
+        userId: ids.actor,
+        email: "owner@example.test",
+        displayName: "Test Owner",
+        role: "owner" as const,
+        capabilities: capabilitiesForRole("owner"),
+        status: "active" as const,
+        createdAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createMember(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createMember"]>[1],
+  ) {
+    this.memberCreateInputs.push(input);
+    return {
+      id: input.membershipId,
+      userId: input.userId,
+      email: input.email,
+      displayName: input.displayName,
+      role: input.role,
+      capabilities: capabilitiesForRole(input.role),
+      status: "active" as const,
+      createdAt: fixedNow.toISOString(),
+    };
+  }
+
+  async updateMember(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["updateMember"]>[1],
+  ) {
+    this.memberUpdateInputs.push(input);
+    return {
+      id: input.membershipId,
+      userId: ids.actor,
+      email: "owner@example.test",
+      displayName: "Test Owner",
+      role: input.role ?? "owner",
+      capabilities: capabilitiesForRole(input.role ?? "owner"),
+      status: input.status ?? ("active" as const),
+      createdAt: fixedNow.toISOString(),
+    };
+  }
+
+  async listPolicyBundles() {
+    return [
+      {
+        id: ids.policy,
+        version: "travel-v1",
+        status: "active" as const,
+        policyHash: travelPolicyHash,
+        document: travelPolicyDocument,
+        effectiveAt: fixedNow.toISOString(),
+        retiredAt: null,
+        createdAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createPolicyBundle(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createPolicyBundle"]>[1],
+  ) {
+    this.policyInputs.push(input);
+    return {
+      id: input.id,
+      version: input.version,
+      status: "draft" as const,
+      policyHash: input.policyHash,
+      document: input.document,
+      effectiveAt: input.effectiveAt,
+      retiredAt: null,
+      createdAt: fixedNow.toISOString(),
+    };
+  }
+
+  async transitionPolicyBundle(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["transitionPolicyBundle"]>[1],
+  ) {
+    this.policyTransitionInputs.push(input);
+    return {
+      policy: {
+        id: input.policyBundleId,
+        version: "travel-v2",
+        status: input.targetStatus,
+        policyHash: travelPolicyHash,
+        document: travelPolicyDocument,
+        effectiveAt: input.changedAt,
+        retiredAt: input.targetStatus === "retired" ? input.changedAt : null,
+        createdAt: fixedNow.toISOString(),
+      },
+      previousStatus: input.targetStatus === "active" ? ("draft" as const) : ("active" as const),
+      wasChanged: true,
+    };
+  }
+
+  async listQuerySets() {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000910",
+        name: "Domestic AI discovery",
+        industry: "travel",
+        status: "active" as const,
+        currentVersion: 1,
+        description: "Separate Doubao and Qwen evidence prompts",
+        currentVersionId: ids.version,
+        prompts: [{ key: "contact", category: "contact", prompt: "中通联系方式" }],
+        promptHash: "d".repeat(64),
+        createdAt: fixedNow.toISOString(),
+        updatedAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createQuerySet(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createQuerySet"]>[1],
+  ) {
+    this.querySetInputs.push(input);
+    return {
+      id: input.querySetId,
+      name: input.name,
+      industry: input.industry,
+      status: "draft" as const,
+      currentVersion: 1,
+      description: input.description,
+      currentVersionId: input.versionId,
+      prompts: input.prompts,
+      promptHash: input.promptHash,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
   async getAutomationStatus() {
     return { control: this.automationControl, circuits: [] };
   }
@@ -222,9 +519,199 @@ class FakeRepository implements ApiRepository {
     return this.automationControl;
   }
 
+  async createAutomationBatch(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createAutomationBatch"]>[1],
+  ) {
+    this.automationBatchInputs.push(input);
+    return { batch: this.automationBatch(input), wasCreated: true };
+  }
+
+  async listAutomationBatches() {
+    const input = this.automationBatchInputs[0];
+    return input === undefined ? [] : [this.automationBatch(input)];
+  }
+
+  async getAutomationRun(_context: RequestContext, runId: string) {
+    const input = this.automationBatchInputs[0];
+    if (input === undefined || input.runs[0]?.runId !== runId) return null;
+    return this.automationRun(input);
+  }
+
+  async listAutomationRuns() {
+    const input = this.automationBatchInputs[0];
+    return input === undefined ? [] : [this.automationRun(input)];
+  }
+
+  async claimAutomationRuns(
+    _context: RequestContext,
+    claimInput: Parameters<ApiRepository["claimAutomationRuns"]>[1],
+  ) {
+    this.automationClaimInputs.push(claimInput);
+    const input = this.automationBatchInputs[0];
+    if (input === undefined) return [];
+    return [
+      {
+        ...this.automationRun(input),
+        state: "running" as const,
+        attemptCount: 1,
+        leaseOwner: `${ids.actor}:producer-1`,
+        leaseExpiresAt: "2026-07-14T01:01:00.000Z",
+        tenantGate: { allowed: true as const, evaluatedAt: fixedNow.toISOString() },
+      },
+    ];
+  }
+
+  async heartbeatAutomationRun(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["heartbeatAutomationRun"]>[1],
+  ) {
+    this.automationHeartbeatInputs.push(input);
+    return {
+      accepted: true,
+      reason: "accepted",
+      leaseExpiresAt: "2026-07-14T01:01:00.000Z",
+    };
+  }
+
+  async checkpointAutomationDraft(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["checkpointAutomationDraft"]>[1],
+  ) {
+    this.automationDraftCheckpoints.push(input);
+    return {
+      accepted: true,
+      reason: "accepted",
+      leaseExpiresAt: "2026-07-14T01:01:00.000Z",
+    };
+  }
+
+  async checkpointAutomationTarget(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["checkpointAutomationTarget"]>[1],
+  ) {
+    this.automationTargetCheckpoints.push(input);
+    return {
+      accepted: true,
+      reason: "accepted",
+      leaseExpiresAt: "2026-07-14T01:01:00.000Z",
+    };
+  }
+
+  async reconcileAutomationRun() {
+    const input = this.automationBatchInputs[0];
+    if (input === undefined) throw new RepositoryConflictError("Automation run was not found");
+    return { ...this.automationRun(input), state: "completed" as const };
+  }
+
+  async cancelAutomationBatch(_context: RequestContext, batchId: string) {
+    this.automationBatchState = "cancelled";
+    return {
+      batchId,
+      state: "cancelled" as const,
+      cancelledRuns: 1,
+      cancelledTargets: 1,
+      wasChanged: true,
+    };
+  }
+
+  private automationBatch(input: CreateAutomationBatchInput): AutomationBatchView {
+    return {
+      id: input.batchId,
+      campaignId: input.campaignId,
+      name: input.name,
+      state: this.automationBatchState,
+      executionLevel: "dry_run",
+      scheduledFor: input.runs[0]?.availableAt ?? fixedNow.toISOString(),
+      runCount: input.runs.length,
+      completedRunCount: 0,
+      failedRunCount: 0,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  private automationRun(input: CreateAutomationBatchInput): AutomationRunView {
+    const run = input.runs[0];
+    const target = run?.targets[0];
+    if (run === undefined || target === undefined) {
+      throw new RepositoryConflictError("Automation fixture requires one run and target");
+    }
+    return {
+      id: run.runId,
+      batchId: input.batchId,
+      campaignId: input.campaignId,
+      brandId: ids.brand,
+      slotKey: run.slotKey,
+      topicKey: run.topicKey,
+      brief: run.brief,
+      state: "scheduled",
+      stage: "planning",
+      availableAt: run.availableAt,
+      attemptCount: 0,
+      maxAttempts: 5,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      heartbeatAt: null,
+      checkpoint: {},
+      contentItemId: null,
+      contentVersionId: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      completedAt: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      targets: [
+        {
+          id: target.targetId,
+          runId: run.runId,
+          channelAccountId: target.channelAccountId,
+          platform: "toutiao",
+          state: "pending",
+          variantId: null,
+          auditRunId: null,
+          auditArtifactId: null,
+          publicationJobId: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          completedAt: null,
+          createdAt: fixedNow.toISOString(),
+          updatedAt: fixedNow.toISOString(),
+        },
+      ],
+    };
+  }
+
   async listContacts(context: RequestContext) {
     this.lastContext = context;
     return contacts;
+  }
+
+  async createContact(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createContact"]>[1],
+  ) {
+    this.contactCreateInputs.push(input);
+    return {
+      id: input.id,
+      tenantId: ids.tenant,
+      type: input.type,
+      label: input.label,
+      value: input.value,
+      isPrimary: input.isPrimary,
+      validFrom: input.validFrom,
+      validUntil: null,
+    };
+  }
+
+  async expireContact(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["expireContact"]>[1],
+  ) {
+    this.contactExpireInputs.push(input);
+    const existing = contacts.find((contact) => contact.id === input.contactId) ?? contacts[0];
+    if (existing === undefined) throw new RepositoryNotFoundError("Contact was not found");
+    return { ...existing, validUntil: input.validUntil };
   }
 
   async listChannelAccounts(context: RequestContext) {
@@ -242,6 +729,112 @@ class FakeRepository implements ApiRepository {
         lastVerifiedAt: null,
       },
     ];
+  }
+
+  async createChannelAccount(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createChannelAccount"]>[1],
+  ) {
+    this.channelAccountCreateInputs.push(input);
+    return {
+      id: input.id,
+      platform: input.platform,
+      displayName: input.displayName,
+      capability: input.capability,
+      supportedExecutionLevels: input.supportedExecutionLevels,
+      evidenceType: input.evidenceType,
+      evidenceRefs: input.evidenceRefs,
+      status: input.status,
+      lastVerifiedAt: input.lastVerifiedAt,
+    };
+  }
+
+  async updateChannelAccount(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["updateChannelAccount"]>[1],
+  ) {
+    this.channelAccountUpdateInputs.push(input);
+    return {
+      id: input.channelAccountId,
+      platform: "toutiao" as const,
+      displayName: input.displayName ?? "Toutiao dry run",
+      capability: input.capability ?? ("manual_only" as const),
+      supportedExecutionLevels: input.supportedExecutionLevels ?? (["dry_run"] as const),
+      evidenceType: input.evidenceType ?? ("preview" as const),
+      evidenceRefs: input.evidenceRefs ?? ["fixture:dry-run-only"],
+      status: input.status ?? "active",
+      lastVerifiedAt: input.lastVerifiedAt === undefined ? null : input.lastVerifiedAt,
+    };
+  }
+
+  async listServicePrincipals(context: RequestContext) {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000801",
+        tenantId: context.tenantId,
+        name: "producer-zhongtong",
+        kind: "agent" as const,
+        profile: "automation_producer" as const,
+        capabilities: ["automation:execute" as const],
+        status: "active" as const,
+        credentialStatus: "not_issued" as const,
+        lastUsedAt: null,
+        createdAt: fixedNow.toISOString(),
+        updatedAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createAutomationServicePrincipal(
+    context: RequestContext,
+    input: Parameters<ApiRepository["createAutomationServicePrincipal"]>[1],
+  ) {
+    this.servicePrincipalCreateInputs.push(input);
+    return {
+      id: input.id,
+      tenantId: context.tenantId,
+      name: input.name,
+      kind: "agent" as const,
+      profile: "automation_producer" as const,
+      capabilities: [
+        "tenant:read" as const,
+        "content:read" as const,
+        "content:write" as const,
+        "audit:read" as const,
+        "audit:run" as const,
+        "publish:request" as const,
+        "receipt:read" as const,
+        "automation:execute" as const,
+      ],
+      status: "active" as const,
+      credentialStatus: "not_issued" as const,
+      lastUsedAt: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  async setServicePrincipalStatus(
+    context: RequestContext,
+    input: Parameters<ApiRepository["setServicePrincipalStatus"]>[1],
+  ) {
+    this.servicePrincipalStatusInputs.push(input);
+    return {
+      principal: {
+        id: input.servicePrincipalId,
+        tenantId: context.tenantId,
+        name: "producer-zhongtong",
+        kind: "agent" as const,
+        profile: "automation_producer" as const,
+        capabilities: ["automation:execute" as const],
+        status: input.status,
+        credentialStatus: "not_issued" as const,
+        lastUsedAt: null,
+        createdAt: fixedNow.toISOString(),
+        updatedAt: fixedNow.toISOString(),
+      },
+      wasChanged: true,
+    };
   }
 
   async listEvidenceSources() {
@@ -266,7 +859,16 @@ class FakeRepository implements ApiRepository {
   }
 
   async listFacts() {
-    return [];
+    return articleFactSnapshot.facts.map((fact) => ({
+      id: fact.id,
+      brandId: fact.brandId,
+      normalizedKey: "service.boundary",
+      claim: fact.text,
+      status: "verified" as const,
+      evidenceSourceIds: fact.evidenceSourceIds,
+      validFrom: fact.validFrom,
+      validUntil: fact.validUntil,
+    }));
   }
 
   async createFact(_context: RequestContext, input: Parameters<ApiRepository["createFact"]>[1]) {
@@ -289,7 +891,40 @@ class FakeRepository implements ApiRepository {
     _context: RequestContext,
     input: Parameters<ApiRepository["createCampaign"]>[1],
   ) {
-    return { ...input, status: "draft" };
+    this.campaign = { ...input, status: "draft" };
+    return this.campaign;
+  }
+
+  async transitionCampaign(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["transitionCampaign"]>[1],
+  ): ReturnType<ApiRepository["transitionCampaign"]> {
+    this.campaignTransitionInputs.push(input);
+    const current = this.campaign;
+    if (current === null || current.id !== input.campaignId) {
+      throw new RepositoryNotFoundError("Campaign was not found");
+    }
+    if (current.status === input.targetStatus) {
+      return Promise.resolve({
+        campaign: current,
+        previousStatus: current.status,
+        wasChanged: false,
+      });
+    }
+    const allowed =
+      (input.targetStatus === "active" &&
+        (current.status === "draft" || current.status === "paused")) ||
+      (input.targetStatus === "paused" && current.status === "active") ||
+      (input.targetStatus === "completed" &&
+        (current.status === "active" || current.status === "paused"));
+    if (!allowed) {
+      throw new RepositoryConflictError(
+        `Campaign cannot transition from ${current.status} to ${input.targetStatus}`,
+      );
+    }
+    const updated = { ...current, status: input.targetStatus };
+    this.campaign = updated;
+    return Promise.resolve({ campaign: updated, previousStatus: current.status, wasChanged: true });
   }
 
   async listContent() {
@@ -300,7 +935,15 @@ class FakeRepository implements ApiRepository {
     _context: RequestContext,
     input: Parameters<ApiRepository["createContent"]>[1],
   ) {
-    return {
+    this.contentInputs.push(input);
+    const existing = this.contentIdempotency.get(input.idempotencyKey);
+    if (existing !== undefined) {
+      if (existing.requestHash !== input.requestHash) {
+        throw new RepositoryConflictError("Content idempotency key conflicts with another request");
+      }
+      return existing.content;
+    }
+    const content = {
       id: input.contentId,
       campaignId: input.campaignId,
       brandId: input.brandId,
@@ -311,6 +954,11 @@ class FakeRepository implements ApiRepository {
       latestVersion: 1,
       latestVersionId: input.versionId,
     };
+    this.contentIdempotency.set(input.idempotencyKey, {
+      requestHash: input.requestHash,
+      content,
+    });
+    return content;
   }
 
   async createContentVersion(
@@ -352,6 +1000,7 @@ class FakeRepository implements ApiRepository {
     _context: RequestContext,
     input: Parameters<ApiRepository["createVariant"]>[1],
   ) {
+    this.variantInputs.push(input);
     return {
       id: input.variantId,
       contentVersionId: input.contentVersionId,
@@ -366,8 +1015,6 @@ class FakeRepository implements ApiRepository {
   }
 
   async loadAuditContext(): Promise<AuditContextRecord> {
-    const claim = articlePayload.claims[0];
-    if (claim === undefined) throw new Error("Audit fixture must contain one claim");
     return {
       brandId: ids.brand,
       variant: {
@@ -382,31 +1029,14 @@ class FakeRepository implements ApiRepository {
         frozenAt: null,
       },
       contacts,
-      factSnapshot: {
-        tenantId: ids.tenant,
-        capturedAt: fixedNow.toISOString(),
-        facts: [
-          {
-            id: claim.id,
-            brandId: ids.brand,
-            text: claim.text,
-            evidenceSourceIds: [ids.source],
-            validFrom: "2026-07-13T00:00:00.000Z",
-            validUntil: "2026-08-01T00:00:00.000Z",
-          },
-        ],
-        sources: [
-          {
-            id: ids.source,
-            locator: "https://example.test/current-itinerary",
-            contentHash: "c".repeat(64),
-            observedAt: "2026-07-13T01:00:00.000Z",
-            validUntil: "2026-08-01T00:00:00.000Z",
-          },
-        ],
-      },
+      factSnapshot: articleFactSnapshot,
       priorVariants: [],
-      policyBundle: { id: ids.policy, version: "travel-v1" },
+      policyBundle: {
+        id: ids.policy,
+        version: "travel-v1",
+        policyHash: this.auditPolicyHash,
+        document: this.auditPolicyDocument,
+      },
     };
   }
 
@@ -421,6 +1051,7 @@ class FakeRepository implements ApiRepository {
       throw new RepositoryConflictError("Audit idempotency key conflicts with another request");
     }
     return {
+      auditRunId: existing.input.auditRunId,
       artifact: existing.input.artifact,
       grant: existing.input.grant,
       wasCreated: false,
@@ -435,6 +1066,7 @@ class FakeRepository implements ApiRepository {
         throw new RepositoryConflictError("Audit idempotency key conflicts with another request");
       }
       return {
+        auditRunId: existing.input.auditRunId,
         artifact: existing.input.artifact,
         grant: existing.input.grant,
         wasCreated: false,
@@ -442,7 +1074,12 @@ class FakeRepository implements ApiRepository {
     }
     this.persistedAudits.push(input);
     this.auditIdempotency.set(key, { requestHash: input.requestHash, input });
-    return { artifact: input.artifact, grant: input.grant, wasCreated: true };
+    return {
+      auditRunId: input.auditRunId,
+      artifact: input.artifact,
+      grant: input.grant,
+      wasCreated: true,
+    };
   }
 
   async getAudit(
@@ -452,12 +1089,91 @@ class FakeRepository implements ApiRepository {
     return this.persistedAudits.find((entry) => entry.artifact.id === artifactId)?.artifact ?? null;
   }
 
+  async loadManualPublicationPackageSource(
+    context: RequestContext,
+    artifactId: string,
+  ): Promise<ManualPublicationPackageSource | null> {
+    const artifact = await this.getAudit(context, artifactId);
+    if (artifact === null || artifact.tenantId !== context.tenantId) return null;
+    const account = (await this.listChannelAccounts(context)).find(
+      (candidate) => candidate.id === artifact.channelAccountId,
+    );
+    if (account === undefined) return null;
+    return {
+      artifact,
+      payload: this.auditPayload,
+      account: {
+        id: account.id,
+        platform: account.platform,
+        capability: account.capability,
+        supportedExecutionLevels: account.supportedExecutionLevels,
+        status: account.status,
+      },
+    };
+  }
+
+  async recordManualPublicationPackageExport(
+    _context: RequestContext,
+    input: RecordManualPublicationPackageExportInput,
+  ): Promise<void> {
+    this.manualPublicationPackageExports.push(input);
+  }
+
+  async listAudits(_context: RequestContext, input: Parameters<ApiRepository["listAudits"]>[1]) {
+    return this.persistedAudits
+      .map((entry) => entry.artifact)
+      .filter((artifact) => input.status === undefined || artifact.status === input.status)
+      .slice(0, input.limit);
+  }
+
+  async listAuditLog(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["listAuditLog"]>[1],
+  ) {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000996",
+        actorId: ids.actor,
+        action: input.action ?? "publication_job.cancelled",
+        resourceType: input.resourceType ?? "publication_job",
+        resourceId: "10000000-0000-4000-8000-000000000991",
+        requestId: "request:test",
+        beforeHash: null,
+        afterHash: "e".repeat(64),
+        details: { reason: "test" },
+        createdAt: fixedNow.toISOString(),
+      },
+    ].slice(0, input.limit);
+  }
+
   async consumePublicationGrant(_context: RequestContext, input: PublicationRequestInput) {
     this.publicationRequests.push(input);
+    if (this.publicationRequestError !== null) throw this.publicationRequestError;
     return {
       publicationJobId: "10000000-0000-4000-8000-000000000991",
       publicationOutboxEventId: "10000000-0000-4000-8000-000000000992",
       wasCreated: true,
+    };
+  }
+
+  async resolvePublicationReplay(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["resolvePublicationReplay"]>[1],
+  ) {
+    this.publicationReplayRequests.push(input);
+    return this.publicationReplayResult;
+  }
+
+  async revokePublicationGrant(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["revokePublicationGrant"]>[1],
+  ) {
+    this.publicationRevocations.push(input);
+    return {
+      grantId: input.grantId,
+      status: "revoked" as const,
+      revokedAt: fixedNow.toISOString(),
+      wasChanged: true,
     };
   }
 
@@ -468,12 +1184,146 @@ class FakeRepository implements ApiRepository {
     this.governanceDecisions.push(input);
   }
 
-  async listPublicationJobs() {
-    return [];
+  async getPublicationGovernanceContext(
+    context: RequestContext,
+    grantId: string,
+  ): Promise<PublicationGovernanceContext> {
+    const persisted = this.persistedAudits.find((entry) => entry.grant?.id === grantId);
+    if (persisted?.grant !== undefined && persisted.grant !== null) {
+      return {
+        grant: {
+          id: persisted.grant.id,
+          status: persisted.grant.status,
+          issuedAt: persisted.grant.issuedAt,
+          expiresAt: persisted.grant.expiresAt,
+        },
+        artifact: persisted.artifact,
+      };
+    }
+    return {
+      grant: {
+        id: grantId,
+        status: "issued",
+        issuedAt: fixedNow.toISOString(),
+        expiresAt: "2026-07-14T01:10:00.000Z",
+      },
+      artifact: {
+        id: "10000000-0000-4000-8000-000000000989",
+        tenantId: context.tenantId,
+        variantId: ids.variant,
+        channelAccountId: ids.account,
+        platform: "toutiao",
+        payloadHash: "a".repeat(64),
+        factSnapshotHash: "b".repeat(64),
+        policyHash: "c".repeat(64),
+        policyVersion: "travel-v1",
+        auditHash: "d".repeat(64),
+        status: "passed",
+        findings: [],
+        createdAt: fixedNow.toISOString(),
+        expiresAt: "2026-07-14T01:10:00.000Z",
+      },
+    };
   }
 
-  async listPublicationReceipts() {
-    return [];
+  async listPublicationJobs() {
+    return [this.publicationJob()];
+  }
+
+  async getPublicationJob(_context: RequestContext, jobId: string) {
+    return jobId === this.publicationJob().id ? this.publicationJob() : null;
+  }
+
+  async cancelPublicationJob(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["cancelPublicationJob"]>[1],
+  ) {
+    this.publicationCancellations.push(input);
+    this.publicationJobState = "cancelled";
+    return { job: this.publicationJob(), wasChanged: true };
+  }
+
+  async listPublicationAttempts(_context: RequestContext, jobId: string) {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000993",
+        jobId,
+        attemptNo: 1,
+        state: "succeeded" as const,
+        requestHash: "a".repeat(64),
+        responseHash: "b".repeat(64),
+        errorCode: null,
+        errorMessage: null,
+        startedAt: fixedNow.toISOString(),
+        finishedAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async listPublicationReceipts(_context: RequestContext, jobId?: string) {
+    const receipt = this.publicationReceipt();
+    return jobId === undefined || jobId === receipt.jobId ? [receipt] : [];
+  }
+
+  async getPublicationReceipt(_context: RequestContext, receiptId: string) {
+    const receipt = this.publicationReceipt();
+    return receipt.id === receiptId ? receipt : null;
+  }
+
+  async listPublicationReadbacks(_context: RequestContext, jobId?: string) {
+    const readback = {
+      id: "10000000-0000-4000-8000-000000000995",
+      jobId: this.publicationJob().id,
+      receiptId: this.publicationReceipt().id,
+      status: "not_required" as const,
+      required: false,
+      reason: "dry_run_preview_only",
+      scheduledFor: fixedNow.toISOString(),
+      completedAt: fixedNow.toISOString(),
+      lastError: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+    return jobId === undefined || jobId === readback.jobId ? [readback] : [];
+  }
+
+  private publicationJob(): PublicationJobView {
+    return {
+      id: "10000000-0000-4000-8000-000000000991",
+      grantId: "10000000-0000-4000-8000-000000000990",
+      auditArtifactId: "10000000-0000-4000-8000-000000000989",
+      variantId: ids.variant,
+      channelAccountId: ids.account,
+      platform: "toutiao",
+      executionLevel: "dry_run",
+      state: this.publicationJobState,
+      payloadHash: "a".repeat(64),
+      scheduledFor: fixedNow.toISOString(),
+      availableAt: fixedNow.toISOString(),
+      attemptCount: 1,
+      lastErrorCode: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  private publicationReceipt() {
+    return {
+      id: "10000000-0000-4000-8000-000000000994",
+      jobId: this.publicationJob().id,
+      attemptId: "10000000-0000-4000-8000-000000000993",
+      platform: "toutiao" as const,
+      executionLevel: "dry_run" as const,
+      evidenceType: "preview" as const,
+      requestHash: "a".repeat(64),
+      responseHash: "b".repeat(64),
+      externalId: null,
+      externalUrl: null,
+      publishedAt: null,
+      confirmed: false,
+      payload: { readback: { required: false, reason: "dry_run_preview_only" } },
+      recordedAt: fixedNow.toISOString(),
+    };
   }
 
   async findVisibilityRunByIdempotency() {
@@ -483,10 +1333,32 @@ class FakeRepository implements ApiRepository {
   async loadVisibilityRunContext() {
     return {
       querySetVersionId: ids.version,
-      querySetVersion: 1,
-      prompts: [{ key: "brand-contact", category: "contact", prompt: "中通联系方式" }],
+      querySetVersion: "1.0.0",
+      prompts: [
+        {
+          key: "brand-contact",
+          category: "contact",
+          prompt: "中通联系方式",
+          packVersion: "1.0.0",
+        },
+        {
+          key: "brand-comparison",
+          category: "comparison",
+          prompt: "中通与同业比较",
+          packVersion: "1.0.0",
+        },
+      ],
+      brandId: ids.brand,
       brandNames: ["中通国际旅行社"],
       expectedContacts: ["4001133986", "ZTGL3411", "ZTGL6431"],
+      competitors: [
+        {
+          canonicalName: "中青旅",
+          aliases: ["CYTS"],
+          sourceType: "tenant_configured" as const,
+          sourceRef: "test:competitor:v1",
+        },
+      ],
       evidenceUrls: [],
     };
   }
@@ -496,6 +1368,81 @@ class FakeRepository implements ApiRepository {
     input: Parameters<ApiRepository["persistVisibilityRun"]>[1],
   ) {
     this.visibilityRuns.push(input);
+  }
+
+  async listVisibilityRuns() {
+    return [
+      {
+        id: "10000000-0000-4000-8000-000000000971",
+        querySetVersionId: ids.version,
+        provider: "doubao" as const,
+        productSurface: "doubao-app",
+        model: "doubao-observed-model",
+        searchMode: "on" as const,
+        observationMethod: "manual" as const,
+        status: "completed" as const,
+        locale: "zh-CN",
+        geo: "CN",
+        startedAt: fixedNow.toISOString(),
+        completedAt: fixedNow.toISOString(),
+        errorMessage: null,
+        observationCount: 1,
+        createdAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async getVisibilityRun(_context: RequestContext, runId: string) {
+    const run = (await this.listVisibilityRuns())[0];
+    if (run === undefined || run.id !== runId) return null;
+    return {
+      run,
+      observations: [
+        {
+          id: "10000000-0000-4000-8000-000000000972",
+          tenantId: ids.tenant,
+          runId,
+          provider: "doubao" as const,
+          productSurface: run.productSurface,
+          model: run.model,
+          searchMode: run.searchMode,
+          observationMethod: run.observationMethod,
+          prompt: "中通国际旅行社联系方式是什么？",
+          promptVersion: "1",
+          locale: "zh-CN",
+          geo: "CN",
+          rawAnswer: "24小时热线 4001133986，微信 ZTGL3411 或 ZTGL6431。",
+          citedUrls: ["https://example.test/contact"],
+          evidenceHash: "c".repeat(64),
+          evidenceType: "manual_import" as const,
+          requestStartedAt: "2026-07-13T11:59:59.000Z",
+          responseReceivedAt: fixedNow.toISOString(),
+          observedAt: fixedNow.toISOString(),
+          brandMentioned: true,
+          answerPosition: 1,
+          contactAccuracy: 1,
+          competitorMentions: [],
+          sentiment: "neutral" as const,
+          hallucinationFindings: [],
+          harmfulError: false,
+          extractorVersion: "geo-visibility-v1",
+          evaluatorVersion: "geo-visibility-evaluator-v1",
+          metadata: { evidenceMode: "manual" },
+          createdAt: fixedNow.toISOString(),
+        },
+      ],
+      metrics: [
+        {
+          name: "contactAccuracy",
+          value: 1,
+          sampleCount: 1,
+          confidenceLow: null,
+          confidenceHigh: null,
+          dimensions: { provider: "doubao", evidenceMode: "manual" },
+          createdAt: fixedNow.toISOString(),
+        },
+      ],
+    };
   }
 
   async getVisibilitySummary() {
@@ -714,6 +1661,75 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(response.json()).toMatchObject({ error: { code: "AUTHORIZATION_DENIED" } });
   });
 
+  it("transitions campaigns through the protected lifecycle without reopening completion", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/campaigns",
+      headers,
+      payload: {
+        brandId: ids.brand,
+        name: "Lifecycle campaign",
+        objective: "Exercise campaign transitions",
+        industry: "travel",
+        topicKey: "campaign-lifecycle",
+      },
+    });
+    const campaign = created.json<{ id: string; status: string }>();
+    expect(campaign.status).toBe("draft");
+
+    const transition = (status: "active" | "paused" | "completed", reason: string) =>
+      app.inject({
+        method: "POST",
+        url: `/api/campaigns/${campaign.id}/state`,
+        headers,
+        payload: { status, reason },
+      });
+
+    const invalidPause = await transition("paused", "Drafts cannot be paused");
+    expect(invalidPause.statusCode).toBe(409);
+    const activated = await transition("active", "Ready for governed generation");
+    const replayed = await transition("active", "Idempotent operator retry");
+    const paused = await transition("paused", "Operator review");
+    const resumed = await transition("active", "Review completed");
+    const completed = await transition("completed", "Campaign objective reached");
+    const reopened = await transition("active", "Must remain terminal");
+
+    expect(activated.json()).toMatchObject({
+      campaign: { status: "active" },
+      previousStatus: "draft",
+      wasChanged: true,
+    });
+    expect(replayed.json()).toMatchObject({
+      campaign: { status: "active" },
+      previousStatus: "active",
+      wasChanged: false,
+    });
+    expect(paused.json()).toMatchObject({ campaign: { status: "paused" }, wasChanged: true });
+    expect(resumed.json()).toMatchObject({ campaign: { status: "active" }, wasChanged: true });
+    expect(completed.json()).toMatchObject({
+      campaign: { status: "completed" },
+      wasChanged: true,
+    });
+    expect(reopened.statusCode).toBe(409);
+    expect(repository.campaignTransitionInputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          campaignId: campaign.id,
+          targetStatus: "active",
+          reason: "Ready for governed generation",
+          auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        }),
+      ]),
+    );
+  });
+
   it("persists and confirms the tenant kill switch through the protected API", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -750,6 +1766,270 @@ describe("Fastify API security and vertical publication flow", () => {
     });
   });
 
+  it("creates, lists, claims, checkpoints, and cancels a tenant-scoped dry-run batch", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/campaigns/${ids.brand}/automation-batches`,
+      headers,
+      payload: {
+        idempotencyKey: "campaign:summer:batch:1",
+        name: "七月第一批",
+        items: [
+          {
+            slotKey: "slot-001",
+            scheduledFor: "2026-07-14T01:05:00.000Z",
+            topicKey: "travel:senior-friendly",
+            brief: "适合老年人的出境跟团游注意事项",
+            channelAccountIds: [ids.account],
+          },
+        ],
+      },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      batch: {
+        state: "scheduled",
+        executionLevel: "dry_run",
+        runCount: 1,
+      },
+      wasCreated: true,
+    });
+    expect(repository.automationBatchInputs[0]).toMatchObject({
+      campaignId: ids.brand,
+      name: "七月第一批",
+      runs: [
+        {
+          slotKey: "slot-001",
+          targets: [{ channelAccountId: ids.account }],
+        },
+      ],
+    });
+    expect(JSON.stringify(repository.automationBatchInputs[0])).not.toContain("unattended");
+
+    const batches = await app.inject({
+      method: "GET",
+      url: "/api/automation-batches",
+      headers: { cookie: authenticated.cookie },
+    });
+    const runs = await app.inject({
+      method: "GET",
+      url: "/api/automation-runs",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(batches.json()).toMatchObject({ items: [{ executionLevel: "dry_run" }] });
+    const run = runs.json<{ items: Array<{ id: string; targets: Array<{ id: string }> }> }>()
+      .items[0];
+    if (run === undefined || run.targets[0] === undefined) throw new Error("Run fixture missing");
+
+    const claimed = await app.inject({
+      method: "POST",
+      url: "/api/automation-runs/claim",
+      headers,
+      payload: { producerId: "producer-1", limit: 1, leaseSeconds: 60 },
+    });
+    expect(claimed.statusCode).toBe(200);
+    expect(claimed.json()).toMatchObject({
+      items: [{ id: run.id, tenantGate: { allowed: true } }],
+    });
+    expect(repository.automationClaimInputs[0]?.workerId).toBe(`${ids.actor}:producer-1`);
+
+    const targetCheckpoint = await app.inject({
+      method: "POST",
+      url: `/api/automation-runs/${run.id}/targets/${run.targets[0].id}/checkpoint`,
+      headers,
+      payload: {
+        producerId: "producer-1",
+        attempt: 1,
+        state: "awaiting_delivery",
+        variantId: ids.variant,
+        auditRunId: ids.policy,
+        auditArtifactId: ids.policy,
+        publicationJobId: ids.content,
+        checkpoint: { stage: "delivery" },
+        leaseSeconds: 60,
+      },
+    });
+    expect(targetCheckpoint.statusCode).toBe(200);
+    expect(repository.automationTargetCheckpoints[0]).toMatchObject({
+      workerId: `${ids.actor}:producer-1`,
+      state: "awaiting_delivery",
+    });
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/automation-batches/${created.json<{ batch: { id: string } }>().batch.id}/cancel`,
+      headers,
+      payload: { reason: "运营员停止本批次" },
+    });
+    expect(cancelled.json()).toMatchObject({ state: "cancelled", wasChanged: true });
+  });
+
+  it("rejects client-selected unattended automation and principals without execute authority", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const create = await app.inject({
+      method: "POST",
+      url: `/api/campaigns/${ids.brand}/automation-batches`,
+      headers,
+      payload: {
+        idempotencyKey: "campaign:summer:batch:2",
+        executionLevel: "unattended",
+        items: [
+          {
+            slotKey: "slot-001",
+            scheduledFor: "2026-07-14T01:05:00.000Z",
+            topicKey: "travel:safe",
+            brief: "出境游注意事项",
+            channelAccountIds: [ids.account],
+          },
+        ],
+      },
+    });
+    expect(create.statusCode).toBe(400);
+    expect(repository.automationBatchInputs).toHaveLength(0);
+
+    const restrictedRepository = new FakeRepository("editor");
+    const restrictedApp = await testApp(restrictedRepository);
+    const restricted = await login(restrictedApp);
+    const claim = await restrictedApp.inject({
+      method: "POST",
+      url: "/api/automation-runs/claim",
+      headers: {
+        cookie: restricted.cookie,
+        "x-csrf-token": restricted.body.csrfToken,
+      },
+      payload: { producerId: "producer-1", limit: 1, leaseSeconds: 60 },
+    });
+
+    expect(claim.statusCode).toBe(403);
+    expect(restrictedRepository.automationClaimInputs).toHaveLength(0);
+  });
+
+  it("manages tenant brands, draft policies, members, and provider-neutral query sets", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const writeHeaders = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const [brands, members, policies, querySets] = await Promise.all([
+      app.inject({ method: "GET", url: "/api/brands", headers: writeHeaders }),
+      app.inject({ method: "GET", url: "/api/members", headers: writeHeaders }),
+      app.inject({ method: "GET", url: "/api/policies", headers: writeHeaders }),
+      app.inject({ method: "GET", url: "/api/query-sets", headers: writeHeaders }),
+    ]);
+    const createdBrand = await app.inject({
+      method: "POST",
+      url: "/api/brands",
+      headers: writeHeaders,
+      payload: {
+        canonicalName: "Northwind Health",
+        displayName: "Northwind Health",
+        aliases: [],
+        industry: "healthcare",
+        isPrimary: false,
+      },
+    });
+    const healthcarePolicyDocument = buildBaselineAuditPolicyDocument({
+      rulesVersion: "healthcare-draft-v1",
+      industry: "healthcare",
+    });
+    const createdPolicy = await app.inject({
+      method: "POST",
+      url: "/api/policies",
+      headers: writeHeaders,
+      payload: { version: "healthcare-draft-v1", document: healthcarePolicyDocument },
+    });
+    const createdQuerySet = await app.inject({
+      method: "POST",
+      url: "/api/query-sets",
+      headers: writeHeaders,
+      payload: {
+        name: "Healthcare domestic AI discovery",
+        industry: "healthcare",
+        description: "Provider-neutral prompts evaluated independently per product",
+        prompts: [
+          { key: "service", category: "discovery", prompt: "Which service fits this need?" },
+        ],
+      },
+    });
+
+    expect(brands.json()).toMatchObject({ items: [{ industry: "travel", isPrimary: true }] });
+    expect(members.json()).toMatchObject({
+      items: [{ email: "owner@example.test", role: "owner" }],
+    });
+    expect(policies.json()).toMatchObject({ items: [{ status: "active", version: "travel-v1" }] });
+    expect(querySets.json()).toMatchObject({
+      items: [{ currentVersionId: ids.version, status: "active" }],
+    });
+    expect(createdBrand.statusCode).toBe(201);
+    expect(createdBrand.json()).toMatchObject({ industry: "healthcare", isPrimary: false });
+    expect(createdPolicy.statusCode).toBe(201);
+    expect(createdPolicy.json()).toMatchObject({ status: "draft", version: "healthcare-draft-v1" });
+    expect(repository.policyInputs[0]).toMatchObject({
+      policyHash: sha256Canonical(healthcarePolicyDocument),
+      document: healthcarePolicyDocument,
+    });
+    expect(createdQuerySet.statusCode).toBe(201);
+    expect(createdQuerySet.json()).toMatchObject({
+      status: "draft",
+      industry: "healthcare",
+      currentVersion: 1,
+    });
+    expect(repository.querySetInputs[0]?.promptHash).toBe(
+      sha256Canonical([
+        { key: "service", category: "discovery", prompt: "Which service fits this need?" },
+      ]),
+    );
+  });
+
+  it("rejects policy documents with unknown fields or a mismatched rules version", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const document = buildBaselineAuditPolicyDocument({
+      rulesVersion: "travel-v2",
+      industry: "travel",
+    });
+
+    const [unknownField, mismatchedVersion] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/api/policies",
+        headers,
+        payload: { version: "travel-v2", document: { ...document, bypassAudit: true } },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/policies",
+        headers,
+        payload: { version: "travel-v3", document },
+      }),
+    ]);
+
+    expect(unknownField.statusCode).toBe(400);
+    expect(mismatchedVersion.statusCode).toBe(400);
+    expect(repository.policyInputs).toHaveLength(0);
+  });
+
   it("requires tenant management authority to mark a fact verified", async () => {
     const repository = new FakeRepository("editor");
     const app = await testApp(repository);
@@ -784,6 +2064,99 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.factInputs[0]?.status).toBe("draft");
   });
 
+  it("binds initial content creation to an idempotency key and canonical request hash", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const request = {
+      campaignId: ids.content,
+      brandId: ids.brand,
+      title: articlePayload.title,
+      contentType: "guide",
+      topicKey: "japan-service-boundary",
+      idempotencyKey: "content-create-once",
+      payload: articlePayload,
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: request,
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: request,
+    });
+    const conflict = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: { ...request, topicKey: "different-topic" },
+    });
+
+    expect(first.statusCode).toBe(201);
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json()).toEqual(first.json());
+    expect(conflict.statusCode).toBe(409);
+    expect(repository.contentInputs[0]).toMatchObject({
+      idempotencyKey: "content-create-once",
+      requestHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.contentInputs[1]?.requestHash).toBe(repository.contentInputs[0]?.requestHash);
+    expect(repository.contentInputs[2]?.requestHash).not.toBe(
+      repository.contentInputs[0]?.requestHash,
+    );
+  });
+
+  it("renders the final platform variant on the server and rejects client payload injection", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/content/${ids.content}/variants`,
+      headers,
+      payload: { contentVersionId: ids.version, channelAccountId: ids.account },
+    });
+    const injected = await app.inject({
+      method: "POST",
+      url: `/api/content/${ids.content}/variants`,
+      headers,
+      payload: {
+        contentVersionId: ids.version,
+        channelAccountId: ids.account,
+        payload: { ...articlePayload, bodyMarkdown: "client supplied" },
+      },
+    });
+
+    expect(created.statusCode).toBe(201);
+    expect(repository.variantInputs).toHaveLength(1);
+    expect(repository.variantInputs[0]?.payload).toMatchObject({
+      titleBlocks: [{ type: "template", templateId: "toutiao.title.evidence-first" }],
+      claims: articlePayload.claims,
+      contactIds: articlePayload.contactIds,
+      media: [],
+    });
+    expect(repository.variantInputs[0]?.payload.bodyMarkdown).not.toBe(articlePayload.bodyMarkdown);
+    expect(repository.variantInputs[0]?.payloadHash).toBe(
+      sha256Canonical(repository.variantInputs[0]?.payload),
+    );
+    expect(injected.statusCode).toBe(400);
+    expect(repository.variantInputs).toHaveLength(1);
+  });
+
   it("persists an immutable passing audit and service-issued one-time grant", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -800,11 +2173,16 @@ describe("Fastify API security and vertical publication flow", () => {
 
     expect(response.statusCode).toBe(201);
     const body = response.json<{
+      auditRunId: string;
       artifact: AuditArtifact;
       publicationAuthorization: { grantId: string; token: string; expiresAt: string } | null;
       wasCreated: boolean;
     }>();
     expect(body.artifact.status).toBe("passed");
+    expect(body.auditRunId).toBe(repository.persistedAudits[0]?.auditRunId);
+    expect(body.auditRunId).not.toBe(body.artifact.id);
+    expect(body.artifact.policyHash).toBe(travelPolicyHash);
+    expect(body.artifact.policyVersion).toBe("travel-v1");
     expect(body.publicationAuthorization?.token).toBe(tokenValue);
     expect(body.wasCreated).toBe(true);
     expect(repository.persistedAudits).toHaveLength(1);
@@ -822,6 +2200,7 @@ describe("Fastify API security and vertical publication flow", () => {
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toMatchObject({
+      auditRunId: body.auditRunId,
       artifact: { id: body.artifact.id },
       publicationAuthorization: body.publicationAuthorization,
       wasCreated: false,
@@ -846,6 +2225,98 @@ describe("Fastify API security and vertical publication flow", () => {
       headers: { cookie: authenticated.cookie },
     });
     expect(forbiddenGrantEndpoint.statusCode).toBe(404);
+
+    const auditList = await app.inject({
+      method: "GET",
+      url: "/api/audits?status=passed&limit=20",
+      headers: { cookie: authenticated.cookie },
+    });
+    const auditLog = await app.inject({
+      method: "GET",
+      url: "/api/audit-log?action=publication_job.cancelled&limit=20",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(auditList.json()).toMatchObject({ items: [{ id: body.artifact.id }], nextBefore: null });
+    expect(auditLog.json()).toMatchObject({
+      items: [{ action: "publication_job.cancelled", resourceType: "publication_job" }],
+      nextBefore: null,
+    });
+  });
+
+  it("exports a tenant-scoped manual package from a passed audit without publication side effects", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const auditResponse = await app.inject({
+      method: "POST",
+      url: `/api/variants/${ids.variant}/audits`,
+      headers,
+      payload: { idempotencyKey: "audit-for-manual-package" },
+    });
+    const artifactId = auditResponse.json<{ artifact: AuditArtifact }>().artifact.id;
+
+    const missingCsrf = await app.inject({
+      method: "POST",
+      url: `/api/audits/${artifactId}/manual-publication-package`,
+      headers: { cookie: authenticated.cookie },
+    });
+    const exported = await app.inject({
+      method: "POST",
+      url: `/api/audits/${artifactId}/manual-publication-package`,
+      headers,
+    });
+
+    expect(missingCsrf.statusCode).toBe(403);
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      auditArtifactId: artifactId,
+      tenantId: ids.tenant,
+      variantId: ids.variant,
+      channelAccountId: ids.account,
+      platform: "toutiao",
+      executionLevel: "dry_run",
+      evidenceType: "preview",
+      requiresManualAction: true,
+      publicationStatus: "not_published",
+      confirmed: false,
+      files: { "NOT_PUBLISHED.txt": expect.stringContaining("NOT PUBLISHED") },
+    });
+    expect(repository.manualPublicationPackageExports).toHaveLength(1);
+    expect(repository.manualPublicationPackageExports[0]).toMatchObject({
+      auditArtifactId: artifactId,
+      packageHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      previewHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.publicationRequests).toHaveLength(0);
+    expect(repository.governanceDecisions).toHaveLength(0);
+
+    const auditorRepository = new FakeRepository("auditor");
+    const auditorApp = await testApp(auditorRepository);
+    const auditor = await login(auditorApp);
+    const auditorAudit = await auditorApp.inject({
+      method: "POST",
+      url: `/api/variants/${ids.variant}/audits`,
+      headers: {
+        cookie: auditor.cookie,
+        "x-csrf-token": auditor.body.csrfToken,
+      },
+      payload: { idempotencyKey: "auditor-package-source" },
+    });
+    const auditorArtifactId = auditorAudit.json<{ artifact: AuditArtifact }>().artifact.id;
+    const forbidden = await auditorApp.inject({
+      method: "POST",
+      url: `/api/audits/${auditorArtifactId}/manual-publication-package`,
+      headers: {
+        cookie: auditor.cookie,
+        "x-csrf-token": auditor.body.csrfToken,
+      },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    expect(auditorRepository.manualPublicationPackageExports).toHaveLength(0);
   });
 
   it("persists a failed audit without issuing a publication authorization", async () => {
@@ -871,12 +2342,53 @@ describe("Fastify API security and vertical publication flow", () => {
       artifact: { status: "failed" },
       publicationAuthorization: null,
     });
+    const artifactId = response.json<{ artifact: AuditArtifact }>().artifact.id;
+    const exportResponse = await app.inject({
+      method: "POST",
+      url: `/api/audits/${artifactId}/manual-publication-package`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+    });
+    expect(exportResponse.statusCode).toBe(422);
+    expect(exportResponse.json()).toMatchObject({
+      error: { code: "MANUAL_PACKAGE_AUDIT_NOT_PASSED" },
+    });
     expect(repository.persistedAudits[0]?.grant).toBeNull();
+    expect(repository.manualPublicationPackageExports).toHaveLength(0);
+  });
+
+  it("fails closed when the active policy hash does not bind its stored document", async () => {
+    const repository = new FakeRepository();
+    repository.auditPolicyHash = "0".repeat(64);
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/variants/${ids.variant}/audits`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: { idempotencyKey: "audit-policy-hash-mismatch" },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ error: { code: "AUDIT_POLICY_HASH_MISMATCH" } });
+    expect(repository.persistedAudits).toHaveLength(0);
   });
 
   it("passes only a token hash to the repository grant-consumption boundary", async () => {
     const repository = new FakeRepository();
-    const app = await testApp(repository);
+    let governanceInput: Parameters<PublicationGovernanceGate["evaluate"]>[0] | null = null;
+    const app = await testApp(repository, {
+      evaluate: async (input) => {
+        governanceInput = input;
+        return { allowed: true, reason: "test_allow", evidence: { test: true } };
+      },
+    });
     const authenticated = await login(app);
     const auditResponse = await app.inject({
       method: "POST",
@@ -900,6 +2412,7 @@ describe("Fastify API security and vertical publication flow", () => {
         token: authorization.token,
         idempotencyKey: "publish-once",
         executionLevel: "dry_run",
+        scheduledFor: "2026-07-14T02:00:00.000Z",
       },
     });
     expect(missingCsrf.statusCode).toBe(403);
@@ -916,6 +2429,7 @@ describe("Fastify API security and vertical publication flow", () => {
         token: authorization.token,
         idempotencyKey: "publish-once",
         executionLevel: "dry_run",
+        scheduledFor: "2026-07-14T02:00:00.000Z",
       },
     });
 
@@ -926,13 +2440,264 @@ describe("Fastify API security and vertical publication flow", () => {
       tokenHash: sha256Text(authorization.token),
       idempotencyKey: "publish-once",
       executionLevel: "dry_run",
+      scheduledFor: "2026-07-14T02:00:00.000Z",
     });
     expect(repository.publicationRequests[0]).not.toHaveProperty("token");
+    expect(governanceInput).toMatchObject({
+      phase: "grant_consumption",
+      tenantId: ids.tenant,
+      resourceId: authorization.grantId,
+      publicationContext: {
+        grant: { id: authorization.grantId, status: "issued" },
+        artifact: {
+          tenantId: ids.tenant,
+          payloadHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          policyHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+          findings: [],
+        },
+      },
+    });
+    expect(JSON.stringify(governanceInput)).not.toContain(authorization.token);
+    expect(JSON.stringify(governanceInput)).not.toContain(sha256Text(authorization.token));
     expect(repository.governanceDecisions[0]).toMatchObject({
       allowed: true,
       grantId: authorization.grantId,
       executionLevel: "dry_run",
     });
+  });
+
+  it.each(["assisted", "unattended"] as const)(
+    "rejects %s before governance evaluation, grant consumption, or queueing",
+    async (executionLevel) => {
+      const repository = new FakeRepository();
+      const app = await testApp(repository);
+      const authenticated = await login(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/publication-requests",
+        headers: {
+          cookie: authenticated.cookie,
+          "x-csrf-token": authenticated.body.csrfToken,
+        },
+        payload: {
+          grantId: "10000000-0000-4000-8000-000000000990",
+          token: tokenValue,
+          idempotencyKey: `unsupported-${executionLevel}`,
+          executionLevel,
+        },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({
+        error: { code: "PUBLICATION_CAPABILITY_UNSUPPORTED" },
+      });
+      expect(repository.governanceDecisions).toHaveLength(0);
+      expect(repository.publicationRequests).toHaveLength(0);
+    },
+  );
+
+  it("resolves an existing publication checkpoint without grant access or side effects", async () => {
+    const repository = new FakeRepository();
+    repository.publicationReplayResult = {
+      publicationJobId: "10000000-0000-4000-8000-000000000991",
+      publicationOutboxEventId: "10000000-0000-4000-8000-000000000992",
+      wasCreated: false,
+    };
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const payload = {
+      idempotencyKey: "agent-run:publication",
+      variantId: ids.variant,
+      auditArtifactId: "10000000-0000-4000-8000-000000000989",
+      channelAccountId: ids.account,
+      executionLevel: "dry_run",
+    };
+
+    const missingCsrf = await app.inject({
+      method: "POST",
+      url: "/api/publication-replays/resolve",
+      headers: { cookie: authenticated.cookie },
+      payload,
+    });
+    expect(missingCsrf.statusCode).toBe(403);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-replays/resolve",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ publication: repository.publicationReplayResult });
+    expect(repository.publicationReplayRequests).toEqual([payload]);
+    expect(repository.publicationRequests).toHaveLength(0);
+    expect(repository.governanceDecisions).toHaveLength(0);
+    expect(JSON.stringify(response.json())).not.toMatch(/grant|token/iu);
+  });
+
+  it("maps an unsupported publication capability to a stable 422 response", async () => {
+    const repository = new FakeRepository();
+    repository.publicationRequestError = Object.assign(
+      new Error("live publication is unsupported for the current platform adapters"),
+      { code: "0A000" },
+    );
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "unsupported-publication-capability",
+        executionLevel: "dry_run",
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "PUBLICATION_CAPABILITY_UNSUPPORTED",
+        message: "Current platform adapters support dry-run publication only",
+      },
+    });
+  });
+
+  it("does not mislabel unrelated database feature errors as publication capability errors", async () => {
+    const repository = new FakeRepository();
+    repository.publicationRequestError = Object.assign(
+      new Error("an unrelated database feature is unsupported"),
+      { code: "0A000" },
+    );
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "unrelated-database-feature-error",
+        executionLevel: "dry_run",
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR" } });
+  });
+
+  it("exposes governed revoke, cancellation, attempt, receipt, and dry-run readback state", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const writeHeaders = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const jobId = "10000000-0000-4000-8000-000000000991";
+    const receiptId = "10000000-0000-4000-8000-000000000994";
+
+    const revoked = await app.inject({
+      method: "POST",
+      url: "/api/publication-grants/10000000-0000-4000-8000-000000000990/revoke",
+      headers: writeHeaders,
+      payload: { reason: "Operator withdrew this authorization" },
+    });
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/publication-jobs/${jobId}/cancel`,
+      headers: writeHeaders,
+      payload: { reason: "Campaign was paused before dispatch" },
+    });
+    const [job, attempts, receipts, receipt, readbacks] = await Promise.all([
+      app.inject({ method: "GET", url: `/api/publication-jobs/${jobId}`, headers: writeHeaders }),
+      app.inject({
+        method: "GET",
+        url: `/api/publication-jobs/${jobId}/attempts`,
+        headers: writeHeaders,
+      }),
+      app.inject({
+        method: "GET",
+        url: `/api/publication-jobs/${jobId}/receipts`,
+        headers: writeHeaders,
+      }),
+      app.inject({ method: "GET", url: `/api/receipts/${receiptId}`, headers: writeHeaders }),
+      app.inject({
+        method: "GET",
+        url: `/api/publication-jobs/${jobId}/readbacks`,
+        headers: writeHeaders,
+      }),
+    ]);
+
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toMatchObject({ status: "revoked", wasChanged: true });
+    expect(repository.publicationRevocations[0]).toMatchObject({
+      reason: "Operator withdrew this authorization",
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ job: { state: "cancelled" }, wasChanged: true });
+    expect(job.json()).toMatchObject({ id: jobId, state: "cancelled", attemptCount: 1 });
+    expect(attempts.json()).toMatchObject({ items: [{ attemptNo: 1, state: "succeeded" }] });
+    expect(receipts.json()).toMatchObject({
+      items: [{ id: receiptId, confirmed: false, evidenceType: "preview" }],
+    });
+    expect(receipt.json()).toMatchObject({
+      id: receiptId,
+      externalId: null,
+      publishedAt: null,
+      payload: { readback: { required: false } },
+    });
+    expect(readbacks.json()).toMatchObject({
+      items: [
+        {
+          jobId,
+          status: "not_required",
+          required: false,
+          reason: "dry_run_preview_only",
+        },
+      ],
+    });
+  });
+
+  it("rejects publication schedules outside the bounded window before governance evaluation", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "schedule-too-far",
+        executionLevel: "dry_run",
+        scheduledFor: "2026-09-01T00:00:00.000Z",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "PUBLICATION_SCHEDULE_INVALID" } });
+    expect(repository.publicationRequests).toHaveLength(0);
+    expect(repository.governanceDecisions).toHaveLength(0);
   });
 
   it("fails closed when publication governance denies a direct request", async () => {
@@ -967,6 +2732,43 @@ describe("Fastify API security and vertical publication flow", () => {
       allowed: false,
       reason: "policy_denied",
     });
+  });
+
+  it("returns 503 without consuming a grant when publication governance is unavailable", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository, {
+      evaluate: async () => {
+        throw new Error("Plastic Promise transport failed");
+      },
+    });
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "90000000-0000-4000-8000-000000000502",
+        token: tokenValue,
+        idempotencyKey: "governance-unavailable",
+        executionLevel: "dry_run",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      error: { code: "PUBLICATION_GOVERNANCE_UNAVAILABLE" },
+    });
+    expect(repository.publicationRequests).toHaveLength(0);
+    expect(repository.governanceDecisions).toEqual([
+      expect.objectContaining({
+        grantId: "90000000-0000-4000-8000-000000000502",
+        allowed: false,
+        reason: "governance_unavailable",
+      }),
+    ]);
   });
 
   it("hashes evidence, binds facts to it, and appends corrected content versions", async () => {
@@ -1071,14 +2873,372 @@ describe("Fastify API security and vertical publication flow", () => {
       provider: "qwen",
       providerMode: "fixture",
       evidenceType: "fixture",
-      observationCount: 2,
+      observationCount: 4,
       circuitOpened: false,
       wasCreated: true,
     });
     expect(repository.visibilityRuns).toHaveLength(1);
-    expect(repository.visibilityRuns[0]?.observations).toHaveLength(2);
+    expect(repository.visibilityRuns[0]?.observations).toHaveLength(4);
     expect(
       repository.visibilityRuns[0]?.observations.every((item) => item.evidenceType === "fixture"),
     ).toBe(true);
+    expect(
+      repository.visibilityRuns[0]?.observations.some(
+        (item) => item.competitorMentions[0] === "中青旅",
+      ),
+    ).toBe(true);
+    expect(
+      repository.visibilityRuns[0]?.observations.every(
+        (item) => item.evaluatorVersion === "geo-visibility-evaluator-v1",
+      ),
+    ).toBe(true);
+  });
+
+  it("records explicit manual request/response timing and structured hallucination findings", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/visibility-runs/import",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        querySetVersionId: ids.version,
+        provider: "doubao",
+        productSurface: "doubao-web-search",
+        model: "manual-observed-unknown",
+        searchMode: "unknown",
+        locale: "zh-CN",
+        geo: "CN",
+        idempotencyKey: "doubao-manual-bad-contact",
+        samples: [
+          {
+            queryKey: "brand-contact",
+            rawAnswer: "中通国际旅行社热线是 4009999999。",
+            citedUrls: [],
+            requestStartedAt: "2026-07-13T11:59:58.000Z",
+            responseReceivedAt: "2026-07-13T11:59:59.000Z",
+            observedAt: "2026-07-13T12:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(repository.visibilityRuns[0]?.observations[0]).toMatchObject({
+      requestStartedAt: "2026-07-13T11:59:58.000Z",
+      responseReceivedAt: "2026-07-13T11:59:59.000Z",
+      sentiment: "neutral",
+      harmfulError: true,
+      evaluatorVersion: "geo-visibility-evaluator-v1",
+      hallucinationFindings: [
+        {
+          code: "unexpected_contact",
+          observedValue: "4009999999",
+        },
+      ],
+    });
+  });
+
+  it("lists visibility runs and returns tenant-scoped raw evidence without collapsing dimensions", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = { cookie: authenticated.cookie };
+
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/api/visibility-runs?provider=doubao&observationMethod=manual",
+      headers,
+    });
+    expect(listResponse.statusCode).toBe(200);
+    const listed = listResponse.json<{ items: Array<{ id: string }> }>().items[0];
+    expect(listed).toMatchObject({
+      provider: "doubao",
+      productSurface: "doubao-app",
+      searchMode: "on",
+      observationMethod: "manual",
+      observationCount: 1,
+    });
+
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: `/api/visibility-runs/${listed?.id}`,
+      headers,
+    });
+    expect(detailResponse.statusCode).toBe(200);
+    expect(detailResponse.json()).toMatchObject({
+      observations: [
+        {
+          evidenceType: "manual_import",
+          rawAnswer: expect.stringContaining("4001133986") as string,
+          citedUrls: ["https://example.test/contact"],
+          contactAccuracy: 1,
+          harmfulError: false,
+        },
+      ],
+      metrics: [{ name: "contactAccuracy", value: 1, sampleCount: 1 }],
+    });
+  });
+
+  it("appends and expires tenant contacts behind tenant:manage and CSRF", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+
+    const missingCsrf = await app.inject({
+      method: "POST",
+      url: "/api/contacts",
+      headers: { cookie: authenticated.cookie },
+      payload: { type: "wechat", label: "微信咨询", value: "ZTGL8888" },
+    });
+    expect(missingCsrf.statusCode).toBe(403);
+    expect(repository.contactCreateInputs).toHaveLength(0);
+
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/contacts",
+      headers,
+      payload: {
+        type: "wechat",
+        label: "微信咨询",
+        value: " ZTGL8888 ",
+        isPrimary: false,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(repository.contactCreateInputs[0]).toMatchObject({
+      type: "wechat",
+      value: "ZTGL8888",
+      normalizedValue: "ztgl8888",
+      validFrom: fixedNow.toISOString(),
+    });
+
+    const expired = await app.inject({
+      method: "POST",
+      url: `/api/contacts/${ids.phone}/expire`,
+      headers,
+      payload: { reason: "热线已经完成正式切换" },
+    });
+    expect(expired.statusCode).toBe(200);
+    expect(repository.contactExpireInputs[0]).toEqual({
+      contactId: ids.phone,
+      reason: "热线已经完成正式切换",
+      validUntil: fixedNow.toISOString(),
+    });
+  });
+
+  it("creates controlled tenant members and protects owner creation", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/members",
+      headers,
+      payload: {
+        email: "editor@example.com",
+        displayName: "内容编辑",
+        role: "editor",
+        initialPassword: "replace-this-password-2026",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.body).not.toContain("password");
+    expect(repository.memberCreateInputs[0]).toMatchObject({
+      email: "editor@example.com",
+      displayName: "内容编辑",
+      role: "editor",
+      passwordHash: "dummy-hash",
+    });
+
+    const membershipId = created.json<{ id: string }>().id;
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/members/${membershipId}`,
+      headers,
+      payload: { role: "publisher", status: "active", reason: "调整为发布岗位" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(repository.memberUpdateInputs[0]).toEqual({
+      membershipId,
+      role: "publisher",
+      status: "active",
+      reason: "调整为发布岗位",
+    });
+
+    const adminRepository = new FakeRepository("admin");
+    const adminApp = await testApp(adminRepository);
+    const admin = await login(adminApp);
+    const denied = await adminApp.inject({
+      method: "POST",
+      url: "/api/members",
+      headers: {
+        cookie: admin.cookie,
+        "x-csrf-token": admin.body.csrfToken,
+      },
+      payload: {
+        email: "second-owner@example.com",
+        displayName: "第二负责人",
+        role: "owner",
+        initialPassword: "replace-this-password-2026",
+      },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(adminRepository.memberCreateInputs).toHaveLength(0);
+  });
+
+  it("transitions policy state and rejects untruthful manual account execution", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const policy = await app.inject({
+      method: "POST",
+      url: `/api/policies/${ids.policy}/state`,
+      headers,
+      payload: { targetStatus: "active", reason: "完成审核并正式启用" },
+    });
+    expect(policy.statusCode).toBe(200);
+    expect(repository.policyTransitionInputs[0]).toEqual({
+      policyBundleId: ids.policy,
+      targetStatus: "active",
+      reason: "完成审核并正式启用",
+      changedAt: fixedNow.toISOString(),
+    });
+
+    const invalidAccount = await app.inject({
+      method: "POST",
+      url: "/api/channel-accounts",
+      headers,
+      payload: {
+        platform: "sohu",
+        displayName: "不真实执行级别",
+        capability: "manual_only",
+        supportedExecutionLevels: ["dry_run", "assisted"],
+        evidenceType: "manual_import",
+        evidenceRefs: ["ticket:GEO-1"],
+        status: "needs_verification",
+      },
+    });
+    expect(invalidAccount.statusCode).toBe(400);
+    expect(repository.channelAccountCreateInputs).toHaveLength(0);
+
+    const createdAccount = await app.inject({
+      method: "POST",
+      url: "/api/channel-accounts",
+      headers,
+      payload: {
+        platform: "sohu",
+        displayName: "中通搜狐号",
+        capability: "manual_only",
+        supportedExecutionLevels: ["dry_run"],
+        evidenceType: "manual_import",
+        evidenceRefs: ["ticket:GEO-2"],
+        status: "needs_verification",
+      },
+    });
+    expect(createdAccount.statusCode).toBe(201);
+    expect(repository.channelAccountCreateInputs[0]).toMatchObject({
+      credentialRef: null,
+      supportedExecutionLevels: ["dry_run"],
+      lastVerifiedAt: null,
+    });
+
+    const updatedAccount = await app.inject({
+      method: "PATCH",
+      url: `/api/channel-accounts/${ids.account}`,
+      headers,
+      payload: {
+        status: "active",
+        lastVerifiedAt: fixedNow.toISOString(),
+        evidenceRefs: ["ticket:GEO-3"],
+        reason: "账号能力完成复核",
+      },
+    });
+    expect(updatedAccount.statusCode).toBe(200);
+    expect(repository.channelAccountUpdateInputs[0]).toMatchObject({
+      channelAccountId: ids.account,
+      status: "active",
+      reason: "账号能力完成复核",
+    });
+  });
+
+  it("provisions only a fixed least-privilege automation identity without issuing credentials", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/service-principals",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(listed.statusCode).toBe(200);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/service-principals/automation-producers",
+      headers,
+      payload: { name: "producer-second" },
+    });
+    expect(created.statusCode).toBe(201);
+    const principal = created.json<{
+      id: string;
+      capabilities: string[];
+      credentialStatus: string;
+    }>();
+    expect(principal.capabilities).toContain("automation:execute");
+    expect(principal.capabilities).toContain("audit:run");
+    expect(principal.capabilities).not.toContain("tenant:manage");
+    expect(principal.capabilities).not.toContain("principal:manage");
+    expect(principal.credentialStatus).toBe("not_issued");
+    expect(repository.servicePrincipalCreateInputs[0]).toEqual({
+      id: principal.id,
+      name: "producer-second",
+    });
+
+    const disabled = await app.inject({
+      method: "POST",
+      url: `/api/service-principals/${principal.id}/status`,
+      headers,
+      payload: { status: "disabled", reason: "轮换自动化机器身份" },
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(repository.servicePrincipalStatusInputs[0]).toEqual({
+      servicePrincipalId: principal.id,
+      status: "disabled",
+      reason: "轮换自动化机器身份",
+    });
+
+    const editorRepository = new FakeRepository("editor");
+    const editorApp = await testApp(editorRepository);
+    const editor = await login(editorApp);
+    const denied = await editorApp.inject({
+      method: "GET",
+      url: "/api/service-principals",
+      headers: { cookie: editor.cookie },
+    });
+    expect(denied.statusCode).toBe(403);
   });
 });

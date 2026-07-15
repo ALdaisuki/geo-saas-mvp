@@ -18,9 +18,9 @@ The authoritative scope is `docs/superpowers/specs/2026-07-13-geo-saas-mvp-desig
 | Manual distribution handoff                      | export from a passed audit                                                                                     | hash-verified article/media package marked not published                           | no connector/network write                                        | Complete                          |
 | Visibility measurement                           | fixture and manual evidence views                                                                              | repeated sample storage and provider/method labels                                 | fixture request tool only                                         | Complete within evidence boundary |
 
-## Included gaps still being closed
+## Included MVP scope
 
-- Final responsive visual acceptance after each remaining control-plane change.
+All included first-release control-plane paths have implementation, automated verification and responsive visual acceptance. The remaining work below requires new external provider capabilities and stays outside this MVP boundary.
 
 ## Explicitly deferred production capabilities
 

@@ -34,6 +34,7 @@ The API is tenant-scoped after login. `DATABASE_IDENTITY_URL` uses `geo_identity
 | `GET /api/contacts`                                             | `tenant:read`                        | Current tenant contacts                                                                       |
 | `GET /api/channel-accounts`                                     | `tenant:read`                        | Platform accounts and declared capabilities                                                   |
 | `GET/POST /api/evidence-sources`                                | `content:read` / `content:write`     | Evidence registry                                                                             |
+| `GET /api/article-templates`                                    | `content:read`                       | Return `{ version: "geo.article-templates.v1", items }` from the shared governed catalog      |
 | `GET/POST /api/facts`                                           | `content:read` / `content:write`     | Tenant/brand claims bound to evidence                                                         |
 | `GET /api/capabilities`                                         | `tenant:read`                        | Current role capabilities and connector reports                                               |
 | `POST /api/resource-scope-check`                                | session + CSRF                       | MCP-oriented tenant resource authorization                                                    |

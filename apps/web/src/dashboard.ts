@@ -1,5 +1,6 @@
 import {
   GeoApiError,
+  type ArticleTemplateCatalogView,
   type AutomationSnapshot,
   type AuditArtifact,
   type Brand,
@@ -44,6 +45,7 @@ export interface LiveDashboard {
   readonly members: ApiResource<readonly TenantMember[]>;
   readonly policies: ApiResource<readonly PolicyBundle[]>;
   readonly querySets: ApiResource<readonly QuerySet[]>;
+  readonly articleTemplates: ApiResource<ArticleTemplateCatalogView | null>;
   readonly evidenceSources: ApiResource<readonly EvidenceSource[]>;
   readonly facts: ApiResource<readonly ClaimFact[]>;
   readonly campaigns: ApiResource<readonly Campaign[]>;
@@ -71,6 +73,7 @@ export function createLoadingDashboard(): LiveDashboard {
     members: loading("GET /api/members", []),
     policies: loading("GET /api/policies", []),
     querySets: loading("GET /api/query-sets", []),
+    articleTemplates: loading("GET /api/article-templates", null),
     evidenceSources: loading("GET /api/evidence-sources", []),
     facts: loading("GET /api/facts", []),
     campaigns: loading("GET /api/campaigns", []),
@@ -128,6 +131,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     api.getVisibilitySummary(),
     api.getAutomation(),
     api.getServicePrincipals(),
+    api.getArticleTemplates(),
   ] as const);
 
   return {
@@ -149,6 +153,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     visibility: settled("GET /api/visibility/summary", results[15], []),
     automation: settled("GET /api/automation", results[16], null),
     servicePrincipals: settled("GET /api/service-principals", results[17], []),
+    articleTemplates: settled("GET /api/article-templates", results[18], null),
     loadedAt: new Date().toISOString(),
   };
 }

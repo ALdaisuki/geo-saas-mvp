@@ -37,6 +37,10 @@ const principal: ActorContext = {
 function mockApi(): InternalGeoApiClient {
   return {
     getTenantContext: vi.fn(async () => ({ tenant: { id: tenantId, name: "Tenant" } })),
+    getArticleTemplateCatalog: vi.fn(async () => ({
+      version: "geo.article-templates.v1" as const,
+      items: [],
+    })),
     lookupFacts: vi.fn(async () => ({ facts: [] })),
     proposeDraft: vi.fn(async () => ({ contentVersionId: actorId })),
     previewVariant: vi.fn(async () => ({ variantId: actorId })),
@@ -151,6 +155,7 @@ describe("authenticated Streamable HTTP MCP server", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "geo_tenant_context",
+      "geo_template_catalog",
       "geo_fact_lookup",
       "geo_draft_proposal",
       "geo_variant_preview",

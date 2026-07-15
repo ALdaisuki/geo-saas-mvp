@@ -3,6 +3,7 @@ import type { BeforeToolCallContext, BeforeToolCallResult } from "@mariozechner/
 
 export const GEO_AGENT_TOOL_NAMES = [
   "geo_tenant_context",
+  "geo_template_catalog",
   "geo_fact_lookup",
   "geo_draft_proposal",
   "geo_variant_preview",
@@ -37,6 +38,11 @@ export interface AgentToolPolicy {
 export const AGENT_TOOL_POLICIES = {
   geo_tenant_context: {
     requiredCapability: "tenant:read",
+    stateChanging: false,
+    sequential: false,
+  },
+  geo_template_catalog: {
+    requiredCapability: "content:read",
     stateChanging: false,
     sequential: false,
   },

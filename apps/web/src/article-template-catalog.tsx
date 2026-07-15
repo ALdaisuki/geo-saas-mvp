@@ -3,19 +3,22 @@ import { useMemo, useState } from "react";
 
 import {
   ARTICLE_TEMPLATE_CATEGORIES,
-  ARTICLE_TEMPLATES,
   DEFAULT_ARTICLE_TEMPLATE_ID,
   type ArticleTemplate,
   type ArticleTemplateCategory,
-} from "./article-templates.js";
+} from "@geo/contracts";
 
 export interface ArticleTemplateCatalogProps {
+  readonly templates: readonly ArticleTemplate[];
+  readonly catalogVersion: string;
   readonly selectedTemplateId?: string;
   readonly onSelect?: (template: ArticleTemplate) => void;
   readonly actionLabel?: string;
 }
 
 export function ArticleTemplateCatalog({
+  templates,
+  catalogVersion,
   selectedTemplateId,
   onSelect,
   actionLabel = "使用此模板",
@@ -28,7 +31,7 @@ export function ArticleTemplateCatalog({
   const activeId = selectedTemplateId ?? localSelection;
   const visibleTemplates = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase("zh-CN");
-    return ARTICLE_TEMPLATES.filter((template) => {
+    return templates.filter((template) => {
       if (category !== "all" && template.category !== category) return false;
       if (normalizedQuery.length === 0) return true;
       return [
@@ -42,12 +45,12 @@ export function ArticleTemplateCatalog({
         .toLocaleLowerCase("zh-CN")
         .includes(normalizedQuery);
     });
-  }, [category, query]);
-  const activeTemplate = ARTICLE_TEMPLATES.find((template) => template.id === activeId);
+  }, [category, query, templates]);
+  const activeTemplate = templates.find((template) => template.id === activeId);
   const selected =
     (activeTemplate !== undefined && visibleTemplates.includes(activeTemplate)
       ? activeTemplate
-      : visibleTemplates[0]) ?? ARTICLE_TEMPLATES[0];
+      : visibleTemplates[0]) ?? templates[0];
 
   function select(template: ArticleTemplate) {
     setLocalSelection(template.id);
@@ -57,11 +60,15 @@ export function ArticleTemplateCatalog({
   if (selected === undefined) return null;
 
   return (
-    <section className="article-template-catalog" aria-label="GEO 文章模板库">
+    <section
+      className="article-template-catalog"
+      aria-label="GEO 文章模板库"
+      data-catalog-version={catalogVersion}
+    >
       <div className="template-catalog-toolbar">
         <div>
           <span>GEO 文章模板</span>
-          <strong>{ARTICLE_TEMPLATES.length} 套可审计结构</strong>
+          <strong>{templates.length} 套可审计结构</strong>
         </div>
         <label className="template-search">
           <Search size={15} />

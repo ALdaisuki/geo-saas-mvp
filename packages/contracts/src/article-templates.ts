@@ -1,3 +1,5 @@
+export const ARTICLE_TEMPLATE_CATALOG_VERSION = "geo.article-templates.v1" as const;
+
 export type ArticleTemplateCategory = "answer" | "decision" | "service" | "trust" | "freshness";
 
 export type GovernedEditorialProfile =
@@ -15,6 +17,11 @@ export interface ArticleTemplate {
   readonly outline: readonly string[];
   readonly evidenceRequirements: readonly string[];
   readonly riskBoundaries: readonly string[];
+}
+
+export interface ArticleTemplateCatalog {
+  readonly version: typeof ARTICLE_TEMPLATE_CATALOG_VERSION;
+  readonly items: readonly ArticleTemplate[];
 }
 
 export const ARTICLE_TEMPLATE_CATEGORIES: readonly {

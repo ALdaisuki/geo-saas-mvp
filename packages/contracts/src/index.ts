@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "./article-templates.js";
+
 export const idSchema = z.string().uuid();
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const isoDateTimeSchema = z.string().datetime({ offset: true });

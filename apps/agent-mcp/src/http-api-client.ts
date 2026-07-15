@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import {
   actorContextSchema,
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  articleTemplateById,
   automationRunStageSchema,
   automationRunStateSchema,
   automationRunTargetStateSchema,
@@ -14,6 +16,7 @@ import {
   publicationVariantPayloadSchema,
   tenantRoleSchema,
   type ActorContext,
+  type ArticleTemplateCatalog,
   type AutomationRunStage,
   type AutomationRunTargetState,
   type TenantContact,
@@ -204,6 +207,48 @@ const automationPublicationJobSchema = z.object({
   lastErrorCode: z.string().nullable(),
   updatedAt: isoDateTimeSchema,
 });
+
+const articleTemplateSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
+    name: z.string().min(1),
+    category: z.enum(["answer", "decision", "service", "trust", "freshness"]),
+    editorialProfile: z.enum([
+      "guide",
+      "question_answer",
+      "comparison",
+      "risk_avoidance",
+      "local_service",
+    ]),
+    scenario: z.string().min(1),
+    travelExample: z.string().min(1),
+    benefit: z.string().min(1),
+    geoMechanisms: z.array(z.string().min(1)).min(1),
+    outline: z.array(z.string().min(1)).min(1),
+    evidenceRequirements: z.array(z.string().min(1)).min(1),
+    riskBoundaries: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
+const articleTemplateCatalogSchema = z
+  .object({
+    version: z.literal(ARTICLE_TEMPLATE_CATALOG_VERSION),
+    items: z.array(articleTemplateSchema).min(20),
+  })
+  .strict()
+  .superRefine((catalog, context) => {
+    const ids = new Set<string>();
+    catalog.items.forEach((template, index) => {
+      if (ids.has(template.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "id"],
+          message: "Article template IDs must be unique",
+        });
+      }
+      ids.add(template.id);
+    });
+  });
 
 interface ApiSession {
   readonly credentialHash: string;
@@ -543,6 +588,14 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     return { tenant, contacts, accounts, capabilities };
   }
 
+  async getArticleTemplateCatalog(
+    principal: Readonly<ActorContext>,
+  ): Promise<Readonly<ArticleTemplateCatalog>> {
+    return articleTemplateCatalogSchema.parse(
+      await this.#request(principal, "/api/article-templates"),
+    );
+  }
+
   async lookupFacts(
     principal: Readonly<ActorContext>,
     input: Readonly<TenantFactLookupInput>,
@@ -563,6 +616,11 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     principal: Readonly<ActorContext>,
     input: Readonly<DraftProposalInput>,
   ): Promise<unknown> {
+    const template =
+      input.articleTemplateId === undefined ? null : articleTemplateById(input.articleTemplateId);
+    if (input.articleTemplateId !== undefined && template === null) {
+      throw new GeoApiRequestError("ARTICLE_TEMPLATE_UNKNOWN", 400);
+    }
     const [factsResult, contactsResult, policiesResult, automationResult] = await Promise.all([
       this.#request(
         principal,
@@ -641,9 +699,10 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       })),
       sources: [],
     };
-    const editorialProfile = editorialProfileForBrief(input.brief);
+    const editorialProfile = template?.editorialProfile ?? editorialProfileForBrief(input.brief);
     const payload = renderEditorialSourcePayload({
       editorialProfile,
+      ...(template === null ? {} : { articleTemplateId: template.id }),
       policy,
       factSnapshot,
       contacts: currentContacts as readonly TenantContact[],
@@ -668,6 +727,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       contentVersionId: content.latestVersionId,
       version: content.latestVersion,
       providerMode: input.fixtureMode === true ? "fixture" : "agent_proposal",
+      ...(template === null ? {} : { articleTemplateId: template.id }),
     };
   }
 
@@ -1061,6 +1121,7 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     };
     switch (toolName) {
       case "geo_tenant_context":
+      case "geo_template_catalog":
         return true;
       case "geo_fact_lookup":
         add("brand", "brandId");

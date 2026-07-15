@@ -59,7 +59,11 @@ import {
   type VisibilityProviderSummary,
 } from "./api.js";
 import { ArticleTemplateCatalog } from "./article-template-catalog.js";
-import { DEFAULT_ARTICLE_TEMPLATE_ID } from "./article-templates.js";
+import {
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ARTICLE_TEMPLATES,
+  DEFAULT_ARTICLE_TEMPLATE_ID,
+} from "@geo/contracts";
 import { AutomationOperations } from "./automation-operations.js";
 import {
   createLoadingDashboard,
@@ -1388,6 +1392,7 @@ function ContentView({
       dashboard.content,
       dashboard.channelAccounts,
       dashboard.policies,
+      dashboard.articleTemplates,
     ];
     return (
       <div className="view-stack">
@@ -1408,6 +1413,8 @@ function ContentView({
           accounts={dashboard.channelAccounts.data}
           contacts={dashboard.contacts.data}
           policies={dashboard.policies.data}
+          templates={dashboard.articleTemplates.data?.items ?? []}
+          catalogVersion={dashboard.articleTemplates.data?.version ?? ""}
           resources={{
             brands: dashboard.brands.status,
             evidence: dashboard.evidenceSources.status,
@@ -1416,6 +1423,7 @@ function ContentView({
             content: dashboard.content.status,
             accounts: dashboard.channelAccounts.status,
             policies: dashboard.policies.status,
+            templates: dashboard.articleTemplates.status,
           }}
         />
       </div>
@@ -1429,6 +1437,8 @@ function ContentView({
   return (
     <div className="view-stack">
       <ArticleTemplateCatalog
+        templates={ARTICLE_TEMPLATES}
+        catalogVersion={ARTICLE_TEMPLATE_CATALOG_VERSION}
         selectedTemplateId={selectedTemplateId}
         actionLabel="选为默认模板"
         onSelect={(template) => setSelectedTemplateId(template.id)}
@@ -2055,6 +2065,30 @@ function SettingsView({
 }) {
   return (
     <div className="view-stack">
+      <section className="panel policy-settings">
+        <PanelHeading title="第一版能力边界" meta="以当前代码与运行证据为准" />
+        {[
+          ["多租户客户治理", "已接入", "租户、品牌、成员、联系方式与资源范围"],
+          ["GEO 模板与规范草稿", "已接入", "21 套 V1 模板、事实引用、平台变体与确定性审计"],
+          ["自动化批次", "Dry-run", "后台 Producer 可无人值守推进，但固定为 dry_run"],
+          ["头条 / 搜狐 / 携程外部发布", "未接入", "仅 manual_only、预览回执与人工发布包"],
+          ["豆包 / 千问在线评测", "未接入", "仅 Fixture 或人工导入证据，不代表在线搜索结果"],
+          ["生产级图片生成", "未接入", "确定性 Fixture 只验证管线，不作为生产图片"],
+          ["品牌记忆正负反馈闭环", "未接入", "第一版不根据投放结果自动改写长期品牌记忆"],
+        ].map(([name, status, detail]) => (
+          <div className="setting-control" key={name}>
+            <div>
+              <strong>{name}</strong>
+              <span>{detail}</span>
+            </div>
+            <StatusBadge
+              tone={status === "已接入" ? "success" : status === "Dry-run" ? "warning" : "info"}
+            >
+              {status}
+            </StatusBadge>
+          </div>
+        ))}
+      </section>
       <section className="panel">
         <PanelHeading title="平台账号与能力" meta="能力升级必须绑定发布和 reconciliation 证据" />
         {mode === "live" ? (

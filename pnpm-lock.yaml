@@ -154,6 +154,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@geo/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       lucide-react:
         specifier: 1.24.0
         version: 1.24.0(react@19.2.7)

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 import { GeoApiError, HttpGeoApi } from "./api.js";
 
@@ -30,6 +31,40 @@ afterEach(() => {
 });
 
 describe("HttpGeoApi", () => {
+  it("accepts only the versioned, unique 20-plus article template catalog", async () => {
+    const requests: string[] = [];
+    const api = new HttpGeoApi("", async (input) => {
+      requests.push(String(input));
+      return jsonResponse({
+        version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+        items: ARTICLE_TEMPLATES,
+      });
+    });
+
+    await expect(api.getArticleTemplates()).resolves.toMatchObject({
+      version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+      items: expect.arrayContaining([expect.objectContaining({ id: "comparison-matrix" })]),
+    });
+    expect(requests).toEqual(["/api/article-templates"]);
+
+    const duplicateApi = new HttpGeoApi("", async () =>
+      jsonResponse({
+        version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+        items: Array.from({ length: 20 }, () => ARTICLE_TEMPLATES[0]),
+      }),
+    );
+    await expect(duplicateApi.getArticleTemplates()).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+    });
+
+    const incompatibleApi = new HttpGeoApi("", async () =>
+      jsonResponse({ version: "geo.article-templates.v2", items: ARTICLE_TEMPLATES }),
+    );
+    await expect(incompatibleApi.getArticleTemplates()).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+    });
+  });
+
   it("preserves the native fetch receiver when no test transport is injected", async () => {
     const fetchMock = vi.fn(function (this: unknown) {
       if (this !== globalThis) throw new TypeError("Illegal invocation");

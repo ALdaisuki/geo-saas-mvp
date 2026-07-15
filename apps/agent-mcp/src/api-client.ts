@@ -1,5 +1,6 @@
 import type {
   ActorContext,
+  ArticleTemplateCatalog,
   ExecutionLevel,
   MediaRole,
   Platform,
@@ -16,6 +17,7 @@ export interface DraftProposalInput {
   brandId: string;
   campaignId: string;
   brief: string;
+  articleTemplateId?: string;
   idempotencyKey: string;
   fixtureMode?: boolean;
 }
@@ -59,6 +61,9 @@ export interface MediaJobStatusInput {
 
 export interface InternalGeoApiClient {
   getTenantContext(principal: Readonly<ActorContext>): Promise<unknown>;
+  getArticleTemplateCatalog(
+    principal: Readonly<ActorContext>,
+  ): Promise<Readonly<ArticleTemplateCatalog>>;
   lookupFacts(
     principal: Readonly<ActorContext>,
     input: Readonly<TenantFactLookupInput>,

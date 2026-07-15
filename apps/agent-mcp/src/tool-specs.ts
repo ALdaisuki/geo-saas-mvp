@@ -1,11 +1,21 @@
 import { z } from "zod";
 
+import { articleTemplateById } from "@geo/contracts";
+
 const tenantId = z.string().uuid();
 const resourceId = z.string().uuid();
 const idempotencyKey = z.string().trim().min(1).max(200);
+const articleTemplateId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .regex(/^[a-z0-9][a-z0-9-]*$/u)
+  .refine((value) => articleTemplateById(value) !== null);
 
 export const geoMcpToolSchemas = {
   geo_tenant_context: z.object({ tenantId }).strict(),
+  geo_template_catalog: z.object({ tenantId }).strict(),
   geo_fact_lookup: z
     .object({
       tenantId,
@@ -20,6 +30,7 @@ export const geoMcpToolSchemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: z.string().trim().min(1).max(10_000),
+      articleTemplateId: articleTemplateId.optional(),
       idempotencyKey,
       fixtureMode: z.boolean().optional(),
     })
@@ -85,6 +96,11 @@ export const geoMcpToolMetadata: Readonly<
   geo_tenant_context: {
     title: "Tenant context",
     description: "Read authenticated tenant context.",
+    readOnly: true,
+  },
+  geo_template_catalog: {
+    title: "Article template catalog",
+    description: "Read the governed V1 article strategy catalog.",
     readOnly: true,
   },
   geo_fact_lookup: {

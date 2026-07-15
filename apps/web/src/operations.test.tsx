@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 import {
   GeoApiError,
@@ -290,6 +291,7 @@ const readyResources = {
   content: "ready",
   accounts: "ready",
   policies: "ready",
+  templates: "ready",
 } as const;
 
 describe("publication job detail", () => {
@@ -577,6 +579,8 @@ describe("operations workspace governance", () => {
         accounts={[account]}
         contacts={[contact]}
         policies={[policy]}
+        templates={ARTICLE_TEMPLATES}
+        catalogVersion={ARTICLE_TEMPLATE_CATALOG_VERSION}
         resources={readyResources}
       />,
     );

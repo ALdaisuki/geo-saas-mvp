@@ -1,4 +1,8 @@
-import type { ActorContext } from "@geo/contracts";
+import {
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ARTICLE_TEMPLATES,
+  type ActorContext,
+} from "@geo/contracts";
 import {
   buildBaselineAuditPolicyDocument,
   compileAuditPolicy,
@@ -111,6 +115,12 @@ describe("GEO API session and destination policy", () => {
           ],
         });
       }
+      if (url.pathname === "/api/article-templates") {
+        return jsonResponse({
+          version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+          items: ARTICLE_TEMPLATES,
+        });
+      }
       if (url.pathname === "/api/automation") {
         return jsonResponse({
           control: {
@@ -175,11 +185,17 @@ describe("GEO API session and destination policy", () => {
       .principal;
     const api = new HttpInternalGeoApiClient({ sessions, fetchImpl });
 
+    await expect(api.getArticleTemplateCatalog(principal)).resolves.toMatchObject({
+      version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+      items: expect.arrayContaining([expect.objectContaining({ id: "comparison-matrix" })]),
+    });
+
     await expect(
       api.proposeDraft(principal, {
         brandId: ids.brand,
         campaignId: ids.campaign,
         brief: "travel risk and service boundary",
+        articleTemplateId: "comparison-matrix",
         idempotencyKey: "draft-once",
         fixtureMode: true,
       }),
@@ -199,13 +215,14 @@ describe("GEO API session and destination policy", () => {
     const payload = contentRequest.payload as Record<string, unknown>;
     expect(contentRequest).toMatchObject({
       idempotencyKey: "draft-once",
-      contentType: "risk_avoidance",
+      contentType: "comparison",
       topicKey: expect.stringMatching(/^agent:[a-f0-9]{32}$/u),
     });
     expect(contentRequest.topicKey).not.toBe(`agent:${ids.campaign}`);
     expect(payload).toMatchObject({
-      editorialProfile: "risk_avoidance",
-      titleBlocks: [{ type: "template", templateId: "editorial.risk_avoidance.title" }],
+      editorialProfile: "comparison",
+      articleTemplateId: "comparison-matrix",
+      titleBlocks: [{ type: "template", templateId: "editorial.comparison.title" }],
       claims: [{ id: ids.fact, text: "最终服务范围以签约前确认材料为准" }],
       contactIds: [ids.contact],
       media: [],
@@ -213,6 +230,17 @@ describe("GEO API session and destination policy", () => {
     expect(JSON.stringify(payload.bodyBlocks)).not.toContain('"text"');
     expect(String(payload.bodyMarkdown)).toContain("4001133986");
     expect(String(payload.bodyMarkdown)).toContain("最终服务范围以签约前确认材料为准");
+
+    await expect(
+      api.proposeDraft(principal, {
+        brandId: ids.brand,
+        campaignId: ids.campaign,
+        brief: "travel risk and service boundary",
+        articleTemplateId: "invented-template",
+        idempotencyKey: "invalid-template",
+      }),
+    ).rejects.toMatchObject({ code: "ARTICLE_TEMPLATE_UNKNOWN", status: 400 });
+    expect(contentRequests).toBe(1);
 
     automationBlocked = true;
     await expect(

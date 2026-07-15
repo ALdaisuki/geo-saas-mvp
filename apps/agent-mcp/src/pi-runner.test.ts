@@ -73,6 +73,10 @@ function fakeApi(
 ): InternalGeoApiClient {
   return {
     getTenantContext: async () => ({ tenantId: ids.tenant }),
+    getArticleTemplateCatalog: async () => ({
+      version: "geo.article-templates.v1" as const,
+      items: [],
+    }),
     lookupFacts: async () => ({ facts: [], evidence: [] }),
     proposeDraft: async () => ({ contentItemId: ids.content, contentVersionId: ids.version }),
     previewVariant: async () => ({ variantId: ids.variant }),

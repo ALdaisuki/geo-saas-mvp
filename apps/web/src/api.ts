@@ -1,3 +1,10 @@
+import {
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  type ArticleTemplate,
+  type ArticleTemplateCategory,
+  type GovernedEditorialProfile,
+} from "@geo/contracts";
+
 export interface TenantOption {
   readonly id?: string;
   readonly slug: string;
@@ -760,6 +767,11 @@ export interface ApiErrorDetails {
   readonly [key: string]: unknown;
 }
 
+export interface ArticleTemplateCatalogView {
+  readonly version: typeof ARTICLE_TEMPLATE_CATALOG_VERSION;
+  readonly items: readonly ArticleTemplate[];
+}
+
 export class GeoApiError extends Error {
   constructor(
     readonly status: number,
@@ -802,6 +814,7 @@ export interface GeoApi {
     input: { readonly status: "active" | "disabled"; readonly reason: string },
   ): Promise<{ readonly principal: ServicePrincipal; readonly wasChanged: boolean }>;
   getQuerySets(): Promise<readonly QuerySet[]>;
+  getArticleTemplates(): Promise<ArticleTemplateCatalogView>;
   getEvidenceSources(): Promise<readonly EvidenceSource[]>;
   createEvidenceSource(input: CreateEvidenceSourceInput): Promise<EvidenceSource>;
   getFacts(): Promise<readonly ClaimFact[]>;
@@ -973,6 +986,85 @@ function parseTenantOption(value: unknown): TenantOption {
       : { role: optionalString(item, "role") as string }),
     ...(status === null ? {} : { status }),
   };
+}
+
+const ARTICLE_TEMPLATE_FIELDS = new Set([
+  "id",
+  "name",
+  "category",
+  "editorialProfile",
+  "scenario",
+  "travelExample",
+  "benefit",
+  "geoMechanisms",
+  "outline",
+  "evidenceRequirements",
+  "riskBoundaries",
+]);
+
+function parseArticleTemplate(value: unknown): ArticleTemplate {
+  const item = recordValue(value, "article template");
+  const unexpected = Object.keys(item).find((key) => !ARTICLE_TEMPLATE_FIELDS.has(key));
+  if (unexpected !== undefined) {
+    throw protocolError(`article template contains unsupported field: ${unexpected}`);
+  }
+  const id = stringValue(item, "id");
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) {
+    throw protocolError(`invalid article template id: ${id}`);
+  }
+  const requiredText = (key: string) => {
+    const text = stringValue(item, key);
+    if (text.trim().length === 0) throw protocolError(`${key} must not be empty`);
+    return text;
+  };
+  const requiredList = (key: string) => {
+    const values = stringArrayValue(item, key);
+    if (values.length === 0 || values.some((entry) => entry.trim().length === 0)) {
+      throw protocolError(`${key} must contain non-empty strings`);
+    }
+    return values;
+  };
+  return {
+    id,
+    name: requiredText("name"),
+    category: stringEnumValue<ArticleTemplateCategory>(item, "category", [
+      "answer",
+      "decision",
+      "service",
+      "trust",
+      "freshness",
+    ]),
+    editorialProfile: stringEnumValue<GovernedEditorialProfile>(item, "editorialProfile", [
+      "guide",
+      "question_answer",
+      "comparison",
+      "risk_avoidance",
+      "local_service",
+    ]),
+    scenario: requiredText("scenario"),
+    travelExample: requiredText("travelExample"),
+    benefit: requiredText("benefit"),
+    geoMechanisms: requiredList("geoMechanisms"),
+    outline: requiredList("outline"),
+    evidenceRequirements: requiredList("evidenceRequirements"),
+    riskBoundaries: requiredList("riskBoundaries"),
+  };
+}
+
+function parseArticleTemplateCatalog(value: unknown): ArticleTemplateCatalogView {
+  const body = recordValue(value, "article template catalog");
+  const version = stringValue(body, "version");
+  if (version !== ARTICLE_TEMPLATE_CATALOG_VERSION) {
+    throw protocolError(`unsupported article template catalog version: ${version}`);
+  }
+  if (!Array.isArray(body.items) || body.items.length < 20) {
+    throw protocolError("article template catalog must contain at least 20 items");
+  }
+  const items = body.items.map(parseArticleTemplate);
+  if (new Set(items.map((template) => template.id)).size !== items.length) {
+    throw protocolError("article template IDs must be unique");
+  }
+  return { version: ARTICLE_TEMPLATE_CATALOG_VERSION, items };
 }
 
 function parseSession(value: unknown): SessionSnapshot {
@@ -2119,6 +2211,10 @@ export class HttpGeoApi implements GeoApi {
 
   async getQuerySets(): Promise<readonly QuerySet[]> {
     return itemsValue(await this.request("/api/query-sets"), parseQuerySet);
+  }
+
+  async getArticleTemplates(): Promise<ArticleTemplateCatalogView> {
+    return parseArticleTemplateCatalog(await this.request("/api/article-templates"));
   }
 
   async getEvidenceSources(): Promise<readonly EvidenceSource[]> {

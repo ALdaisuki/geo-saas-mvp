@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { ARTICLE_TEMPLATE_CATEGORIES, ARTICLE_TEMPLATES } from "./article-templates.js";
+import {
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ARTICLE_TEMPLATE_CATEGORIES,
+  ARTICLE_TEMPLATES,
+} from "@geo/contracts";
 
 describe("GEO article template catalog", () => {
+  it("exposes the immutable V1 catalog version", () => {
+    expect(ARTICLE_TEMPLATE_CATALOG_VERSION).toBe("geo.article-templates.v1");
+  });
+
   it("ships at least 20 complete and uniquely identified templates", () => {
     expect(ARTICLE_TEMPLATES.length).toBeGreaterThanOrEqual(20);
     expect(new Set(ARTICLE_TEMPLATES.map((template) => template.id)).size).toBe(

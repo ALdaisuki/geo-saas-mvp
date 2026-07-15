@@ -125,6 +125,19 @@ function mediaReference(platform: Platform, suffix: number, role: "cover" | "inl
 }
 
 describe("platform publication variant rendering", () => {
+  it("binds the selected article template to the canonical source payload", () => {
+    const source = renderEditorialSourcePayload({
+      editorialProfile: "comparison",
+      articleTemplateId: "comparison-matrix",
+      policy: policy(),
+      factSnapshot: snapshot,
+      contacts,
+    });
+
+    expect(source.articleTemplateId).toBe("comparison-matrix");
+    expect(Object.isFrozen(source)).toBe(true);
+  });
+
   it("carries the selected article template into every platform variant", () => {
     const source = { ...sourcePayload(), articleTemplateId: "step-by-step-guide" };
     const variant = renderPlatformPublicationVariant({

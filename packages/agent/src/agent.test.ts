@@ -44,6 +44,7 @@ describe("static agent policy", () => {
     const names = AGENT_TOOL_ALLOWLIST.join(" ");
     expect(names).not.toMatch(/grant|connector|browser|fetch|http|file|shell|bash/i);
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_publication_request");
+    expect(AGENT_TOOL_ALLOWLIST).toContain("geo_template_catalog");
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_production_request");
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_job_status");
   });
@@ -96,6 +97,11 @@ describe("static agent policy", () => {
       sequential: true,
     });
     expect(AGENT_TOOL_POLICIES.geo_media_job_status).toMatchObject({
+      stateChanging: false,
+      sequential: false,
+    });
+    expect(AGENT_TOOL_POLICIES.geo_template_catalog).toMatchObject({
+      requiredCapability: "content:read",
       stateChanging: false,
       sequential: false,
     });

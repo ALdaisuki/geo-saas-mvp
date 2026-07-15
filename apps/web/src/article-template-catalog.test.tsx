@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 import { ArticleTemplateCatalog } from "./article-template-catalog.js";
 
@@ -8,7 +9,13 @@ afterEach(cleanup);
 describe("ArticleTemplateCatalog", () => {
   it("filters templates and reports the selected governed strategy", () => {
     const onSelect = vi.fn();
-    render(<ArticleTemplateCatalog onSelect={onSelect} />);
+    render(
+      <ArticleTemplateCatalog
+        templates={ARTICLE_TEMPLATES}
+        catalogVersion={ARTICLE_TEMPLATE_CATALOG_VERSION}
+        onSelect={onSelect}
+      />,
+    );
 
     expect(screen.getByText(/\d+ 套可审计结构/u)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "证据与风险" }));
@@ -26,7 +33,13 @@ describe("ArticleTemplateCatalog", () => {
 
   it("searches by customer benefit and applies the selected template", () => {
     const onSelect = vi.fn();
-    render(<ArticleTemplateCatalog onSelect={onSelect} />);
+    render(
+      <ArticleTemplateCatalog
+        templates={ARTICLE_TEMPLATES}
+        catalogVersion={ARTICLE_TEMPLATE_CATALOG_VERSION}
+        onSelect={onSelect}
+      />,
+    );
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索文章模板" }), {
       target: { value: "错误预期" },

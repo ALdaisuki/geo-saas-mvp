@@ -30,6 +30,10 @@ const principal: ActorContext = {
 function mockApi(): InternalGeoApiClient {
   return {
     getTenantContext: vi.fn(async () => ({ tenantId, name: "Test tenant" })),
+    getArticleTemplateCatalog: vi.fn(async () => ({
+      version: "geo.article-templates.v1" as const,
+      items: [],
+    })),
     lookupFacts: vi.fn(async () => ({ facts: [] })),
     proposeDraft: vi.fn(async () => ({ contentVersionId: variantId })),
     previewVariant: vi.fn(async () => ({ variantId })),
@@ -43,9 +47,10 @@ function mockApi(): InternalGeoApiClient {
 }
 
 describe("GEO MCP schemas", () => {
-  it("publishes exactly nine bounded application tools", () => {
+  it("publishes exactly ten bounded application tools", () => {
     expect(GEO_MCP_TOOL_NAMES).toEqual([
       "geo_tenant_context",
+      "geo_template_catalog",
       "geo_fact_lookup",
       "geo_draft_proposal",
       "geo_variant_preview",
@@ -62,6 +67,26 @@ describe("GEO MCP schemas", () => {
     expect(
       geoMcpToolSchemas.geo_fact_lookup.safeParse({ tenantId, brandId, query: "travel" }).success,
     ).toBe(true);
+    expect(
+      geoMcpToolSchemas.geo_draft_proposal.safeParse({
+        tenantId,
+        brandId,
+        campaignId: variantId,
+        brief: "比较旅行方案",
+        articleTemplateId: "comparison-matrix",
+        idempotencyKey: "draft-1",
+      }).success,
+    ).toBe(true);
+    expect(
+      geoMcpToolSchemas.geo_draft_proposal.safeParse({
+        tenantId,
+        brandId,
+        campaignId: variantId,
+        brief: "比较旅行方案",
+        articleTemplateId: "invented-template",
+        idempotencyKey: "draft-2",
+      }).success,
+    ).toBe(false);
     expect(
       geoMcpToolSchemas.geo_fact_lookup.safeParse({
         tenantId,
@@ -97,6 +122,19 @@ describe("GEO MCP schemas", () => {
 });
 
 describe("authenticated internal API mapping", () => {
+  it("reads the governed template catalog without resource IDs", async () => {
+    const api = mockApi();
+    await invokeGeoMcpTool({
+      toolName: "geo_template_catalog",
+      args: { tenantId },
+      principal,
+      api,
+      authorizeScope: () => true,
+    });
+
+    expect(api.getArticleTemplateCatalog).toHaveBeenCalledWith(principal);
+  });
+
   it("rejects tenant mismatch before scope checks or API access", async () => {
     const api = mockApi();
     let scopeChecks = 0;
@@ -162,6 +200,32 @@ describe("authenticated internal API mapping", () => {
       idempotencyKey: "publication-1",
     });
     expect(Object.keys(api).join(" ")).not.toMatch(/grant|connector|browser/i);
+  });
+
+  it("passes a catalog-bound article template into the draft proposal", async () => {
+    const api = mockApi();
+    await invokeGeoMcpTool({
+      toolName: "geo_draft_proposal",
+      args: {
+        tenantId,
+        brandId,
+        campaignId: variantId,
+        brief: "比较旅行方案",
+        articleTemplateId: "comparison-matrix",
+        idempotencyKey: "draft-1",
+      },
+      principal,
+      api,
+      authorizeScope: () => true,
+    });
+
+    expect(api.proposeDraft).toHaveBeenCalledWith(principal, {
+      brandId,
+      campaignId: variantId,
+      brief: "比较旅行方案",
+      articleTemplateId: "comparison-matrix",
+      idempotencyKey: "draft-1",
+    });
   });
 
   it("maps media production and read-only status to exactly two API methods", async () => {

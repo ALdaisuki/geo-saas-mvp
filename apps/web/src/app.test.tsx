@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
+import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 import { type GeoApi, GeoApiError, type SessionSnapshot } from "./api.js";
 import { App } from "./app.js";
@@ -281,6 +282,10 @@ function liveApi(): GeoApi {
         updatedAt: "2026-07-14T08:00:00.000Z",
       },
     ],
+    getArticleTemplates: async () => ({
+      version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+      items: ARTICLE_TEMPLATES,
+    }),
     getEvidenceSources: async () => [],
     createEvidenceSource: async () => {
       throw new Error("not used by this App fixture");
@@ -641,6 +646,34 @@ describe("GEO operator console", () => {
     expect(screen.getByText("尚无文章；创建操作会同时生成 v1")).toBeInTheDocument();
   });
 
+  it("fails closed when the live article template catalog is unavailable", async () => {
+    const api = liveApi();
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "content:write"],
+      },
+    });
+    api.getArticleTemplates = async () => {
+      throw new GeoApiError(
+        503,
+        "TEMPLATE_CATALOG_UNAVAILABLE",
+        "Article template catalog is unavailable",
+        "req-template-503",
+      );
+    };
+    renderApp({ path: "/content", api });
+
+    await screen.findByText("GET /api/article-templates 读取失败");
+    expect(screen.getByText(/TEMPLATE_CATALOG_UNAVAILABLE/)).toBeInTheDocument();
+    expect(screen.queryByText(`${ARTICLE_TEMPLATES.length} 套可审计结构`)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建文章 + v1" })).toHaveAttribute(
+      "title",
+      "文章模板目录尚未就绪",
+    );
+  });
+
   it("routes to live automation batches with dashboard campaigns and Dry-run accounts", async () => {
     const api = liveApi();
     const campaigns = await api.getCampaigns();
@@ -792,6 +825,17 @@ describe("GEO operator console", () => {
     expect(screen.getByText(/req-campaigns-503/)).toBeInTheDocument();
     expect(screen.getByText("实时 API")).toBeInTheDocument();
     expect(screen.queryByText("演示数据")).not.toBeInTheDocument();
+  });
+
+  it("shows the first-release capability boundary without implying live providers", async () => {
+    renderApp({ path: "/settings", api: liveApi() });
+
+    expect(await screen.findByText("第一版能力边界")).toBeInTheDocument();
+    expect(screen.getByText("GEO 模板与规范草稿")).toBeInTheDocument();
+    expect(screen.getByText("头条 / 搜狐 / 携程外部发布")).toBeInTheDocument();
+    expect(screen.getByText("豆包 / 千问在线评测")).toBeInTheDocument();
+    expect(screen.getByText("生产级图片生成")).toBeInTheDocument();
+    expect(screen.getByText("品牌记忆正负反馈闭环")).toBeInTheDocument();
   });
 
   it("shows a truthful empty state for a successful zero-row response", async () => {

@@ -19,9 +19,11 @@ Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可
 | Kill Switch、撤权与排队取消 | 租户急停、grant revoke、queued/retry cancel 已实现 | 自动撤权、取消已租约作业或停止已发出的外部请求 |
 | 发布前审计与一次性 grant    | 已实现确定性路径                                   | 模型可自行批准发布                             |
 | 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链             | 已接入真实生图 API 或图片可直接生产投放        |
+| GEO 文章模板目录            | 21 套共享 V1 模板贯通 Web、HTTP API、Pi 与 MCP     | 模板可绕过事实、策略或最终变体审计             |
 | 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt              | 已发文、公开 API 或无人值守投放                |
 | 豆包/千问可见性             | fixture + manual import                            | 已调用真实产品搜索或可等同 Google              |
-| GEO MCP                     | 9 个静态白名单工具                                 | 任意 MCP 工具访问或 Pi 内建 MCP                |
+| 品牌记忆正负反馈闭环        | 未纳入第一版；当前只保留显式治理上下文             | 系统会依据文章或审计结果自动改写长期记忆       |
+| GEO MCP                     | 10 个静态白名单工具                                | 任意 MCP 工具访问或 Pi 内建 MCP                |
 | Pi Agent 与批次 Producer    | `agent-mcp` 内置；多租户租约恢复，固定 Dry-run     | 已向外部平台实发或绕过发布前审计               |
 | Operator 登录               | 显式一次性 bootstrap CLI                           | `db:seed` 后可直接登录或存在共享默认密码       |
 

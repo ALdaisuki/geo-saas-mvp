@@ -6,6 +6,8 @@ import type { PublicationGovernanceDecision, PublicationGrantConsumptionInput } 
 import { capabilitiesForRole, hasCapability, requireCapability } from "@geo/authz";
 import {
   automationServicePrincipalCreateRequestSchema,
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ARTICLE_TEMPLATES,
   channelAccountCreateRequestSchema,
   channelAccountUpdateRequestSchema,
   contactCreateRequestSchema,
@@ -1255,6 +1257,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   app.get("/api/evidence-sources", { preHandler: guard("content:read") }, async (request) => ({
     items: await repository.listEvidenceSources(requestContext(request)),
+  }));
+  app.get("/api/article-templates", { preHandler: guard("content:read") }, async () => ({
+    version: ARTICLE_TEMPLATE_CATALOG_VERSION,
+    items: ARTICLE_TEMPLATES,
   }));
   app.post(
     "/api/evidence-sources",

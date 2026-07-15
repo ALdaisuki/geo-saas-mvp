@@ -127,6 +127,10 @@ function harness(initialRun: AutomationRunView): Harness {
   const mutation = { accepted: true, reason: "accepted", leaseExpiresAt: timestamp } as const;
   const api = {
     getTenantContext: async () => ({}),
+    getArticleTemplateCatalog: async () => ({
+      version: "geo.article-templates.v1" as const,
+      items: [],
+    }),
     lookupFacts: async () => ({}),
     proposeDraft: async () => ({}),
     previewVariant: async () => ({}),

@@ -8,9 +8,16 @@ import type { GovernedAgentRuntime } from "./runtime.js";
 const tenantId = Type.String({ format: "uuid", description: "Authenticated tenant ID" });
 const resourceId = Type.String({ format: "uuid" });
 const idempotencyKey = Type.String({ minLength: 1, maxLength: 200 });
+const articleTemplateId = Type.String({
+  minLength: 1,
+  maxLength: 100,
+  pattern: "^[a-z0-9][a-z0-9-]*$",
+  description: "ID returned by geo_template_catalog",
+});
 
 const schemas = {
   geo_tenant_context: Type.Object({ tenantId }, { additionalProperties: false }),
+  geo_template_catalog: Type.Object({ tenantId }, { additionalProperties: false }),
   geo_fact_lookup: Type.Object(
     {
       tenantId,
@@ -26,6 +33,7 @@ const schemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: Type.String({ minLength: 1, maxLength: 10_000 }),
+      articleTemplateId: Type.Optional(articleTemplateId),
       idempotencyKey,
       fixtureMode: Type.Optional(Type.Boolean()),
     },
@@ -121,6 +129,10 @@ const descriptions: Readonly<Record<AgentToolName, { label: string; description:
   geo_tenant_context: {
     label: "Tenant context",
     description: "Read the authenticated tenant's non-secret operating context.",
+  },
+  geo_template_catalog: {
+    label: "Article template catalog",
+    description: "Read the governed article strategies and their evidence boundaries.",
   },
   geo_fact_lookup: {
     label: "Fact lookup",

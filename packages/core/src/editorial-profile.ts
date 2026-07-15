@@ -26,6 +26,7 @@ export const EDITORIAL_PROFILES: readonly EditorialProfile[] = [
 
 export interface RenderEditorialSourcePayloadInput {
   readonly editorialProfile: EditorialProfile;
+  readonly articleTemplateId?: string;
   readonly policy: AuditPolicy;
   readonly factSnapshot: FactSnapshot;
   readonly contacts: readonly TenantContact[];
@@ -67,26 +68,20 @@ function referenceBlocks(
   contactIds: readonly string[],
 ): Readonly<Record<EditorialSourceBodySlot, readonly CanonicalBodyBlock[]>> {
   return {
-    profile_opening: [
-      { type: "template", templateId: profile.bodyTemplateIds.opening },
-    ],
+    profile_opening: [{ type: "template", templateId: profile.bodyTemplateIds.opening }],
     claims: claimIds.map((claimId) => ({
       type: "claim" as const,
       claimId,
       presentation: profile.claimPresentation,
     })),
-    profile_details: [
-      { type: "template", templateId: profile.bodyTemplateIds.details },
-    ],
+    profile_details: [{ type: "template", templateId: profile.bodyTemplateIds.details }],
     profile_action: [{ type: "template", templateId: profile.bodyTemplateIds.action }],
     contacts: contactIds.map((contactId) => ({
       type: "contact" as const,
       contactId,
       presentation: profile.contactPresentation,
     })),
-    profile_closing: [
-      { type: "template", templateId: profile.bodyTemplateIds.closing },
-    ],
+    profile_closing: [{ type: "template", templateId: profile.bodyTemplateIds.closing }],
   };
 }
 
@@ -105,6 +100,9 @@ export function renderEditorialSourcePayload(
   const profile = editorialProfilePolicy(input.policy, input.editorialProfile).source;
   const candidate: PublicationVariantPayload = {
     editorialProfile: input.editorialProfile,
+    ...(input.articleTemplateId === undefined
+      ? {}
+      : { articleTemplateId: input.articleTemplateId }),
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",

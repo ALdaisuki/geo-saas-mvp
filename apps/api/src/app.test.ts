@@ -1722,6 +1722,26 @@ afterEach(async () => {
 });
 
 describe("Fastify API security and vertical publication flow", () => {
+  it("serves the governed V1 article template catalog only to authenticated content readers", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/article-templates" });
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/article-templates",
+      headers: { cookie: authenticated.cookie },
+    });
+
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(response.statusCode).toBe(200);
+    const catalog = response.json<{ version: string; items: Array<{ id: string }> }>();
+    expect(catalog.version).toBe("geo.article-templates.v1");
+    expect(catalog.items.length).toBeGreaterThanOrEqual(20);
+    expect(new Set(catalog.items.map((template) => template.id)).size).toBe(catalog.items.length);
+    expect(catalog.items).toContainEqual(expect.objectContaining({ id: "comparison-matrix" }));
+  });
+
   it("rejects untrusted browser origins before authentication", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);

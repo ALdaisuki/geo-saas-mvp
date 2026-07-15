@@ -46,11 +46,10 @@ import {
 } from "./api.js";
 import { ArticleTemplateCatalog } from "./article-template-catalog.js";
 import {
-  ARTICLE_TEMPLATES,
   DEFAULT_ARTICLE_TEMPLATE_ID,
-  articleTemplateById,
+  type ArticleTemplate,
   type GovernedEditorialProfile,
-} from "./article-templates.js";
+} from "@geo/contracts";
 
 type WriteState = "idle" | "working" | "done" | "error";
 
@@ -62,6 +61,7 @@ interface OperationResources {
   readonly content: "loading" | "ready" | "error";
   readonly accounts: "loading" | "ready" | "error";
   readonly policies: "loading" | "ready" | "error";
+  readonly templates: "loading" | "ready" | "error";
 }
 
 export interface OperationsWorkspaceProps {
@@ -76,6 +76,8 @@ export interface OperationsWorkspaceProps {
   readonly accounts: readonly ChannelAccount[];
   readonly contacts: readonly TenantContact[];
   readonly policies: readonly PolicyBundle[];
+  readonly templates: readonly ArticleTemplate[];
+  readonly catalogVersion: string;
   readonly resources: OperationResources;
 }
 
@@ -660,6 +662,8 @@ function ArticleComposer({
   facts,
   contacts,
   policies,
+  templates,
+  catalogVersion,
   canWrite,
   onCreated,
 }: {
@@ -668,6 +672,8 @@ function ArticleComposer({
   facts: readonly ClaimFact[];
   contacts: readonly TenantContact[];
   policies: readonly PolicyBundle[];
+  templates: readonly ArticleTemplate[];
+  catalogVersion: string;
   canWrite: boolean;
   onCreated: (content: ContentItem, payload: PublicationPayload) => void;
 }) {
@@ -690,9 +696,11 @@ function ArticleComposer({
       (contact.validUntil === null || Date.parse(contact.validUntil) > now),
   );
   const activePolicy = selectActivePolicy(policies);
-  const selectedTemplate = articleTemplateById(selectedTemplateId) ?? ARTICLE_TEMPLATES[0];
+  const selectedTemplate =
+    templates.find((template) => template.id === selectedTemplateId) ?? templates[0];
   const enabled =
     canWrite &&
+    templates.length > 0 &&
     activePolicy !== null &&
     activeCampaigns.some((campaign) =>
       verifiedFacts.some((fact) => fact.brandId === campaign.brandId),
@@ -762,9 +770,11 @@ function ArticleComposer({
         title={
           !canWrite
             ? "当前会话缺少 content:write"
-            : enabled
-              ? undefined
-              : "先创建 Campaign，并至少登记一条可引用事实"
+            : templates.length === 0
+              ? "文章模板目录尚未就绪"
+              : enabled
+                ? undefined
+                : "先创建 Campaign，并至少登记一条可引用事实"
         }
       >
         <Plus size={16} /> 新建文章 + v1
@@ -789,6 +799,8 @@ function ArticleComposer({
         </button>
       </div>
       <ArticleTemplateCatalog
+        templates={templates}
+        catalogVersion={catalogVersion}
         selectedTemplateId={selectedTemplateId}
         onSelect={(template) => setSelectedTemplateId(template.id)}
       />
@@ -1366,6 +1378,8 @@ export function OperationsWorkspace({
   accounts,
   contacts,
   policies,
+  templates,
+  catalogVersion,
   resources,
 }: OperationsWorkspaceProps) {
   const [brands, setBrands] = useState<readonly Brand[]>(incomingBrands);
@@ -1545,6 +1559,8 @@ export function OperationsWorkspace({
             facts={facts}
             contacts={contacts}
             policies={policies}
+            templates={templates}
+            catalogVersion={catalogVersion}
             canWrite={canWrite}
             onCreated={(item) => {
               setContent((items) => [item, ...items]);

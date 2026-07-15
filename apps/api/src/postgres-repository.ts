@@ -28,6 +28,7 @@ import {
   type BrandView,
   type CampaignStatus,
   type CampaignView,
+  type CircuitBreakerView,
   type ChannelAccountView,
   type ClaimFactView,
   type ContentVersionView,
@@ -60,6 +61,7 @@ import {
   type PublicationRequestResult,
   type RequestContext,
   type QuerySetView,
+  type QuerySetVersionView,
   type ResourceScopeRef,
   type ResourceScopeResult,
   type ResolveSessionInput,
@@ -716,6 +718,40 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
     return result.rows[0]?.value === true;
   }
 
+  async function assertAutomationScopeExists(
+    transaction: TenantTransaction,
+    scopeType: "tenant" | "platform" | "account" | "campaign" | "topic",
+    scopeKey: string,
+  ): Promise<void> {
+    if (scopeType === "tenant") return;
+    let result: { rows: readonly { value: boolean }[] };
+    switch (scopeType) {
+      case "platform":
+        result = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.channel_accounts where platform = ${scopeKey}) as value
+        `.execute(transaction);
+        break;
+      case "account":
+        result = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.channel_accounts where id = ${scopeKey}::uuid) as value
+        `.execute(transaction);
+        break;
+      case "campaign":
+        result = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.campaigns where id = ${scopeKey}::uuid) as value
+        `.execute(transaction);
+        break;
+      case "topic":
+        result = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.campaigns where topic_key = ${scopeKey}) as value
+        `.execute(transaction);
+        break;
+    }
+    if (result.rows[0]?.value !== true) {
+      throw new RepositoryNotFoundError(`Automation ${scopeType} scope was not found`);
+    }
+  }
+
   async function selectPublicationJob(
     transaction: TenantTransaction,
     jobId: string,
@@ -1266,26 +1302,328 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
       });
     },
 
+    async listQuerySetVersions(context, querySetId): Promise<readonly QuerySetVersionView[]> {
+      return tenant(context, async (transaction) => {
+        const setResult = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.query_sets where id = ${querySetId}::uuid) as value
+        `.execute(transaction);
+        if (setResult.rows[0]?.value !== true) {
+          throw new RepositoryNotFoundError("Query set was not found");
+        }
+        const result = await sql<{
+          id: string;
+          query_set_id: string;
+          version: number;
+          prompts: unknown;
+          prompt_hash: string;
+          created_by_actor_id: string;
+          created_at: Date;
+        }>`
+          select id, query_set_id, version, prompts, prompt_hash,
+                 created_by_actor_id, created_at
+          from geo.query_set_versions
+          where query_set_id = ${querySetId}::uuid
+          order by version desc
+        `.execute(transaction);
+        return result.rows.map((row) => ({
+          id: row.id,
+          querySetId: row.query_set_id,
+          version: row.version,
+          prompts: Array.isArray(row.prompts) ? row.prompts.map(objectRecord) : [],
+          promptHash: row.prompt_hash,
+          createdByActorId: row.created_by_actor_id,
+          createdAt: toIso(row.created_at),
+        }));
+      });
+    },
+
+    async createQuerySetVersion(context, input): Promise<QuerySetVersionView> {
+      return tenant(context, async (transaction) => {
+        try {
+          const setResult = await sql<{ status: QuerySetView["status"] }>`
+            select status from geo.query_sets
+            where id = ${input.querySetId}::uuid
+            for update
+          `.execute(transaction);
+          const querySet = setResult.rows[0];
+          if (querySet === undefined) throw new RepositoryNotFoundError("Query set was not found");
+          if (querySet.status === "retired") {
+            throw new RepositoryConflictError("A retired query set cannot receive a new version");
+          }
+          const versionResult = await sql<{ next_version: number }>`
+            select coalesce(max(version), 0)::integer + 1 as next_version
+            from geo.query_set_versions
+            where query_set_id = ${input.querySetId}::uuid
+          `.execute(transaction);
+          const nextVersion = versionResult.rows[0]?.next_version;
+          if (nextVersion === undefined) {
+            throw new RepositoryConflictError("Query set version could not be allocated");
+          }
+          const inserted = await sql<{
+            id: string;
+            query_set_id: string;
+            version: number;
+            prompts: unknown;
+            prompt_hash: string;
+            created_by_actor_id: string;
+            created_at: Date;
+          }>`
+            insert into geo.query_set_versions (
+              tenant_id, id, query_set_id, version, prompts, prompt_hash, created_by_actor_id
+            ) values (
+              ${context.tenantId}, ${input.versionId}, ${input.querySetId}, ${nextVersion},
+              ${jsonText(input.prompts)}::jsonb, ${input.promptHash}, ${context.actorId}
+            )
+            returning id, query_set_id, version, prompts, prompt_hash,
+                      created_by_actor_id, created_at
+          `.execute(transaction);
+          const row = inserted.rows[0];
+          if (row === undefined) {
+            throw new RepositoryConflictError("Query set version was not created");
+          }
+          await sql`update geo.query_sets set updated_at = clock_timestamp() where id = ${input.querySetId}`.execute(
+            transaction,
+          );
+          await sql`
+            insert into geo.audit_log (
+              tenant_id, actor_id, action, resource_type, resource_id,
+              request_id, after_hash, details
+            ) values (
+              ${context.tenantId}, ${context.actorId}, 'query_set.version_created',
+              'query_set_version', ${row.id}, ${context.requestId}, ${input.auditHash},
+              ${jsonText({
+                querySetId: input.querySetId,
+                version: row.version,
+                promptHash: input.promptHash,
+                reason: input.reason,
+              })}::jsonb
+            )
+          `.execute(transaction);
+          return {
+            id: row.id,
+            querySetId: row.query_set_id,
+            version: row.version,
+            prompts: Array.isArray(row.prompts) ? row.prompts.map(objectRecord) : [],
+            promptHash: row.prompt_hash,
+            createdByActorId: row.created_by_actor_id,
+            createdAt: toIso(row.created_at),
+          };
+        } catch (error) {
+          if (
+            error instanceof RepositoryConflictError ||
+            error instanceof RepositoryNotFoundError
+          ) {
+            throw error;
+          }
+          if (sqlState(error) === "23505") {
+            throw new RepositoryConflictError("Query set prompt version already exists");
+          }
+          throw error;
+        }
+      });
+    },
+
+    async activateQuerySetVersion(context, input) {
+      return tenant(context, async (transaction) => {
+        const setResult = await sql<{
+          id: string;
+          name: string;
+          industry: string;
+          status: QuerySetView["status"];
+          current_version: number;
+          description: string;
+          created_at: Date;
+          updated_at: Date;
+        }>`
+          select id, name, industry, status, current_version, description, created_at, updated_at
+          from geo.query_sets
+          where id = ${input.querySetId}::uuid
+          for update
+        `.execute(transaction);
+        const current = setResult.rows[0];
+        if (current === undefined) throw new RepositoryNotFoundError("Query set was not found");
+        if (current.status === "retired") {
+          throw new RepositoryConflictError("A retired query set cannot be activated");
+        }
+        const versionResult = await sql<{
+          id: string;
+          version: number;
+          prompts: unknown;
+          prompt_hash: string;
+        }>`
+          select id, version, prompts, prompt_hash
+          from geo.query_set_versions
+          where id = ${input.versionId}::uuid and query_set_id = ${input.querySetId}::uuid
+        `.execute(transaction);
+        const version = versionResult.rows[0];
+        if (version === undefined) {
+          throw new RepositoryNotFoundError("Query set version was not found");
+        }
+        const wasChanged =
+          current.current_version !== version.version || current.status !== "active";
+        const updated = wasChanged
+          ? await sql<{ updated_at: Date }>`
+              update geo.query_sets
+              set current_version = ${version.version}, status = 'active'
+              where id = ${input.querySetId}::uuid
+              returning updated_at
+            `.execute(transaction)
+          : { rows: [{ updated_at: current.updated_at }] };
+        const updatedAt = updated.rows[0]?.updated_at;
+        if (updatedAt === undefined) {
+          throw new RepositoryConflictError("Query set version was not activated");
+        }
+        if (wasChanged) {
+          await sql`
+            insert into geo.audit_log (
+              tenant_id, actor_id, action, resource_type, resource_id,
+              request_id, after_hash, details
+            ) values (
+              ${context.tenantId}, ${context.actorId}, 'query_set.version_activated',
+              'query_set', ${current.id}, ${context.requestId}, ${input.auditHash},
+              ${jsonText({
+                querySetId: current.id,
+                versionId: version.id,
+                previousVersion: current.current_version,
+                version: version.version,
+                previousStatus: current.status,
+                reason: input.reason,
+              })}::jsonb
+            )
+          `.execute(transaction);
+        }
+        return {
+          querySet: {
+            id: current.id,
+            name: current.name,
+            industry: current.industry,
+            status: "active" as const,
+            currentVersion: version.version,
+            description: current.description,
+            currentVersionId: version.id,
+            prompts: version.prompts,
+            promptHash: version.prompt_hash,
+            createdAt: toIso(current.created_at),
+            updatedAt: toIso(updatedAt),
+          },
+          previousVersion: current.current_version,
+          previousStatus: current.status,
+          wasChanged,
+        };
+      });
+    },
+
+    async transitionQuerySet(context, input) {
+      return tenant(context, async (transaction) => {
+        const result = await sql<{
+          id: string;
+          name: string;
+          industry: string;
+          status: QuerySetView["status"];
+          current_version: number;
+          description: string;
+          version_id: string;
+          prompts: unknown;
+          prompt_hash: string;
+          created_at: Date;
+          updated_at: Date;
+        }>`
+          select query_set.id, query_set.name, query_set.industry, query_set.status,
+                 query_set.current_version, query_set.description,
+                 version.id as version_id, version.prompts, version.prompt_hash,
+                 query_set.created_at, query_set.updated_at
+          from geo.query_sets as query_set
+          join geo.query_set_versions as version
+            on version.query_set_id = query_set.id
+           and version.version = query_set.current_version
+          where query_set.id = ${input.querySetId}::uuid
+          for update of query_set
+        `.execute(transaction);
+        const current = result.rows[0];
+        if (current === undefined) throw new RepositoryNotFoundError("Query set was not found");
+        const wasChanged = current.status !== input.targetStatus;
+        const updated = wasChanged
+          ? await sql<{ updated_at: Date }>`
+              update geo.query_sets set status = ${input.targetStatus}
+              where id = ${input.querySetId}::uuid
+              returning updated_at
+            `.execute(transaction)
+          : { rows: [{ updated_at: current.updated_at }] };
+        const updatedAt = updated.rows[0]?.updated_at;
+        if (updatedAt === undefined) {
+          throw new RepositoryConflictError("Query set status was not changed");
+        }
+        if (wasChanged) {
+          await sql`
+            insert into geo.audit_log (
+              tenant_id, actor_id, action, resource_type, resource_id,
+              request_id, after_hash, details
+            ) values (
+              ${context.tenantId}, ${context.actorId}, 'query_set.status_changed',
+              'query_set', ${current.id}, ${context.requestId}, ${input.auditHash},
+              ${jsonText({
+                querySetId: current.id,
+                previousStatus: current.status,
+                status: input.targetStatus,
+                reason: input.reason,
+              })}::jsonb
+            )
+          `.execute(transaction);
+        }
+        return {
+          querySet: {
+            id: current.id,
+            name: current.name,
+            industry: current.industry,
+            status: input.targetStatus,
+            currentVersion: current.current_version,
+            description: current.description,
+            currentVersionId: current.version_id,
+            prompts: current.prompts,
+            promptHash: current.prompt_hash,
+            createdAt: toIso(current.created_at),
+            updatedAt: toIso(updatedAt),
+          },
+          previousStatus: current.status,
+          wasChanged,
+        };
+      });
+    },
+
     async getAutomationStatus(context: RequestContext): Promise<AutomationStatusView> {
       return tenant(context, async (transaction) => {
         const controlResult = await sql<{
           id: string;
+          scope_type: AutomationControlView["scopeType"];
+          scope_key: string;
           mode: AutomationControlView["mode"];
           kill_switch_enabled: boolean;
           reason: string | null;
           quota: unknown;
           updated_at: Date;
         }>`
-          select id, mode, kill_switch_enabled, reason, quota, updated_at
+          select id, scope_type, scope_key, mode, kill_switch_enabled, reason, quota, updated_at
           from geo.automation_controls
-          where scope_type = 'tenant' and scope_key = '*'
-          limit 1
+          order by scope_type, scope_key
         `.execute(transaction);
-        const control = controlResult.rows[0];
+        const controls: AutomationControlView[] = controlResult.rows.map((row) => ({
+          id: row.id,
+          scopeType: row.scope_type,
+          scopeKey: row.scope_key,
+          mode: row.mode,
+          killSwitchEnabled: row.kill_switch_enabled,
+          reason: row.reason,
+          quota: objectRecord(row.quota),
+          updatedAt: toIso(row.updated_at),
+        }));
+        const control = controls.find(
+          (candidate) => candidate.scopeType === "tenant" && candidate.scopeKey === "*",
+        );
         if (control === undefined) {
           throw new RepositoryNotFoundError("Tenant automation control was not found");
         }
         const circuitResult = await sql<{
+          id: string;
           scope_type: AutomationStatusView["circuits"][number]["scopeType"];
           scope_key: string;
           state: AutomationStatusView["circuits"][number]["state"];
@@ -1295,21 +1633,16 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           reason: string | null;
           updated_at: Date;
         }>`
-          select scope_type, scope_key, state, failure_count,
+          select id, scope_type, scope_key, state, failure_count,
                  opened_at, retry_at, reason, updated_at
           from geo.circuit_breakers
           order by scope_type, scope_key
         `.execute(transaction);
         return {
-          control: {
-            id: control.id,
-            mode: control.mode,
-            killSwitchEnabled: control.kill_switch_enabled,
-            reason: control.reason,
-            quota: objectRecord(control.quota),
-            updatedAt: toIso(control.updated_at),
-          },
+          control,
+          controls,
           circuits: circuitResult.rows.map((row) => ({
+            id: row.id,
             scopeType: row.scope_type,
             scopeKey: row.scope_key,
             state: row.state,
@@ -1323,10 +1656,206 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
       });
     },
 
+    async setTenantAutomationControl(context, input): Promise<AutomationControlView> {
+      return tenant(context, async (transaction) => {
+        const quotaJson = jsonText(input.quota);
+        const result = await sql<{
+          id: string;
+          scope_type: AutomationControlView["scopeType"];
+          scope_key: string;
+          mode: AutomationControlView["mode"];
+          kill_switch_enabled: boolean;
+          reason: string | null;
+          quota: unknown;
+          updated_at: Date;
+        }>`
+          insert into geo.automation_controls (
+            tenant_id, id, scope_type, scope_key, mode, quota,
+            kill_switch_enabled, reason
+          ) values (
+            ${context.tenantId}, ${input.controlId}, 'tenant', '*', ${input.mode},
+            ${quotaJson}::jsonb, false, ${input.reason}
+          )
+          on conflict (tenant_id, scope_type, scope_key) do update set
+            mode = excluded.mode,
+            quota = excluded.quota,
+            reason = excluded.reason
+          returning id, scope_type, scope_key, mode, kill_switch_enabled, reason, quota, updated_at
+        `.execute(transaction);
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new RepositoryConflictError("Tenant automation control was not updated");
+        }
+        await sql`
+          insert into geo.audit_log (
+            tenant_id, actor_id, action, resource_type, resource_id,
+            request_id, after_hash, details
+          ) values (
+            ${context.tenantId}, ${context.actorId}, 'automation.control_changed',
+            'automation_control', ${row.id}, ${context.requestId}, ${input.auditHash},
+            ${jsonText({
+              controlId: row.id,
+              mode: input.mode,
+              quota: input.quota,
+              reason: input.reason,
+              killSwitchEnabled: row.kill_switch_enabled,
+            })}::jsonb
+          )
+        `.execute(transaction);
+        return {
+          id: row.id,
+          scopeType: row.scope_type,
+          scopeKey: row.scope_key,
+          mode: row.mode,
+          killSwitchEnabled: row.kill_switch_enabled,
+          reason: row.reason,
+          quota: objectRecord(row.quota),
+          updatedAt: toIso(row.updated_at),
+        };
+      });
+    },
+
+    async setScopedAutomationControl(context, input): Promise<AutomationControlView> {
+      return tenant(context, async (transaction) => {
+        await assertAutomationScopeExists(transaction, input.scopeType, input.scopeKey);
+        const result = await sql<{
+          id: string;
+          scope_type: AutomationControlView["scopeType"];
+          scope_key: string;
+          mode: AutomationControlView["mode"];
+          kill_switch_enabled: boolean;
+          reason: string | null;
+          quota: unknown;
+          updated_at: Date;
+        }>`
+          insert into geo.automation_controls (
+            tenant_id, id, scope_type, scope_key, mode, quota,
+            kill_switch_enabled, reason
+          ) values (
+            ${context.tenantId}, ${input.controlId}, ${input.scopeType}, ${input.scopeKey},
+            ${input.mode}, ${jsonText(input.quota)}::jsonb,
+            ${input.killSwitchEnabled}, ${input.reason}
+          )
+          on conflict (tenant_id, scope_type, scope_key) do update set
+            mode = excluded.mode,
+            quota = excluded.quota,
+            kill_switch_enabled = excluded.kill_switch_enabled,
+            reason = excluded.reason
+          returning id, scope_type, scope_key, mode, kill_switch_enabled,
+                    reason, quota, updated_at
+        `.execute(transaction);
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new RepositoryConflictError("Scoped automation control was not updated");
+        }
+        await sql`
+          insert into geo.audit_log (
+            tenant_id, actor_id, action, resource_type, resource_id,
+            request_id, after_hash, details
+          ) values (
+            ${context.tenantId}, ${context.actorId}, 'automation.scoped_control_changed',
+            'automation_control', ${row.id}, ${context.requestId}, ${input.auditHash},
+            ${jsonText({
+              controlId: row.id,
+              scopeType: input.scopeType,
+              scopeKey: input.scopeKey,
+              mode: input.mode,
+              quota: input.quota,
+              killSwitchEnabled: input.killSwitchEnabled,
+              reason: input.reason,
+            })}::jsonb
+          )
+        `.execute(transaction);
+        return {
+          id: row.id,
+          scopeType: row.scope_type,
+          scopeKey: row.scope_key,
+          mode: row.mode,
+          killSwitchEnabled: row.kill_switch_enabled,
+          reason: row.reason,
+          quota: objectRecord(row.quota),
+          updatedAt: toIso(row.updated_at),
+        };
+      });
+    },
+
+    async setCircuitBreakerState(context, input) {
+      return tenant(context, async (transaction) => {
+        await assertAutomationScopeExists(transaction, input.scopeType, input.scopeKey);
+        const result = await sql<{
+          id: string;
+          scope_type: CircuitBreakerView["scopeType"];
+          scope_key: string;
+          state: CircuitBreakerView["state"];
+          failure_count: number;
+          opened_at: Date | null;
+          retry_at: Date | null;
+          reason: string | null;
+          updated_at: Date;
+        }>`
+          insert into geo.circuit_breakers (
+            tenant_id, id, scope_type, scope_key, state, failure_count,
+            opened_at, retry_at, reason
+          ) values (
+            ${context.tenantId}, ${input.circuitId}, ${input.scopeType}, ${input.scopeKey},
+            ${input.targetState}, ${input.targetState === "open" ? 1 : 0},
+            ${input.targetState === "open" ? new Date() : null},
+            ${input.targetState === "open" ? input.retryAt : null}, ${input.reason}
+          )
+          on conflict (tenant_id, scope_type, scope_key) do update set
+            state = excluded.state,
+            failure_count = case
+              when excluded.state = 'closed' then 0
+              else greatest(geo.circuit_breakers.failure_count, 1)
+            end,
+            opened_at = excluded.opened_at,
+            retry_at = excluded.retry_at,
+            reason = excluded.reason,
+            probe_attempt_id = null,
+            probe_started_at = null
+          returning id, scope_type, scope_key, state, failure_count,
+                    opened_at, retry_at, reason, updated_at
+        `.execute(transaction);
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new RepositoryConflictError("Circuit breaker state was not updated");
+        }
+        await sql`
+          insert into geo.audit_log (
+            tenant_id, actor_id, action, resource_type, resource_id,
+            request_id, after_hash, details
+          ) values (
+            ${context.tenantId}, ${context.actorId}, 'automation.circuit_state_changed',
+            'circuit_breaker', ${row.id}, ${context.requestId}, ${input.auditHash},
+            ${jsonText({
+              scopeType: input.scopeType,
+              scopeKey: input.scopeKey,
+              targetState: input.targetState,
+              retryAt: input.retryAt,
+              reason: input.reason,
+            })}::jsonb
+          )
+        `.execute(transaction);
+        return {
+          id: row.id,
+          scopeType: row.scope_type,
+          scopeKey: row.scope_key,
+          state: row.state,
+          failureCount: row.failure_count,
+          openedAt: toNullableIso(row.opened_at),
+          retryAt: toNullableIso(row.retry_at),
+          reason: row.reason,
+          updatedAt: toIso(row.updated_at),
+        };
+      });
+    },
+
     async setTenantKillSwitch(context, input): Promise<AutomationControlView> {
       return tenant(context, async (transaction) => {
         const result = await sql<{
           id: string;
+          scope_type: AutomationControlView["scopeType"];
+          scope_key: string;
           mode: AutomationControlView["mode"];
           kill_switch_enabled: boolean;
           reason: string | null;
@@ -1344,7 +1873,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           on conflict (tenant_id, scope_type, scope_key) do update set
             kill_switch_enabled = excluded.kill_switch_enabled,
             reason = excluded.reason
-          returning id, mode, kill_switch_enabled, reason, quota, updated_at
+          returning id, scope_type, scope_key, mode, kill_switch_enabled, reason, quota, updated_at
         `.execute(transaction);
         const row = result.rows[0];
         if (row === undefined) throw new RepositoryConflictError("Kill switch was not updated");
@@ -1365,6 +1894,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         `.execute(transaction);
         return {
           id: row.id,
+          scopeType: row.scope_type,
+          scopeKey: row.scope_key,
           mode: row.mode,
           killSwitchEnabled: row.kill_switch_enabled,
           reason: row.reason,

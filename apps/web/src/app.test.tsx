@@ -3,7 +3,13 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
-import { type BrandAgentProfile, type GeoApi, GeoApiError, type SessionSnapshot } from "./api.js";
+import {
+  type AutomationSnapshot,
+  type BrandAgentProfile,
+  type GeoApi,
+  GeoApiError,
+  type SessionSnapshot,
+} from "./api.js";
 import { App } from "./app.js";
 
 afterEach(cleanup);
@@ -57,7 +63,7 @@ function liveApi(): GeoApi {
       createdAt: "2026-07-14T08:00:00.000Z",
     },
   ];
-  let automation = {
+  let automation: AutomationSnapshot = {
     control: {
       mode: "shadow",
       killSwitchEnabled: false,
@@ -65,6 +71,7 @@ function liveApi(): GeoApi {
       quota: { dailyPublications: 0, dryRunOnly: true },
       updatedAt: "2026-07-14T08:00:00.000Z",
     },
+    controls: [],
     circuits: [],
   };
   const publicationJob = {
@@ -327,6 +334,19 @@ function liveApi(): GeoApi {
         updatedAt: "2026-07-14T08:00:00.000Z",
       },
     ],
+    createQuerySet: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    getQuerySetVersions: async () => [],
+    createQuerySetVersion: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    activateQuerySetVersion: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    transitionQuerySet: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getArticleTemplates: async () => ({
       version: ARTICLE_TEMPLATE_CATALOG_VERSION,
       items: ARTICLE_TEMPLATES,
@@ -464,6 +484,56 @@ function liveApi(): GeoApi {
       throw new Error("not used by this App fixture");
     },
     getAutomation: async () => automation,
+    setAutomationControl: async (input) => {
+      automation = {
+        ...automation,
+        control: {
+          ...automation.control,
+          mode: input.mode,
+          quota: input.quota,
+          reason: input.reason,
+          updatedAt: "2026-07-14T08:04:00.000Z",
+        },
+      };
+      return automation.control;
+    },
+    setScopedAutomationControl: async (scopeType, scopeKey, input) => {
+      const control = {
+        id: "10000000-0000-4000-8000-000000000953",
+        scopeType,
+        scopeKey,
+        mode: input.mode,
+        quota: input.quota,
+        killSwitchEnabled: input.killSwitchEnabled,
+        reason: input.reason,
+        updatedAt: "2026-07-14T08:04:00.000Z",
+      };
+      automation = {
+        ...automation,
+        controls: [
+          ...automation.controls.filter(
+            (item) => item.scopeType !== scopeType || item.scopeKey !== scopeKey,
+          ),
+          control,
+        ],
+      };
+      return control;
+    },
+    setCircuitBreakerState: async (scopeType, scopeKey, input) => {
+      const circuit = {
+        id: "10000000-0000-4000-8000-000000000954",
+        scopeType,
+        scopeKey,
+        state: input.targetState,
+        failureCount: input.targetState === "open" ? 1 : 0,
+        openedAt: input.targetState === "open" ? "2026-07-14T08:04:00.000Z" : null,
+        retryAt: input.retryAt ?? null,
+        reason: input.reason,
+        updatedAt: "2026-07-14T08:04:00.000Z",
+      };
+      automation = { ...automation, circuits: [circuit] };
+      return circuit;
+    },
     setKillSwitch: async (input) => {
       automation = {
         ...automation,
@@ -946,6 +1016,72 @@ describe("GEO operator console", () => {
     expect(screen.getByText("豆包 / 千问在线评测")).toBeInTheDocument();
     expect(screen.getByText("生产级图片生成")).toBeInTheDocument();
     expect(screen.getByText("品牌记忆正负反馈闭环")).toBeInTheDocument();
+  });
+
+  it("edits and confirms the live tenant automation mode and worker quota", async () => {
+    const api = liveApi();
+    const original = api.setAutomationControl.bind(api);
+    let submitted: Parameters<GeoApi["setAutomationControl"]>[0] | null = null;
+    api.setAutomationControl = async (input) => {
+      submitted = input;
+      return original(input);
+    };
+    renderApp({ path: "/settings", api });
+
+    const mode = await screen.findByLabelText("运行模式");
+    fireEvent.change(mode, { target: { value: "unattended" } });
+    fireEvent.change(screen.getByLabelText("最大并发"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("每分钟上限"), { target: { value: "8" } });
+    fireEvent.change(screen.getByLabelText("每日上限"), { target: { value: "80" } });
+    fireEvent.change(screen.getByLabelText("冷却秒数"), { target: { value: "15" } });
+    fireEvent.change(screen.getByLabelText("错误预算"), { target: { value: "4" } });
+    fireEvent.change(screen.getByLabelText("自动化变更原因"), {
+      target: { value: "审计和 Dry-run 样本已完成复核" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存自动化策略" }));
+
+    await waitFor(() =>
+      expect(submitted).toEqual({
+        mode: "unattended",
+        quota: {
+          maxConcurrent: 2,
+          perMinute: 8,
+          perDay: 80,
+          cooldownSeconds: 15,
+          errorBudget: 4,
+        },
+        reason: "审计和 Dry-run 样本已完成复核",
+      }),
+    );
+    await waitFor(() => expect(mode).toHaveValue("unattended"));
+    expect(screen.getByText(/无人值守只调度已审计 Dry-run/)).toBeInTheDocument();
+  });
+
+  it("adds a scoped control and manually opens a circuit with API readback", async () => {
+    renderApp({ path: "/settings", api: liveApi() });
+
+    const addControl = await screen.findByRole("button", { name: "添加范围控制" });
+    fireEvent.click(addControl);
+    fireEvent.change(screen.getByLabelText("范围运行模式"), {
+      target: { value: "paused" },
+    });
+    fireEvent.click(screen.getByLabelText("范围 Kill Switch"));
+    fireEvent.change(screen.getByLabelText("范围控制变更原因"), {
+      target: { value: "头条账号能力证据正在复核" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存范围控制" }));
+
+    expect(await screen.findByText("platform:toutiao")).toBeInTheDocument();
+    expect(screen.getByText("已急停")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "手动熔断" }));
+    fireEvent.change(screen.getByLabelText("熔断处置原因"), {
+      target: { value: "租户级风险信号等待人工复核" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认熔断" }));
+
+    expect(await screen.findByText("tenant:*")).toBeInTheDocument();
+    expect(screen.getByText("open")).toBeInTheDocument();
   });
 
   it("shows a truthful empty state for a successful zero-row response", async () => {

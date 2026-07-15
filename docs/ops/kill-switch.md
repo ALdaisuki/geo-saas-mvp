@@ -5,11 +5,14 @@
 The primary control is the tenant-scoped HTTP API:
 
 - `POST /api/automation/kill-switch` requires an authenticated session, the effective `automation:manage` capability and a matching CSRF cookie/header. It accepts `{ "enabled": boolean, "reason": string }`, updates the tenant-level switch under RLS and appends `automation.kill_switch_changed` to `geo.audit_log` in the same transaction.
+- `PUT /api/automation/control` has the same authentication requirements. It accepts the tenant mode, the exact five-key Worker quota and a reason, preserves the emergency switch, and appends `automation.control_changed` in the same transaction.
+- `PUT /api/automation/controls/:scopeType/:scopeKey` manages platform/account/campaign/topic mode, the exact quota and a scoped Kill Switch after an RLS-scoped ownership check. It appends `automation.scoped_control_changed` in the same transaction.
+- `POST /api/automation/circuits/:scopeType/:scopeKey/state` manually opens or closes tenant/platform/account/campaign/topic circuits. Operators cannot forge the automatic `half_open` probe state. Closing resets failure/probe counters and appends `automation.circuit_state_changed`.
 - `GET /api/automation` requires `tenant:read` and independently reads the stored tenant control plus tenant/platform/account circuit breakers.
 
 The database publication-grant function blocks new non-dry-run grant consumption while the tenant switch is enabled. The worker also re-reads the tenant switch before connector execution and blocks loaded jobs when it is enabled. The switch survives service restarts.
 
-The Kill Switch route changes only `kill_switch_enabled` and `reason`. Separate authenticated routes can revoke a known unconsumed grant and cancel an unlocked `queued`/`retry_wait` job, but neither action happens automatically when the switch is enabled. Cancellation returns `409` while an outbox lease is active and cannot interrupt a connector request already sent to a platform. The HTTP control plane also does not change automation mode or quotas, inventory every issued grant, reconcile an uncertain outcome, or enforce campaign/topic control rows. Use the tenant switch first, then apply the scoped controls and infrastructure/database procedures below according to the incident.
+The tenant Kill Switch route changes only `kill_switch_enabled` and `reason`; the separate tenant control route changes only mode, quota and reason, so it cannot accidentally clear the switch. Scoped controls and circuit commands are independent audited writes and do not clear the tenant switch. Authenticated routes can revoke a known unconsumed grant and cancel an unlocked `queued`/`retry_wait` job, but neither action happens automatically when a switch is enabled. Cancellation returns `409` while an outbox lease is active and cannot interrupt a connector request already sent to a platform. The HTTP control plane still does not inventory every issued grant or reconcile an uncertain platform outcome. Use the tenant switch first, then apply scoped controls and the infrastructure/database procedures below according to the incident.
 
 ## Primary API stop
 
@@ -207,11 +210,11 @@ Current connectors do not make external writes, but the same incident process is
 
 Resume requires two-person approval, an attached root-cause record and proof that no unsafe issued grant remains. Corrected variants must pass a new audit and receive a new one-time grant.
 
-If the database fallback set mode to `stopped`, use a separately reviewed and audited admin transaction to return the tenant to `shadow` with zero/dry-run-only quota while keeping `kill_switch_enabled=true`. The Kill Switch API does not change mode or quota. Start the API alone if it was stopped, then use the same authenticated flow as activation with a new 3-500 character reason and `enabled=false`. A separate `GET /api/automation` must show all of the following before the worker starts:
+If the database fallback set mode to `stopped`, start the API alone and use `PUT /api/automation/control` to return the tenant to `shadow` with a separately reviewed conservative quota such as `maxConcurrent=1`, `perMinute=10`, `perDay=100`, `cooldownSeconds=0`, `errorBudget=5`. This write is audited and preserves `kill_switch_enabled=true`. Then use the Kill Switch route with a new 3-500 character reason and `enabled=false`. A separate `GET /api/automation` must show all of the following before the worker starts:
 
 - `control.killSwitchEnabled` is `false`;
 - `control.mode` is `shadow`;
-- quota remains zero/dry-run-only;
+- quota matches the approved conservative values; all MVP automation batches remain server-fixed `dry_run` regardless of mode;
 - no relevant circuit is unexpectedly open or half-open.
 
 Start the worker, run one dry-run canary and inspect its exact payload/audit/receipt hashes. Start agent-MCP only after the canary passes. Moving from `shadow` to `supervised` or `unattended` is a separate platform-capability decision and remains blocked for Toutiao, Sohu and Ctrip Community until onboarding evidence passes.

@@ -71,6 +71,8 @@ A successful response is `{ "capability": { "mode", "provider", "model" }, "resu
 
 Real Pi means a real model loop is orchestrating the same static tools. It does **not** mean that Toutiao, Sohu, Ctrip Community, Doubao, or Qwen is being called through a real platform API. The three publishing platforms remain `manual_only` plus `dry_run`; Doubao/Qwen remain fixture runs or explicit manual imports.
 
+The real Pi system prompt enforces the operational order rather than relying on a customer prompt to know internal IDs: start with `geo_tenant_context`, inspect `geo_template_catalog` and `geo_brand_profile`, load verified evidence with `geo_fact_lookup`, create the closed draft with `geo_draft_proposal`, render through `geo_variant_preview`, and only then call `geo_audit_request`. Resource IDs must come from tenant-scoped tool results. Profile text can guide selection and voice but cannot be promoted to fact text.
+
 ## Background batch Producer
 
 `AUTOMATION_PRODUCER_ENABLED=true` starts a long-running scheduler after the HTTP server binds. It round-robins only configured API principals whose current session includes `automation:execute`; claim failures are isolated per principal so one disabled tenant cannot starve the others. Each claimed run carries an API-issued tenant gate and an actor-bound database lease. Heartbeats and every draft/target checkpoint re-evaluate tenant/Campaign/control/circuit gates. The Producer never accepts an execution level from a batch and always requests `dry_run`.

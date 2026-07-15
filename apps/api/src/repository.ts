@@ -1,5 +1,6 @@
 import type {
   AuditArtifact,
+  AutomationMode,
   BrandAgentProfileDocument,
   Capability,
   ConnectorCapability,
@@ -215,16 +216,89 @@ export interface CreateQuerySetInput {
   readonly promptHash: string;
 }
 
+export interface QuerySetVersionView {
+  readonly id: string;
+  readonly querySetId: string;
+  readonly version: number;
+  readonly prompts: readonly Readonly<Record<string, unknown>>[];
+  readonly promptHash: string;
+  readonly createdByActorId: string;
+  readonly createdAt: string;
+}
+
+export interface CreateQuerySetVersionInput {
+  readonly querySetId: string;
+  readonly versionId: string;
+  readonly prompts: readonly Readonly<Record<string, unknown>>[];
+  readonly promptHash: string;
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface ActivateQuerySetVersionInput {
+  readonly querySetId: string;
+  readonly versionId: string;
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface ActivateQuerySetVersionResult {
+  readonly querySet: QuerySetView;
+  readonly previousVersion: number;
+  readonly previousStatus: QuerySetView["status"];
+  readonly wasChanged: boolean;
+}
+
+export interface TransitionQuerySetInput {
+  readonly querySetId: string;
+  readonly targetStatus: "retired";
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface TransitionQuerySetResult {
+  readonly querySet: QuerySetView;
+  readonly previousStatus: QuerySetView["status"];
+  readonly wasChanged: boolean;
+}
+
+export type AutomationScopeType = "tenant" | "platform" | "account" | "campaign" | "topic";
+
 export interface AutomationControlView {
   readonly id: string;
-  readonly mode: "shadow" | "supervised" | "unattended" | "paused" | "stopped";
+  readonly scopeType: AutomationScopeType;
+  readonly scopeKey: string;
+  readonly mode: AutomationMode;
   readonly killSwitchEnabled: boolean;
   readonly reason: string | null;
   readonly quota: Readonly<Record<string, unknown>>;
   readonly updatedAt: string;
 }
 
+export interface AutomationQuota {
+  readonly maxConcurrent: number;
+  readonly perMinute: number;
+  readonly perDay: number;
+  readonly cooldownSeconds: number;
+  readonly errorBudget: number;
+}
+
+export interface SetTenantAutomationControlInput {
+  readonly controlId: string;
+  readonly mode: AutomationMode;
+  readonly quota: AutomationQuota;
+  readonly reason: string;
+  readonly auditHash: string;
+}
+
+export interface SetScopedAutomationControlInput extends SetTenantAutomationControlInput {
+  readonly scopeType: Exclude<AutomationScopeType, "tenant">;
+  readonly scopeKey: string;
+  readonly killSwitchEnabled: boolean;
+}
+
 export interface CircuitBreakerView {
+  readonly id: string;
   readonly scopeType: "tenant" | "platform" | "account" | "campaign" | "topic";
   readonly scopeKey: string;
   readonly state: "closed" | "open" | "half_open";
@@ -237,7 +311,18 @@ export interface CircuitBreakerView {
 
 export interface AutomationStatusView {
   readonly control: AutomationControlView;
+  readonly controls: readonly AutomationControlView[];
   readonly circuits: readonly CircuitBreakerView[];
+}
+
+export interface SetCircuitBreakerStateInput {
+  readonly circuitId: string;
+  readonly scopeType: AutomationScopeType;
+  readonly scopeKey: string;
+  readonly targetState: "open" | "closed";
+  readonly retryAt: string | null;
+  readonly reason: string;
+  readonly auditHash: string;
 }
 
 export interface SetTenantKillSwitchInput {
@@ -918,7 +1003,35 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
   ): Promise<TransitionPolicyBundleResult>;
   listQuerySets(context: RequestContext): Promise<readonly QuerySetView[]>;
   createQuerySet(context: RequestContext, input: CreateQuerySetInput): Promise<QuerySetView>;
+  listQuerySetVersions(
+    context: RequestContext,
+    querySetId: string,
+  ): Promise<readonly QuerySetVersionView[]>;
+  createQuerySetVersion(
+    context: RequestContext,
+    input: CreateQuerySetVersionInput,
+  ): Promise<QuerySetVersionView>;
+  activateQuerySetVersion(
+    context: RequestContext,
+    input: ActivateQuerySetVersionInput,
+  ): Promise<ActivateQuerySetVersionResult>;
+  transitionQuerySet(
+    context: RequestContext,
+    input: TransitionQuerySetInput,
+  ): Promise<TransitionQuerySetResult>;
   getAutomationStatus(context: RequestContext): Promise<AutomationStatusView>;
+  setTenantAutomationControl(
+    context: RequestContext,
+    input: SetTenantAutomationControlInput,
+  ): Promise<AutomationControlView>;
+  setScopedAutomationControl(
+    context: RequestContext,
+    input: SetScopedAutomationControlInput,
+  ): Promise<AutomationControlView>;
+  setCircuitBreakerState(
+    context: RequestContext,
+    input: SetCircuitBreakerStateInput,
+  ): Promise<CircuitBreakerView>;
   setTenantKillSwitch(
     context: RequestContext,
     input: SetTenantKillSwitchInput,

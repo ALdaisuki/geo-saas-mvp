@@ -106,12 +106,15 @@ function repositoryFixture(overrides: Partial<MediaProductionRepository> = {}) {
     getAutomationStatus: vi.fn(async () => ({
       control: {
         id: "10000000-0000-4000-8000-000000000015",
+        scopeType: "tenant" as const,
+        scopeKey: "*",
         mode: "shadow" as const,
         killSwitchEnabled: false,
         reason: null,
         quota: {},
         updatedAt: "2026-07-15T05:00:00.000Z",
       },
+      controls: [],
       circuits: [],
     })),
     getContentVersion: vi.fn(async () => ({
@@ -274,12 +277,15 @@ describe("MediaProductionService", () => {
       getAutomationStatus: vi.fn(async () => ({
         control: {
           id: "10000000-0000-4000-8000-000000000015",
+          scopeType: "tenant" as const,
+          scopeKey: "*",
           mode: "stopped" as const,
           killSwitchEnabled: true,
           reason: "operator stop",
           quota: {},
           updatedAt: "2026-07-15T05:00:00.000Z",
         },
+        controls: [],
         circuits: [],
       })),
     });

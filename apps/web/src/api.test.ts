@@ -648,6 +648,41 @@ describe("HttpGeoApi", () => {
       }),
       jsonResponse(loginBody),
       jsonResponse({ control: automationControl, circuits: [] }),
+      jsonResponse({
+        control: {
+          ...automationControl,
+          mode: "unattended",
+          quota: {
+            maxConcurrent: 2,
+            perMinute: 8,
+            perDay: 80,
+            cooldownSeconds: 15,
+            errorBudget: 4,
+          },
+        },
+      }),
+      jsonResponse({
+        control: {
+          id: "10000000-0000-4000-8000-000000000952",
+          scopeType: "platform",
+          scopeKey: "toutiao",
+          ...automationControl,
+          mode: "paused",
+        },
+      }),
+      jsonResponse({
+        circuit: {
+          id: "10000000-0000-4000-8000-000000000953",
+          scopeType: "platform",
+          scopeKey: "toutiao",
+          state: "open",
+          failureCount: 1,
+          openedAt: "2026-07-14T08:01:00.000Z",
+          retryAt: null,
+          reason: "manual incident",
+          updatedAt: "2026-07-14T08:01:00.000Z",
+        },
+      }),
       jsonResponse({ control: { ...automationControl, killSwitchEnabled: true } }),
     ];
     const api = new HttpGeoApi("", async (input, init) => {
@@ -661,20 +696,144 @@ describe("HttpGeoApi", () => {
     const tenants = await api.getTenants();
     await api.switchTenant(loginBody.tenant.slug);
     const automation = await api.getAutomation();
+    const configured = await api.setAutomationControl({
+      mode: "unattended",
+      quota: {
+        maxConcurrent: 2,
+        perMinute: 8,
+        perDay: 80,
+        cooldownSeconds: 15,
+        errorBudget: 4,
+      },
+      reason: "operator-approved Dry-run",
+    });
+    const scoped = await api.setScopedAutomationControl("platform", "toutiao", {
+      mode: "paused",
+      quota: {
+        maxConcurrent: 1,
+        perMinute: 2,
+        perDay: 20,
+        cooldownSeconds: 30,
+        errorBudget: 2,
+      },
+      killSwitchEnabled: true,
+      reason: "platform review",
+    });
+    const circuit = await api.setCircuitBreakerState("platform", "toutiao", {
+      targetState: "open",
+      reason: "manual incident",
+    });
     const updated = await api.setKillSwitch({ enabled: true, reason: "contact anomaly" });
 
     expect(tenants[0]).toMatchObject({ status: "active", role: "owner" });
     expect(automation.control.killSwitchEnabled).toBe(false);
+    expect(configured.mode).toBe("unattended");
+    expect(scoped).toMatchObject({ scopeType: "platform", scopeKey: "toutiao", mode: "paused" });
+    expect(circuit).toMatchObject({ scopeType: "platform", state: "open" });
     expect(updated.killSwitchEnabled).toBe(true);
     expect(calls.map((call) => call.input)).toEqual([
       "/api/auth/login",
       "/api/auth/tenants",
       "/api/auth/switch-tenant",
       "/api/automation",
+      "/api/automation/control",
+      "/api/automation/controls/platform/toutiao",
+      "/api/automation/circuits/platform/toutiao/state",
       "/api/automation/kill-switch",
     ]);
     expect(new Headers(calls[2]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
     expect(new Headers(calls[4]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(new Headers(calls[5]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(new Headers(calls[6]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(new Headers(calls[7]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+  });
+
+  it("manages immutable query-set versions and lifecycle with CSRF", async () => {
+    const calls: { input: string; init: RequestInit | undefined }[] = [];
+    const querySetId = "10000000-0000-4000-8000-000000000901";
+    const versionId = "10000000-0000-4000-8000-000000000902";
+    const querySet = {
+      id: querySetId,
+      name: "Domestic AI discovery",
+      industry: "travel",
+      status: "draft",
+      currentVersion: 1,
+      description: "Provider-neutral prompts",
+      currentVersionId: versionId,
+      prompts: [{ key: "contact", category: "contact", prompt: "中通联系方式" }],
+      promptHash: "d".repeat(64),
+      createdAt: "2026-07-14T08:00:00.000Z",
+      updatedAt: "2026-07-14T08:00:00.000Z",
+    };
+    const version = {
+      id: versionId,
+      querySetId,
+      version: 1,
+      prompts: querySet.prompts,
+      promptHash: querySet.promptHash,
+      createdByActorId: loginBody.actor.id,
+      createdAt: querySet.createdAt,
+    };
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse(querySet, 201),
+      jsonResponse({ items: [version] }),
+      jsonResponse({ ...version, id: `${versionId.slice(0, -1)}3`, version: 2 }, 201),
+      jsonResponse({
+        querySet: { ...querySet, status: "active", currentVersion: 2 },
+        previousVersion: 1,
+        previousStatus: "draft",
+        wasChanged: true,
+      }),
+      jsonResponse({
+        querySet: { ...querySet, status: "retired" },
+        previousStatus: "active",
+        wasChanged: true,
+      }),
+    ];
+    const api = new HttpGeoApi("", async (input, init) => {
+      calls.push({ input: String(input), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    const createdSet = await api.createQuerySet({
+      name: querySet.name,
+      industry: querySet.industry,
+      description: querySet.description,
+      prompts: querySet.prompts,
+    });
+    const versions = await api.getQuerySetVersions(querySetId);
+    const createdVersion = await api.createQuerySetVersion(querySetId, {
+      prompts: querySet.prompts,
+      reason: "reviewed prompt update",
+    });
+    const activated = await api.activateQuerySetVersion(
+      querySetId,
+      createdVersion.id,
+      "activate reviewed version",
+    );
+    const retired = await api.transitionQuerySet(querySetId, "retired", "replace old pack");
+
+    expect(createdSet.status).toBe("draft");
+    expect(versions).toHaveLength(1);
+    expect(createdVersion.version).toBe(2);
+    expect(activated.querySet.currentVersion).toBe(2);
+    expect(retired.querySet.status).toBe("retired");
+    expect(calls.map((call) => call.input)).toEqual([
+      "/api/auth/login",
+      "/api/query-sets",
+      `/api/query-sets/${querySetId}/versions`,
+      `/api/query-sets/${querySetId}/versions`,
+      `/api/query-sets/${querySetId}/versions/${createdVersion.id}/activate`,
+      `/api/query-sets/${querySetId}/state`,
+    ]);
+    for (const index of [1, 3, 4, 5]) {
+      expect(new Headers(calls[index]?.init?.headers).get("x-csrf-token")).toBe(
+        "csrf-token-from-api",
+      );
+    }
   });
 
   it("creates, reads, and cancels tenant-scoped Dry-run automation batches", async () => {

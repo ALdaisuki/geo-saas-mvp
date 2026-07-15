@@ -8,6 +8,38 @@ const repositorySource = await readFile(
 );
 
 describe("PostgreSQL repository contracts", () => {
+  it("serializes immutable query-set versions and audits explicit activation", () => {
+    const versionBlock = repositorySource.slice(
+      repositorySource.indexOf("async createQuerySetVersion"),
+      repositorySource.indexOf("async transitionQuerySet"),
+    );
+
+    expect(versionBlock).toContain("for update");
+    expect(versionBlock).toContain('querySet.status === "retired"');
+    expect(versionBlock).toContain("coalesce(max(version), 0)::integer + 1");
+    expect(versionBlock).toContain("query_set.version_created");
+    expect(versionBlock).toContain("query_set.version_activated");
+    expect(versionBlock).toContain("insert into geo.audit_log");
+    expect(versionBlock).toContain("${context.tenantId}");
+    expect(versionBlock).toContain("${context.actorId}");
+  });
+
+  it("updates tenant automation mode and quota without clearing the emergency switch", () => {
+    const controlBlock = repositorySource.slice(
+      repositorySource.indexOf("async setTenantAutomationControl"),
+      repositorySource.indexOf("async setScopedAutomationControl"),
+    );
+
+    expect(controlBlock).toContain("on conflict (tenant_id, scope_type, scope_key)");
+    expect(controlBlock).toContain("mode = excluded.mode");
+    expect(controlBlock).toContain("quota = excluded.quota");
+    expect(controlBlock).not.toContain("kill_switch_enabled = excluded.kill_switch_enabled");
+    expect(controlBlock).toContain("insert into geo.audit_log");
+    expect(controlBlock).toContain("automation.control_changed");
+    expect(controlBlock).toContain("${context.tenantId}");
+    expect(controlBlock).toContain("${context.actorId}");
+  });
+
   it("locks, validates, and audits campaign lifecycle transitions inside tenant scope", () => {
     const campaignBlock = repositorySource.slice(
       repositorySource.indexOf("async transitionCampaign"),

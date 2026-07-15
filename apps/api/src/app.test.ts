@@ -15,7 +15,12 @@ import {
 } from "@geo/core";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildApp, type PasswordService, type PublicationGovernanceGate } from "./app.js";
+import {
+  buildApp,
+  GEO_API_VERSION,
+  type PasswordService,
+  type PublicationGovernanceGate,
+} from "./app.js";
 import type {
   AutomationBatchView,
   AutomationRunView,
@@ -29,6 +34,8 @@ import {
   RepositoryConflictError,
   RepositoryNotFoundError,
   type ApiRepository,
+  type AutomationControlView,
+  type AutomationStatusView,
   type AuditContextRecord,
   type CreateSessionInput,
   type LoginIdentity,
@@ -212,6 +219,15 @@ class FakeRepository implements ApiRepository {
     ApiRepository["setServicePrincipalStatus"]
   >[1][] = [];
   readonly querySetInputs: Parameters<ApiRepository["createQuerySet"]>[1][] = [];
+  readonly querySetVersionInputs: Parameters<ApiRepository["createQuerySetVersion"]>[1][] = [];
+  readonly querySetActivationInputs: Parameters<ApiRepository["activateQuerySetVersion"]>[1][] = [];
+  readonly querySetTransitionInputs: Parameters<ApiRepository["transitionQuerySet"]>[1][] = [];
+  readonly automationControlInputs: Parameters<ApiRepository["setTenantAutomationControl"]>[1][] =
+    [];
+  readonly scopedAutomationControlInputs: Parameters<
+    ApiRepository["setScopedAutomationControl"]
+  >[1][] = [];
+  readonly circuitStateInputs: Parameters<ApiRepository["setCircuitBreakerState"]>[1][] = [];
   readonly automationBatchInputs: CreateAutomationBatchInput[] = [];
   readonly automationClaimInputs: Parameters<ApiRepository["claimAutomationRuns"]>[1][] = [];
   readonly automationHeartbeatInputs: Parameters<ApiRepository["heartbeatAutomationRun"]>[1][] = [];
@@ -221,14 +237,17 @@ class FakeRepository implements ApiRepository {
     ApiRepository["checkpointAutomationTarget"]
   >[1][] = [];
   readonly campaignTransitionInputs: Parameters<ApiRepository["transitionCampaign"]>[1][] = [];
-  automationControl = {
+  automationControl: AutomationControlView = {
     id: "10000000-0000-4000-8000-000000000951",
-    mode: "shadow" as const,
+    scopeType: "tenant",
+    scopeKey: "*",
+    mode: "shadow",
     killSwitchEnabled: false,
     reason: null as string | null,
     quota: { dailyPublications: 0, dryRunOnly: true },
     updatedAt: fixedNow.toISOString(),
   };
+  automationCircuits: AutomationStatusView["circuits"] = [];
   lastContext: RequestContext | null = null;
   loginIdentity: LoginIdentity | null;
   auditPayload: PublicationVariantPayload = articlePayload;
@@ -494,8 +513,93 @@ class FakeRepository implements ApiRepository {
     };
   }
 
+  async listQuerySetVersions(_context: RequestContext, querySetId: string) {
+    return [
+      {
+        id: ids.version,
+        querySetId,
+        version: 1,
+        prompts: [{ key: "contact", category: "contact", prompt: "中通联系方式" }],
+        promptHash: "d".repeat(64),
+        createdByActorId: ids.actor,
+        createdAt: fixedNow.toISOString(),
+      },
+    ];
+  }
+
+  async createQuerySetVersion(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createQuerySetVersion"]>[1],
+  ) {
+    this.querySetVersionInputs.push(input);
+    return {
+      id: input.versionId,
+      querySetId: input.querySetId,
+      version: 2,
+      prompts: input.prompts,
+      promptHash: input.promptHash,
+      createdByActorId: ids.actor,
+      createdAt: fixedNow.toISOString(),
+    };
+  }
+
+  async activateQuerySetVersion(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["activateQuerySetVersion"]>[1],
+  ) {
+    this.querySetActivationInputs.push(input);
+    const [querySet] = await this.listQuerySets();
+    if (querySet === undefined) throw new Error("Fake query set fixture is missing");
+    return {
+      querySet: {
+        ...querySet,
+        status: "active" as const,
+        currentVersion: 2,
+        currentVersionId: input.versionId,
+      },
+      previousVersion: 1,
+      previousStatus: "active" as const,
+      wasChanged: true,
+    };
+  }
+
+  async transitionQuerySet(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["transitionQuerySet"]>[1],
+  ) {
+    this.querySetTransitionInputs.push(input);
+    const [querySet] = await this.listQuerySets();
+    if (querySet === undefined) throw new Error("Fake query set fixture is missing");
+    return {
+      querySet: {
+        ...querySet,
+        status: input.targetStatus,
+      },
+      previousStatus: "active" as const,
+      wasChanged: true,
+    };
+  }
+
   async getAutomationStatus() {
-    return { control: this.automationControl, circuits: [] };
+    return {
+      control: this.automationControl,
+      controls: [this.automationControl],
+      circuits: this.automationCircuits,
+    };
+  }
+
+  async setTenantAutomationControl(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["setTenantAutomationControl"]>[1],
+  ) {
+    this.automationControlInputs.push(input);
+    this.automationControl = {
+      ...this.automationControl,
+      mode: input.mode,
+      quota: { ...input.quota },
+      reason: input.reason,
+    };
+    return this.automationControl;
   }
 
   async setTenantKillSwitch(
@@ -508,6 +612,43 @@ class FakeRepository implements ApiRepository {
       reason: input.reason,
     };
     return this.automationControl;
+  }
+
+  async setScopedAutomationControl(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["setScopedAutomationControl"]>[1],
+  ) {
+    this.scopedAutomationControlInputs.push(input);
+    return {
+      id: input.controlId,
+      scopeType: input.scopeType,
+      scopeKey: input.scopeKey,
+      mode: input.mode,
+      killSwitchEnabled: input.killSwitchEnabled,
+      reason: input.reason,
+      quota: { ...input.quota },
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  async setCircuitBreakerState(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["setCircuitBreakerState"]>[1],
+  ) {
+    this.circuitStateInputs.push(input);
+    const circuit = {
+      id: input.circuitId,
+      scopeType: input.scopeType,
+      scopeKey: input.scopeKey,
+      state: input.targetState,
+      failureCount: input.targetState === "open" ? 1 : 0,
+      openedAt: input.targetState === "open" ? fixedNow.toISOString() : null,
+      retryAt: input.targetState === "open" ? input.retryAt : null,
+      reason: input.reason,
+      updatedAt: fixedNow.toISOString(),
+    };
+    this.automationCircuits = [circuit];
+    return circuit;
   }
 
   async createAutomationBatch(
@@ -1749,6 +1890,81 @@ afterEach(async () => {
 });
 
 describe("Fastify API security and vertical publication flow", () => {
+  it("publishes the route registry as OpenAPI and negotiates the API version", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const documentResponse = await app.inject({ method: "GET", url: "/openapi.json" });
+    const document = documentResponse.json<{
+      openapi: string;
+      info: { version: string };
+      paths: Record<
+        string,
+        Record<
+          string,
+          {
+            parameters: Array<{ name: string; in: string; required: boolean }>;
+            security: Array<Record<string, unknown>>;
+          }
+        >
+      >;
+    }>();
+
+    expect(documentResponse.statusCode).toBe(200);
+    expect(documentResponse.headers["x-geo-api-version"]).toBe(GEO_API_VERSION);
+    expect(document).toMatchObject({
+      openapi: "3.1.0",
+      info: { version: GEO_API_VERSION },
+    });
+    expect(document.paths["/openapi.json"]?.get?.security).toEqual([]);
+    expect(document.paths["/api/automation/controls/{scopeType}/{scopeKey}"]?.put).toMatchObject({
+      security: [{ cookieAuth: [] }],
+      parameters: expect.arrayContaining([
+        expect.objectContaining({ name: "scopeType", in: "path", required: true }),
+        expect.objectContaining({ name: "scopeKey", in: "path", required: true }),
+        expect.objectContaining({ name: "x-csrf-token", in: "header", required: true }),
+      ]),
+    });
+    expect(
+      document.paths["/api/automation/circuits/{scopeType}/{scopeKey}/state"]?.post,
+    ).toBeDefined();
+    expect(document.paths["/api/query-sets/{querySetId}/versions"]).toMatchObject({
+      get: { security: [{ cookieAuth: [] }] },
+      post: { security: [{ cookieAuth: [] }] },
+    });
+    expect(
+      document.paths["/api/query-sets/{querySetId}/versions/{versionId}/activate"]?.post,
+    ).toBeDefined();
+
+    const supported = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { "x-geo-api-version": GEO_API_VERSION },
+      payload: { email: "owner@example.test", password: "correct-password" },
+    });
+    const defaultVersion = await app.inject({ method: "GET", url: "/api/auth/session" });
+    const unsupported = await app.inject({
+      method: "GET",
+      url: "/api/auth/session",
+      headers: { "x-geo-api-version": "2025-01-01" },
+    });
+
+    expect(supported.statusCode).toBe(200);
+    expect(supported.headers["x-geo-api-version"]).toBe(GEO_API_VERSION);
+    expect(defaultVersion.statusCode).toBe(401);
+    expect(defaultVersion.headers["x-geo-api-version"]).toBe(GEO_API_VERSION);
+    expect(unsupported.statusCode).toBe(406);
+    expect(unsupported.headers["x-geo-api-version"]).toBe(GEO_API_VERSION);
+    expect(unsupported.json()).toMatchObject({
+      error: {
+        code: "API_VERSION_UNSUPPORTED",
+        details: {
+          requestedVersion: "2025-01-01",
+          supportedVersions: [GEO_API_VERSION],
+        },
+      },
+    });
+  });
+
   it("serves the governed V1 article template catalog only to authenticated content readers", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -2018,6 +2234,186 @@ describe("Fastify API security and vertical publication flow", () => {
     });
   });
 
+  it("updates the tenant automation mode and bounded worker quota through the protected API", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const changed = await app.inject({
+      method: "PUT",
+      url: "/api/automation/control",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        mode: "unattended",
+        quota: {
+          maxConcurrent: 2,
+          perMinute: 8,
+          perDay: 80,
+          cooldownSeconds: 15,
+          errorBudget: 4,
+        },
+        reason: "Enable unattended Dry-run after operator review",
+      },
+    });
+
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json()).toMatchObject({
+      control: {
+        mode: "unattended",
+        killSwitchEnabled: false,
+        quota: {
+          maxConcurrent: 2,
+          perMinute: 8,
+          perDay: 80,
+          cooldownSeconds: 15,
+          errorBudget: 4,
+        },
+      },
+    });
+    expect(repository.automationControlInputs).toEqual([
+      expect.objectContaining({
+        mode: "unattended",
+        reason: "Enable unattended Dry-run after operator review",
+        auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
+    ]);
+  });
+
+  it("rejects unknown or internally inconsistent automation quota fields", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/automation/control",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        mode: "unattended",
+        quota: {
+          maxConcurrent: 10,
+          perMinute: 5,
+          perDay: 4,
+          cooldownSeconds: 0,
+          errorBudget: 5,
+          dryRunOnly: false,
+        },
+        reason: "Invalid attempt must fail closed",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(repository.automationControlInputs).toEqual([]);
+  });
+
+  it("writes resource-scoped controls and manual circuit state through audited routes", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const control = await app.inject({
+      method: "PUT",
+      url: `/api/automation/controls/account/${ids.account}`,
+      headers,
+      payload: {
+        mode: "paused",
+        quota: {
+          maxConcurrent: 1,
+          perMinute: 2,
+          perDay: 20,
+          cooldownSeconds: 30,
+          errorBudget: 2,
+        },
+        killSwitchEnabled: true,
+        reason: "Pause one account while capability evidence is reviewed",
+      },
+    });
+    const circuit = await app.inject({
+      method: "POST",
+      url: "/api/automation/circuits/platform/toutiao/state",
+      headers,
+      payload: {
+        targetState: "open",
+        retryAt: "2026-07-20T01:00:00.000Z",
+        reason: "Manual platform circuit during incident review",
+      },
+    });
+
+    expect(control.statusCode).toBe(200);
+    expect(control.json()).toMatchObject({
+      control: {
+        scopeType: "account",
+        scopeKey: ids.account,
+        mode: "paused",
+        killSwitchEnabled: true,
+      },
+    });
+    expect(circuit.statusCode).toBe(200);
+    expect(circuit.json()).toMatchObject({
+      circuit: { scopeType: "platform", scopeKey: "toutiao", state: "open" },
+    });
+    expect(repository.scopedAutomationControlInputs[0]).toMatchObject({
+      scopeType: "account",
+      scopeKey: ids.account,
+      auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.circuitStateInputs[0]).toMatchObject({
+      scopeType: "platform",
+      scopeKey: "toutiao",
+      targetState: "open",
+      auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+  });
+
+  it("rejects malformed scope keys and expired manual circuit retry times", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const malformed = await app.inject({
+      method: "PUT",
+      url: "/api/automation/controls/account/not-a-uuid",
+      headers,
+      payload: {
+        mode: "paused",
+        quota: {
+          maxConcurrent: 1,
+          perMinute: 2,
+          perDay: 20,
+          cooldownSeconds: 0,
+          errorBudget: 2,
+        },
+        killSwitchEnabled: true,
+        reason: "Invalid account scope",
+      },
+    });
+    const expiredRetry = await app.inject({
+      method: "POST",
+      url: "/api/automation/circuits/platform/toutiao/state",
+      headers,
+      payload: {
+        targetState: "open",
+        retryAt: "2026-07-13T00:00:00.000Z",
+        reason: "Past retry must fail",
+      },
+    });
+
+    expect(malformed.statusCode).toBe(400);
+    expect(expiredRetry.statusCode).toBe(400);
+    expect(repository.scopedAutomationControlInputs).toEqual([]);
+    expect(repository.circuitStateInputs).toEqual([]);
+  });
+
   it("creates, lists, claims, checkpoints, and cancels a tenant-scoped dry-run batch", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -2252,6 +2648,84 @@ describe("Fastify API security and vertical publication flow", () => {
         { key: "service", category: "discovery", prompt: "Which service fits this need?" },
       ]),
     );
+  });
+
+  it("creates, activates, lists, and retires immutable query-set versions", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const querySetId = "10000000-0000-4000-8000-000000000910";
+    const versions = await app.inject({
+      method: "GET",
+      url: `/api/query-sets/${querySetId}/versions`,
+      headers,
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${querySetId}/versions`,
+      headers,
+      payload: {
+        prompts: [
+          {
+            key: "service-v2",
+            category: "discovery",
+            prompt: "哪些已核验服务适合第一次出境的客户？",
+          },
+        ],
+        reason: "Add first-travel discovery coverage",
+      },
+    });
+    const version = created.json<{ id: string }>();
+    const activated = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${querySetId}/versions/${version.id}/activate`,
+      headers,
+      payload: { reason: "Review completed for query-set version 2" },
+    });
+    const retired = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${querySetId}/state`,
+      headers,
+      payload: { targetStatus: "retired", reason: "Replace this query set with a new pack" },
+    });
+    const invalidStateActivation = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${querySetId}/state`,
+      headers,
+      payload: { targetStatus: "active", reason: "Must use explicit version activation" },
+    });
+
+    expect(versions.json()).toMatchObject({ items: [{ version: 1 }] });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ version: 2, querySetId });
+    expect(activated.json()).toMatchObject({
+      querySet: { currentVersion: 2, status: "active" },
+      previousVersion: 1,
+      wasChanged: true,
+    });
+    expect(retired.json()).toMatchObject({
+      querySet: { status: "retired" },
+      previousStatus: "active",
+      wasChanged: true,
+    });
+    expect(invalidStateActivation.statusCode).toBe(400);
+    expect(repository.querySetVersionInputs[0]).toMatchObject({
+      promptHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.querySetActivationInputs[0]).toMatchObject({
+      versionId: version.id,
+      auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.querySetTransitionInputs[0]).toMatchObject({
+      targetStatus: "retired",
+      auditHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    expect(repository.querySetTransitionInputs).toHaveLength(1);
   });
 
   it("creates a versioned Brand Agent Profile with a canonical document hash", async () => {

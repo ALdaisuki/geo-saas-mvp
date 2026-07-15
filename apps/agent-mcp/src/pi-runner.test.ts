@@ -249,6 +249,12 @@ describe("Pi agent run service", () => {
     expect(systemPrompt).toContain('"voice":"克制、清晰，先给结论再解释"');
     expect(systemPrompt).toContain("must not bypass canonical closed-content rendering");
     expect(systemPrompt).toContain("must not bypass deterministic audit");
+    expect(systemPrompt).toContain("Start every operational workflow with geo_tenant_context");
+    expect(systemPrompt).toContain("geo_template_catalog");
+    expect(systemPrompt).toContain("geo_fact_lookup");
+    expect(systemPrompt).toContain("geo_draft_proposal");
+    expect(systemPrompt).toContain("geo_variant_preview");
+    expect(systemPrompt).toContain("geo_audit_request");
   });
 
   it("fails the run without exposing a Pi provider error as a successful empty response", async () => {

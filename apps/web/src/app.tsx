@@ -40,6 +40,10 @@ import {
   createGeoApi,
   isAuthenticationError,
   type AuditArtifact,
+  type AutomationControl,
+  type AutomationMode,
+  type AutomationQuota,
+  type AutomationScopeType,
   type AutomationSnapshot,
   type Brand,
   type BrandAgentProfile,
@@ -53,6 +57,7 @@ import {
   type QuerySet,
   type ServicePrincipal,
   type SessionSnapshot,
+  type ScopedAutomationControl,
   type TenantContact,
   type TenantOption,
   type TenantMember,
@@ -77,6 +82,7 @@ import {
 } from "./dashboard.js";
 import { AuditOperationsList, OperationsWorkspace, PublicationJobDetail } from "./operations.js";
 import { VisibilityOperations } from "./visibility-operations.js";
+import { QuerySetManager } from "./query-set-manager.js";
 import { TenantGovernance } from "./tenant-governance.js";
 import {
   auditFindings,
@@ -154,6 +160,7 @@ interface ProviderRow {
 
 interface AccountRow {
   id: string;
+  platformKey: ChannelAccount["platform"] | null;
   platform: string;
   account: string;
   capability: string;
@@ -1847,6 +1854,12 @@ function VisibilityView({
       {mode === "live" ? (
         <>
           <ResourceState resource={resource} empty={false} emptyLabel="暂无可见性观测" />
+          <QuerySetManager
+            api={api}
+            querySets={querySets}
+            canManage={capabilities.includes("visibility:run")}
+            onChanged={onVisibilityChanged}
+          />
           <VisibilityOperations
             api={api}
             tenantId={tenantId}
@@ -2086,14 +2099,49 @@ function AuditView({
 function SettingsView({
   mode,
   accounts,
+  campaigns,
   resource,
   automation,
+  canManageAutomation,
+  onSaveAutomationControl,
+  onSaveScopedAutomationControl,
+  onSetCircuitBreaker,
 }: {
   mode: ConsoleMode;
   accounts: AccountRow[];
+  campaigns: CampaignRow[];
   resource: ApiResource<unknown>;
   automation: ApiResource<AutomationSnapshot | null>;
+  canManageAutomation: boolean;
+  onSaveAutomationControl: (input: {
+    readonly mode: AutomationMode;
+    readonly quota: AutomationQuota;
+    readonly reason: string;
+  }) => Promise<void>;
+  onSaveScopedAutomationControl: (
+    scopeType: Exclude<AutomationScopeType, "tenant">,
+    scopeKey: string,
+    input: {
+      readonly mode: AutomationMode;
+      readonly quota: AutomationQuota;
+      readonly killSwitchEnabled: boolean;
+      readonly reason: string;
+    },
+  ) => Promise<void>;
+  onSetCircuitBreaker: (
+    scopeType: AutomationScopeType,
+    scopeKey: string,
+    input: { readonly targetState: "open" | "closed"; readonly reason: string },
+  ) => Promise<void>;
 }) {
+  const [scopedControlIntent, setScopedControlIntent] = useState<
+    ScopedAutomationControl | "new" | null
+  >(null);
+  const [circuitIntent, setCircuitIntent] = useState<{
+    readonly scopeType: AutomationScopeType;
+    readonly scopeKey: string;
+    readonly targetState: "open" | "closed";
+  } | null>(null);
   return (
     <div className="view-stack">
       <section className="panel policy-settings">
@@ -2163,7 +2211,7 @@ function SettingsView({
         {mode === "live" ? <SourceCaption endpoint="GET /api/channel-accounts" /> : null}
       </section>
       <section className="panel policy-settings">
-        <PanelHeading title="自动化策略" meta={mode === "demo" ? "演示租户" : "实时只读状态"} />
+        <PanelHeading title="自动化策略" meta={mode === "demo" ? "演示租户" : "实时治理控制"} />
         {mode === "live" ? (
           <>
             <ResourceState
@@ -2173,13 +2221,11 @@ function SettingsView({
             />
             {automation.data === null ? null : (
               <>
-                <div className="setting-control">
-                  <div>
-                    <strong>当前运行模式</strong>
-                    <span>数据库控制记录</span>
-                  </div>
-                  <output className="setting-value">{automation.data.control.mode}</output>
-                </div>
+                <AutomationControlEditor
+                  control={automation.data.control}
+                  canManage={canManageAutomation}
+                  onSave={onSaveAutomationControl}
+                />
                 <div className="setting-control">
                   <div>
                     <strong>Kill Switch</strong>
@@ -2193,15 +2239,6 @@ function SettingsView({
                 </div>
                 <div className="setting-control">
                   <div>
-                    <strong>配额</strong>
-                    <span>结构化 quota 回读</span>
-                  </div>
-                  <output className="setting-value mono">
-                    {JSON.stringify(automation.data.control.quota)}
-                  </output>
-                </div>
-                <div className="setting-control">
-                  <div>
                     <strong>更新时间</strong>
                     <span>服务端记录</span>
                   </div>
@@ -2209,12 +2246,75 @@ function SettingsView({
                     {formatDateTime(automation.data.control.updatedAt)}
                   </output>
                 </div>
+                <div className="automation-subsection-heading">
+                  <div>
+                    <strong>细分范围控制</strong>
+                    <span>平台、账号、Campaign 或主题；Worker 会叠加所有匹配范围</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={!canManageAutomation}
+                    onClick={() => setScopedControlIntent("new")}
+                  >
+                    <Plus size={16} /> 添加范围控制
+                  </button>
+                </div>
+                <div className="scope-control-list">
+                  {automation.data.controls.filter((control) => control.scopeType !== "tenant")
+                    .length === 0 ? (
+                    <span className="muted">没有细分范围控制</span>
+                  ) : (
+                    automation.data.controls
+                      .filter((control) => control.scopeType !== "tenant")
+                      .map((control) => (
+                        <div key={control.id}>
+                          <div>
+                            <strong>
+                              {control.scopeType}:{control.scopeKey}
+                            </strong>
+                            <span>{control.reason ?? "未记录原因"}</span>
+                          </div>
+                          <StatusBadge tone={control.killSwitchEnabled ? "danger" : "info"}>
+                            {control.killSwitchEnabled ? "已急停" : control.mode}
+                          </StatusBadge>
+                          <small>{JSON.stringify(control.quota)}</small>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label={`编辑范围控制 ${control.scopeType}:${control.scopeKey}`}
+                            title="编辑范围控制"
+                            disabled={!canManageAutomation}
+                            onClick={() => setScopedControlIntent(control)}
+                          >
+                            <Settings size={16} />
+                          </button>
+                        </div>
+                      ))
+                  )}
+                </div>
+                <div className="automation-subsection-heading">
+                  <div>
+                    <strong>熔断器</strong>
+                    <span>自动信号或人工处置都必须保留范围、原因和状态</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={!canManageAutomation}
+                    onClick={() =>
+                      setCircuitIntent({ scopeType: "tenant", scopeKey: "*", targetState: "open" })
+                    }
+                  >
+                    <ShieldAlert size={16} /> 手动熔断
+                  </button>
+                </div>
                 <div className="circuit-list">
                   {automation.data.circuits.length === 0 ? (
                     <span className="muted">没有熔断记录</span>
                   ) : (
                     automation.data.circuits.map((circuit) => (
-                      <div key={`${circuit.scopeType}:${circuit.scopeKey}`}>
+                      <div key={circuit.id}>
                         <div>
                           <strong>
                             {circuit.scopeType}:{circuit.scopeKey}
@@ -2235,6 +2335,26 @@ function SettingsView({
                         <small>
                           {circuit.failureCount} 次 · {formatDateTime(circuit.updatedAt)}
                         </small>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`${circuit.state === "closed" ? "打开" : "关闭"}熔断 ${circuit.scopeType}:${circuit.scopeKey}`}
+                          title={circuit.state === "closed" ? "打开熔断" : "关闭熔断"}
+                          disabled={!canManageAutomation}
+                          onClick={() =>
+                            setCircuitIntent({
+                              scopeType: circuit.scopeType as AutomationScopeType,
+                              scopeKey: circuit.scopeKey,
+                              targetState: circuit.state === "closed" ? "open" : "closed",
+                            })
+                          }
+                        >
+                          {circuit.state === "closed" ? (
+                            <ShieldAlert size={16} />
+                          ) : (
+                            <RefreshCw size={16} />
+                          )}
+                        </button>
                       </div>
                     ))
                   )}
@@ -2275,6 +2395,595 @@ function SettingsView({
           </>
         )}
       </section>
+      {scopedControlIntent === null || automation.data === null ? null : (
+        <ScopedAutomationControlDialog
+          key={scopedControlIntent === "new" ? "new" : scopedControlIntent.id}
+          initial={scopedControlIntent === "new" ? null : scopedControlIntent}
+          tenantControl={automation.data.control}
+          accounts={accounts}
+          campaigns={campaigns}
+          onClose={() => setScopedControlIntent(null)}
+          onConfirm={onSaveScopedAutomationControl}
+        />
+      )}
+      {circuitIntent === null ? null : (
+        <CircuitBreakerDialog
+          key={`${circuitIntent.scopeType}:${circuitIntent.scopeKey}:${circuitIntent.targetState}`}
+          initial={circuitIntent}
+          accounts={accounts}
+          campaigns={campaigns}
+          onClose={() => setCircuitIntent(null)}
+          onConfirm={onSetCircuitBreaker}
+        />
+      )}
+    </div>
+  );
+}
+
+const AUTOMATION_MODE_OPTIONS: readonly {
+  readonly value: AutomationMode;
+  readonly label: string;
+}[] = [
+  { value: "shadow", label: "Shadow · 仅 Dry-run" },
+  { value: "supervised", label: "监督调度" },
+  { value: "unattended", label: "无人值守调度" },
+  { value: "paused", label: "暂停" },
+  { value: "stopped", label: "停止" },
+];
+
+const AUTOMATION_QUOTA_FIELDS: readonly {
+  readonly key: keyof AutomationQuota;
+  readonly label: string;
+  readonly detail: string;
+  readonly min: number;
+  readonly max: number;
+}[] = [
+  { key: "maxConcurrent", label: "最大并发", detail: "同时执行的投放任务", min: 1, max: 100 },
+  { key: "perMinute", label: "每分钟上限", detail: "一分钟内的新尝试", min: 1, max: 10_000 },
+  { key: "perDay", label: "每日上限", detail: "24 小时内的新尝试", min: 1, max: 1_000_000 },
+  { key: "cooldownSeconds", label: "冷却秒数", detail: "同范围尝试间隔", min: 0, max: 86_400 },
+  { key: "errorBudget", label: "错误预算", detail: "24 小时失败阈值", min: 1, max: 100_000 },
+];
+
+function quotaNumber(
+  quota: Readonly<Record<string, unknown>>,
+  key: keyof AutomationQuota,
+  fallback: number,
+): number {
+  const value = quota[key];
+  return typeof value === "number" && Number.isInteger(value) ? value : fallback;
+}
+
+function quotaFromControl(control: AutomationControl): AutomationQuota {
+  return {
+    maxConcurrent: quotaNumber(control.quota, "maxConcurrent", 1),
+    perMinute: quotaNumber(control.quota, "perMinute", 10),
+    perDay: quotaNumber(control.quota, "perDay", 100),
+    cooldownSeconds: quotaNumber(control.quota, "cooldownSeconds", 0),
+    errorBudget: quotaNumber(control.quota, "errorBudget", 5),
+  };
+}
+
+function AutomationControlEditor({
+  control,
+  canManage,
+  onSave,
+}: {
+  control: AutomationControl;
+  canManage: boolean;
+  onSave: (input: {
+    readonly mode: AutomationMode;
+    readonly quota: AutomationQuota;
+    readonly reason: string;
+  }) => Promise<void>;
+}) {
+  const [selectedMode, setSelectedMode] = useState<AutomationMode>(control.mode);
+  const [quota, setQuota] = useState<AutomationQuota>(() => quotaFromControl(control));
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedMode(control.mode);
+    setQuota(quotaFromControl(control));
+    setReason("");
+  }, [control.mode, control.quota, control.updatedAt]);
+
+  const quotaIsValid =
+    quota.maxConcurrent >= 1 &&
+    quota.maxConcurrent <= quota.perMinute &&
+    quota.perMinute <= quota.perDay &&
+    quota.cooldownSeconds >= 0 &&
+    quota.errorBudget >= 1;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canManage || !quotaIsValid || reason.trim().length < 3) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onSave({ mode: selectedMode, quota, reason: reason.trim() });
+    } catch (submitError) {
+      setError(apiErrorText(submitError));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="automation-control-form" onSubmit={(event) => void submit(event)}>
+      {error === null ? null : (
+        <div className="auth-error" role="alert">
+          <AlertTriangle size={16} />
+          <span>{error}</span>
+        </div>
+      )}
+      <div className="setting-control">
+        <div>
+          <strong>租户运行模式</strong>
+          <span>无人值守只调度已审计 Dry-run，不提升平台发布能力</span>
+        </div>
+        <select
+          aria-label="运行模式"
+          value={selectedMode}
+          disabled={!canManage || pending}
+          onChange={(event) => setSelectedMode(event.target.value as AutomationMode)}
+        >
+          {AUTOMATION_MODE_OPTIONS.map((option) => (
+            <option value={option.value} key={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="automation-quota-grid">
+        {AUTOMATION_QUOTA_FIELDS.map((field) => (
+          <label key={field.key}>
+            <span>{field.label}</span>
+            <small>{field.detail}</small>
+            <input
+              aria-label={field.label}
+              type="number"
+              value={quota[field.key]}
+              min={field.min}
+              max={field.max}
+              disabled={!canManage || pending}
+              onChange={(event) =>
+                setQuota((current) => ({
+                  ...current,
+                  [field.key]: Number(event.target.value),
+                }))
+              }
+            />
+          </label>
+        ))}
+      </div>
+      <label className="automation-control-reason">
+        <span>变更原因</span>
+        <textarea
+          aria-label="自动化变更原因"
+          value={reason}
+          minLength={3}
+          maxLength={500}
+          rows={3}
+          required
+          disabled={!canManage || pending}
+          placeholder="例如：审计规则与 Dry-run 样本已复核，启用无人值守调度"
+          onChange={(event) => setReason(event.target.value)}
+        />
+      </label>
+      <div className="automation-control-actions">
+        {!canManage ? <span>需要 automation:manage 权限</span> : null}
+        {!quotaIsValid ? <span>并发 ≤ 每分钟 ≤ 每日，且错误预算至少为 1</span> : null}
+        <button
+          type="submit"
+          className="button-primary"
+          disabled={!canManage || pending || !quotaIsValid || reason.trim().length < 3}
+        >
+          {pending ? <LoaderCircle className="spin" size={16} /> : <SlidersHorizontal size={16} />}
+          {pending ? "等待回读" : "保存自动化策略"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+type EditableAutomationScopeType = Exclude<AutomationScopeType, "tenant">;
+
+function automationScopeOptions(
+  scopeType: AutomationScopeType,
+  accounts: readonly AccountRow[],
+  campaigns: readonly CampaignRow[],
+): readonly { readonly value: string; readonly label: string }[] {
+  switch (scopeType) {
+    case "tenant":
+      return [{ value: "*", label: "当前租户" }];
+    case "platform":
+      return [
+        { value: "toutiao", label: "头条号" },
+        { value: "sohu", label: "搜狐号" },
+        { value: "ctrip_community", label: "携程社区" },
+      ];
+    case "account":
+      return accounts.map((account) => ({
+        value: account.id,
+        label: `${account.platform} · ${account.account}`,
+      }));
+    case "campaign":
+      return campaigns.map((campaign) => ({ value: campaign.id, label: campaign.name }));
+    case "topic":
+      return [
+        ...new Map(
+          campaigns.map((campaign) => [
+            campaign.topic,
+            { value: campaign.topic, label: `${campaign.topic} · ${campaign.name}` },
+          ]),
+        ).values(),
+      ];
+  }
+}
+
+function ScopedAutomationControlDialog({
+  initial,
+  tenantControl,
+  accounts,
+  campaigns,
+  onClose,
+  onConfirm,
+}: {
+  initial: ScopedAutomationControl | null;
+  tenantControl: AutomationControl;
+  accounts: readonly AccountRow[];
+  campaigns: readonly CampaignRow[];
+  onClose: () => void;
+  onConfirm: (
+    scopeType: EditableAutomationScopeType,
+    scopeKey: string,
+    input: {
+      readonly mode: AutomationMode;
+      readonly quota: AutomationQuota;
+      readonly killSwitchEnabled: boolean;
+      readonly reason: string;
+    },
+  ) => Promise<void>;
+}) {
+  const initialScopeType: EditableAutomationScopeType =
+    initial !== null && initial.scopeType !== "tenant" ? initial.scopeType : "platform";
+  const [scopeType, setScopeType] = useState(initialScopeType);
+  const [scopeKey, setScopeKey] = useState(
+    initial?.scopeKey ??
+      automationScopeOptions(initialScopeType, accounts, campaigns)[0]?.value ??
+      "",
+  );
+  const [selectedMode, setSelectedMode] = useState<AutomationMode>(
+    initial?.mode ?? tenantControl.mode,
+  );
+  const [quota, setQuota] = useState<AutomationQuota>(() =>
+    quotaFromControl(initial ?? tenantControl),
+  );
+  const [killSwitchEnabled, setKillSwitchEnabled] = useState(initial?.killSwitchEnabled ?? false);
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const options = automationScopeOptions(scopeType, accounts, campaigns);
+
+  useEffect(() => {
+    if (!options.some((option) => option.value === scopeKey)) {
+      setScopeKey(options[0]?.value ?? "");
+    }
+  }, [options, scopeKey]);
+
+  const valid =
+    scopeKey.length > 0 &&
+    quota.maxConcurrent >= 1 &&
+    quota.maxConcurrent <= quota.perMinute &&
+    quota.perMinute <= quota.perDay &&
+    quota.cooldownSeconds >= 0 &&
+    quota.errorBudget >= 1 &&
+    reason.trim().length >= 3;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!valid) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onConfirm(scopeType, scopeKey, {
+        mode: selectedMode,
+        quota,
+        killSwitchEnabled,
+        reason: reason.trim(),
+      });
+      onClose();
+    } catch (submitError) {
+      setError(apiErrorText(submitError));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={pending ? undefined : onClose}>
+      <div
+        className="modal modal-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="scoped-control-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div>
+            <h2 id="scoped-control-title">{initial === null ? "添加范围控制" : "编辑范围控制"}</h2>
+            <p>细分范围与租户控制叠加执行，任一范围关闭都会阻断任务</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" disabled={pending}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={(event) => void submit(event)}>
+          {error === null ? null : (
+            <div className="auth-error" role="alert">
+              <AlertTriangle size={16} /> <span>{error}</span>
+            </div>
+          )}
+          <div className="automation-dialog-grid">
+            <label>
+              范围类型
+              <select
+                aria-label="范围类型"
+                value={scopeType}
+                disabled={pending || initial !== null}
+                onChange={(event) =>
+                  setScopeType(event.target.value as EditableAutomationScopeType)
+                }
+              >
+                <option value="platform">平台</option>
+                <option value="account">账号</option>
+                <option value="campaign">Campaign</option>
+                <option value="topic">主题</option>
+              </select>
+            </label>
+            <label>
+              范围对象
+              <select
+                aria-label="范围对象"
+                value={scopeKey}
+                disabled={pending || initial !== null || options.length === 0}
+                onChange={(event) => setScopeKey(event.target.value)}
+              >
+                {options.map((option) => (
+                  <option value={option.value} key={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              运行模式
+              <select
+                aria-label="范围运行模式"
+                value={selectedMode}
+                disabled={pending}
+                onChange={(event) => setSelectedMode(event.target.value as AutomationMode)}
+              >
+                {AUTOMATION_MODE_OPTIONS.map((option) => (
+                  <option value={option.value} key={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="automation-checkbox">
+              <input
+                aria-label="范围 Kill Switch"
+                type="checkbox"
+                checked={killSwitchEnabled}
+                disabled={pending}
+                onChange={(event) => setKillSwitchEnabled(event.target.checked)}
+              />
+              启用该范围 Kill Switch
+            </label>
+          </div>
+          <div className="automation-quota-grid dialog-quota-grid">
+            {AUTOMATION_QUOTA_FIELDS.map((field) => (
+              <label key={field.key}>
+                <span>{field.label}</span>
+                <small>{field.detail}</small>
+                <input
+                  aria-label={`范围${field.label}`}
+                  type="number"
+                  value={quota[field.key]}
+                  min={field.min}
+                  max={field.max}
+                  disabled={pending}
+                  onChange={(event) =>
+                    setQuota((current) => ({
+                      ...current,
+                      [field.key]: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+          <label>
+            变更原因
+            <textarea
+              aria-label="范围控制变更原因"
+              value={reason}
+              minLength={3}
+              maxLength={500}
+              rows={3}
+              required
+              disabled={pending}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="button-secondary" onClick={onClose} disabled={pending}>
+              取消
+            </button>
+            <button type="submit" className="button-primary" disabled={pending || !valid}>
+              {pending ? <LoaderCircle className="spin" size={16} /> : <Settings size={16} />}
+              {pending ? "等待回读" : "保存范围控制"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CircuitBreakerDialog({
+  initial,
+  accounts,
+  campaigns,
+  onClose,
+  onConfirm,
+}: {
+  initial: {
+    readonly scopeType: AutomationScopeType;
+    readonly scopeKey: string;
+    readonly targetState: "open" | "closed";
+  };
+  accounts: readonly AccountRow[];
+  campaigns: readonly CampaignRow[];
+  onClose: () => void;
+  onConfirm: (
+    scopeType: AutomationScopeType,
+    scopeKey: string,
+    input: { readonly targetState: "open" | "closed"; readonly reason: string },
+  ) => Promise<void>;
+}) {
+  const [scopeType, setScopeType] = useState<AutomationScopeType>(initial.scopeType);
+  const [scopeKey, setScopeKey] = useState(initial.scopeKey);
+  const [targetState, setTargetState] = useState(initial.targetState);
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const options = automationScopeOptions(scopeType, accounts, campaigns);
+
+  useEffect(() => {
+    if (!options.some((option) => option.value === scopeKey)) {
+      setScopeKey(options[0]?.value ?? "");
+    }
+  }, [options, scopeKey]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (scopeKey.length === 0 || reason.trim().length < 3) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onConfirm(scopeType, scopeKey, { targetState, reason: reason.trim() });
+      onClose();
+    } catch (submitError) {
+      setError(apiErrorText(submitError));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={pending ? undefined : onClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="circuit-control-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div>
+            <h2 id="circuit-control-title">人工熔断处置</h2>
+            <p>打开会阻断匹配任务；关闭会清零失败计数和半开探针</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" disabled={pending}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={(event) => void submit(event)}>
+          {error === null ? null : (
+            <div className="auth-error" role="alert">
+              <AlertTriangle size={16} /> <span>{error}</span>
+            </div>
+          )}
+          <label>
+            范围类型
+            <select
+              aria-label="熔断范围类型"
+              value={scopeType}
+              disabled={pending}
+              onChange={(event) => setScopeType(event.target.value as AutomationScopeType)}
+            >
+              <option value="tenant">租户</option>
+              <option value="platform">平台</option>
+              <option value="account">账号</option>
+              <option value="campaign">Campaign</option>
+              <option value="topic">主题</option>
+            </select>
+          </label>
+          <label>
+            范围对象
+            <select
+              aria-label="熔断范围对象"
+              value={scopeKey}
+              disabled={pending || options.length === 0}
+              onChange={(event) => setScopeKey(event.target.value)}
+            >
+              {options.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            目标状态
+            <select
+              aria-label="熔断目标状态"
+              value={targetState}
+              disabled={pending}
+              onChange={(event) => setTargetState(event.target.value as "open" | "closed")}
+            >
+              <option value="open">打开熔断</option>
+              <option value="closed">关闭并清零</option>
+            </select>
+          </label>
+          <label>
+            处置原因
+            <textarea
+              aria-label="熔断处置原因"
+              value={reason}
+              minLength={3}
+              maxLength={500}
+              rows={4}
+              required
+              disabled={pending}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="button-secondary" onClick={onClose} disabled={pending}>
+              取消
+            </button>
+            <button
+              type="submit"
+              className={targetState === "open" ? "button-danger" : "button-primary"}
+              disabled={pending || scopeKey.length === 0 || reason.trim().length < 3}
+            >
+              {pending ? (
+                <LoaderCircle className="spin" size={16} />
+              ) : targetState === "open" ? (
+                <ShieldAlert size={16} />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+              {pending ? "等待回读" : targetState === "open" ? "确认熔断" : "确认关闭"}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -2650,6 +3359,7 @@ function liveProviderRows(items: readonly VisibilityProviderSummary[]): Provider
 function liveAccountRows(items: readonly ChannelAccount[]): AccountRow[] {
   return items.map((item) => ({
     id: item.id,
+    platformKey: item.platform,
     platform: platformLabel(item.platform),
     account: item.displayName,
     capability: capabilityLabel(item.capability),
@@ -2805,6 +3515,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
     mode === "demo"
       ? (demoTenant === undefined ? [] : platformAccountsForTenant(demoTenant)).map((item) => ({
           id: item.platform,
+          platformKey: null,
           platform: item.platform,
           account: item.account,
           capability: item.capability,
@@ -2971,6 +3682,109 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
     } finally {
       setKillSwitchPending(false);
     }
+  }
+
+  async function saveAutomationControl(input: {
+    readonly mode: AutomationMode;
+    readonly quota: AutomationQuota;
+    readonly reason: string;
+  }) {
+    if (mode !== "live") return;
+    await api.setAutomationControl(input);
+    const readback = await api.getAutomation();
+    const quotaMatches = Object.entries(input.quota).every(
+      ([key, value]) => readback.control.quota[key] === value,
+    );
+    if (readback.control.mode !== input.mode || !quotaMatches) {
+      throw new GeoApiError(
+        409,
+        "AUTOMATION_CONTROL_READBACK_MISMATCH",
+        "自动化策略写入后的 API 回读状态不一致",
+      );
+    }
+    setDashboard((current) => ({
+      ...current,
+      automation: {
+        endpoint: "GET /api/automation",
+        data: readback,
+        error: null,
+        status: "ready",
+      },
+      loadedAt: new Date().toISOString(),
+    }));
+  }
+
+  async function saveScopedAutomationControl(
+    scopeType: Exclude<AutomationScopeType, "tenant">,
+    scopeKey: string,
+    input: {
+      readonly mode: AutomationMode;
+      readonly quota: AutomationQuota;
+      readonly killSwitchEnabled: boolean;
+      readonly reason: string;
+    },
+  ) {
+    if (mode !== "live") return;
+    await api.setScopedAutomationControl(scopeType, scopeKey, input);
+    const readback = await api.getAutomation();
+    const stored = readback.controls.find(
+      (control) => control.scopeType === scopeType && control.scopeKey === scopeKey,
+    );
+    const quotaMatches =
+      stored !== undefined &&
+      Object.entries(input.quota).every(([key, value]) => stored.quota[key] === value);
+    if (
+      stored === undefined ||
+      stored.mode !== input.mode ||
+      stored.killSwitchEnabled !== input.killSwitchEnabled ||
+      !quotaMatches
+    ) {
+      throw new GeoApiError(
+        409,
+        "SCOPED_AUTOMATION_READBACK_MISMATCH",
+        "范围控制写入后的 API 回读状态不一致",
+      );
+    }
+    setDashboard((current) => ({
+      ...current,
+      automation: {
+        endpoint: "GET /api/automation",
+        data: readback,
+        error: null,
+        status: "ready",
+      },
+      loadedAt: new Date().toISOString(),
+    }));
+  }
+
+  async function setCircuitBreaker(
+    scopeType: AutomationScopeType,
+    scopeKey: string,
+    input: { readonly targetState: "open" | "closed"; readonly reason: string },
+  ) {
+    if (mode !== "live") return;
+    await api.setCircuitBreakerState(scopeType, scopeKey, input);
+    const readback = await api.getAutomation();
+    const stored = readback.circuits.find(
+      (circuit) => circuit.scopeType === scopeType && circuit.scopeKey === scopeKey,
+    );
+    if (stored?.state !== input.targetState) {
+      throw new GeoApiError(
+        409,
+        "CIRCUIT_STATE_READBACK_MISMATCH",
+        "熔断状态写入后的 API 回读状态不一致",
+      );
+    }
+    setDashboard((current) => ({
+      ...current,
+      automation: {
+        endpoint: "GET /api/automation",
+        data: readback,
+        error: null,
+        status: "ready",
+      },
+      loadedAt: new Date().toISOString(),
+    }));
   }
 
   return (
@@ -3328,8 +4142,16 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                 <SettingsView
                   mode={mode}
                   accounts={accountRows}
+                  campaigns={campaignRows}
                   resource={dashboard.channelAccounts}
                   automation={dashboard.automation}
+                  canManageAutomation={
+                    mode === "demo" ||
+                    (session?.actor.capabilities.includes("automation:manage") ?? false)
+                  }
+                  onSaveAutomationControl={saveAutomationControl}
+                  onSaveScopedAutomationControl={saveScopedAutomationControl}
+                  onSetCircuitBreaker={setCircuitBreaker}
                 />
               }
             />

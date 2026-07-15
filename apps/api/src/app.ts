@@ -6,6 +6,7 @@ import type { PublicationGovernanceDecision, PublicationGrantConsumptionInput } 
 import { capabilitiesForRole, hasCapability, requireCapability } from "@geo/authz";
 import {
   automationServicePrincipalCreateRequestSchema,
+  automationModeSchema,
   ARTICLE_TEMPLATE_CATALOG_VERSION,
   ARTICLE_TEMPLATES,
   brandAgentProfileDocumentSchema,
@@ -18,6 +19,7 @@ import {
   isoDateTimeSchema,
   memberCreateRequestSchema,
   memberUpdateRequestSchema,
+  platformSchema,
   policyTransitionRequestSchema,
   publicationVariantPayloadSchema,
   servicePrincipalStatusRequestSchema,
@@ -93,6 +95,7 @@ const CSRF_COOKIE = "geo_csrf";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const JWT_ISSUER = "geo-api";
 const JWT_AUDIENCE = "geo-web";
+export const GEO_API_VERSION = "2026-07-16";
 
 interface SessionClaims {
   readonly sid: string;
@@ -179,6 +182,69 @@ const killSwitchSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 });
 
+const automationQuotaSchema = z
+  .strictObject({
+    maxConcurrent: z.number().int().min(1).max(100),
+    perMinute: z.number().int().min(1).max(10_000),
+    perDay: z.number().int().min(1).max(1_000_000),
+    cooldownSeconds: z.number().int().min(0).max(86_400),
+    errorBudget: z.number().int().min(1).max(100_000),
+  })
+  .superRefine((quota, context) => {
+    if (quota.maxConcurrent > quota.perMinute) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxConcurrent"],
+        message: "maxConcurrent cannot exceed perMinute",
+      });
+    }
+    if (quota.perMinute > quota.perDay) {
+      context.addIssue({
+        code: "custom",
+        path: ["perMinute"],
+        message: "perMinute cannot exceed perDay",
+      });
+    }
+  });
+
+const automationControlSchema = z.strictObject({
+  mode: automationModeSchema,
+  quota: automationQuotaSchema,
+  reason: z.string().trim().min(3).max(500),
+});
+
+const scopedAutomationControlSchema = automationControlSchema.extend({
+  killSwitchEnabled: z.boolean(),
+});
+
+const automationScopeParamsSchema = z
+  .strictObject({
+    scopeType: z.enum(["tenant", "platform", "account", "campaign", "topic"]),
+    scopeKey: z.string().trim().min(1).max(200),
+  })
+  .superRefine((scope, context) => {
+    const valid =
+      (scope.scopeType === "tenant" && scope.scopeKey === "*") ||
+      (scope.scopeType === "platform" && platformSchema.safeParse(scope.scopeKey).success) ||
+      ((scope.scopeType === "account" || scope.scopeType === "campaign") &&
+        idSchema.safeParse(scope.scopeKey).success) ||
+      (scope.scopeType === "topic" &&
+        !Array.from(scope.scopeKey).some((character) => character.charCodeAt(0) <= 0x1f));
+    if (!valid) {
+      context.addIssue({
+        code: "custom",
+        path: ["scopeKey"],
+        message: "scopeKey does not match scopeType",
+      });
+    }
+  });
+
+const circuitStateSchema = z.strictObject({
+  targetState: z.enum(["open", "closed"]),
+  retryAt: isoDateTimeSchema.nullable().optional(),
+  reason: z.string().trim().min(3).max(500),
+});
+
 const brandSchema = z.object({
   canonicalName: z.string().trim().min(1).max(200),
   displayName: z.string().trim().min(1).max(200),
@@ -225,6 +291,20 @@ const querySetSchema = z.object({
     )
     .min(1)
     .max(200),
+});
+
+const querySetVersionSchema = z.strictObject({
+  prompts: querySetSchema.shape.prompts,
+  reason: z.string().trim().min(3).max(1_000),
+});
+
+const querySetStateSchema = z.strictObject({
+  targetStatus: z.literal("retired"),
+  reason: z.string().trim().min(3).max(1_000),
+});
+
+const querySetVersionActivationSchema = z.strictObject({
+  reason: z.string().trim().min(3).max(1_000),
 });
 
 const auditListQuerySchema = z.object({
@@ -575,6 +655,110 @@ function parseIdParams(input: unknown, field: string): string {
   return z.object({ [field]: idSchema }).parse(input)[field] as string;
 }
 
+interface RegisteredRoute {
+  readonly method: string;
+  readonly url: string;
+}
+
+function openApiPath(url: string): string {
+  return url.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, "{$1}");
+}
+
+function operationId(method: string, url: string): string {
+  const path = url
+    .replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, "by_$1")
+    .replace(/[^A-Za-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+  return `${method.toLowerCase()}_${path}`;
+}
+
+function routeTag(url: string): string {
+  const segments = url.split("/").filter(Boolean);
+  return segments[0] === "api" ? (segments[1] ?? "api") : (segments[0] ?? "system");
+}
+
+function openApiDocument(routes: readonly RegisteredRoute[]): Readonly<Record<string, unknown>> {
+  const paths: Record<string, Record<string, unknown>> = {};
+  const seen = new Set<string>();
+  for (const route of routes) {
+    const method = route.method.toLowerCase();
+    if (method === "head") continue;
+    const path = openApiPath(route.url);
+    const key = `${method}:${path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const parameters = [...route.url.matchAll(/:([A-Za-z][A-Za-z0-9_]*)/gu)].map((match) => ({
+      name: match[1],
+      in: "path",
+      required: true,
+      schema: { type: "string" },
+    }));
+    if (route.url.startsWith("/api/") && !["get", "head"].includes(method)) {
+      parameters.push({
+        name: "x-csrf-token",
+        in: "header",
+        required: route.url !== "/api/auth/login",
+        schema: { type: "string" },
+      });
+    }
+    const publicRoute =
+      route.url === "/openapi.json" ||
+      route.url.startsWith("/health/") ||
+      route.url === "/api/auth/login";
+    const pathItem = paths[path] ?? {};
+    pathItem[method] = {
+      operationId: operationId(method, route.url),
+      tags: [routeTag(route.url)],
+      parameters,
+      security: publicRoute ? [] : [{ cookieAuth: [] }],
+      responses: {
+        "200": { description: "Successful response" },
+        default: {
+          description: "Structured API error",
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/ApiError" } },
+          },
+        },
+      },
+    };
+    paths[path] = pathItem;
+  }
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: "GEO SaaS HTTP API",
+      version: GEO_API_VERSION,
+      description:
+        "Generated from the Fastify route registry. Domain payload validation remains defined by the Zod schemas in apps/api/src/app.ts.",
+    },
+    paths,
+    components: {
+      securitySchemes: {
+        cookieAuth: { type: "apiKey", in: "cookie", name: SESSION_COOKIE },
+      },
+      schemas: {
+        ApiError: {
+          type: "object",
+          required: ["error"],
+          properties: {
+            error: {
+              type: "object",
+              required: ["code", "message", "requestId"],
+              properties: {
+                code: { type: "string" },
+                message: { type: "string" },
+                requestId: { type: "string" },
+                details: { type: "object", additionalProperties: true },
+              },
+            },
+          },
+        },
+      },
+    },
+    "x-geo-api-version-header": "x-geo-api-version",
+  };
+}
+
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
   if (Buffer.byteLength(options.sessionSecret, "utf8") < 32) {
     throw new Error("sessionSecret must contain at least 32 bytes");
@@ -584,6 +768,28 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     bodyLimit: 1_048_576,
     logger: options.logger ?? false,
     trustProxy: false,
+  });
+  const registeredRoutes: RegisteredRoute[] = [];
+  app.addHook("onRoute", (route) => {
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    for (const method of methods) {
+      registeredRoutes.push({ method, url: route.url });
+    }
+  });
+  app.addHook("onRequest", async (request) => {
+    if (!request.url.startsWith("/api/")) return;
+    const requested = request.headers["x-geo-api-version"];
+    const value = Array.isArray(requested) ? requested[0] : requested;
+    if (value !== undefined && value !== GEO_API_VERSION) {
+      throw new ApiError(406, "API_VERSION_UNSUPPORTED", "Unsupported GEO API version", {
+        requestedVersion: value,
+        supportedVersions: [GEO_API_VERSION],
+      });
+    }
+  });
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("x-geo-api-version", GEO_API_VERSION);
+    return payload;
   });
   const repository = options.repository;
   const mediaProduction = options.mediaProduction;
@@ -1161,9 +1367,177 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       return reply.status(201).send(querySet);
     },
   );
+  app.get(
+    "/api/query-sets/:querySetId/versions",
+    { preHandler: guard("visibility:read") },
+    async (request) => ({
+      items: await repository.listQuerySetVersions(
+        requestContext(request),
+        parseIdParams(request.params, "querySetId"),
+      ),
+    }),
+  );
+  app.post(
+    "/api/query-sets/:querySetId/versions",
+    { preHandler: guard("visibility:run", true) },
+    async (request, reply) => {
+      const querySetId = parseIdParams(request.params, "querySetId");
+      const body = querySetVersionSchema.parse(request.body);
+      const context = requestContext(request);
+      const promptHash = sha256Canonical(body.prompts);
+      const version = await repository.createQuerySetVersion(context, {
+        querySetId,
+        versionId: uuid(),
+        prompts: body.prompts,
+        promptHash,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          querySetId,
+          promptHash,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(201).send(version);
+    },
+  );
+  app.post(
+    "/api/query-sets/:querySetId/versions/:versionId/activate",
+    { preHandler: guard("visibility:run", true) },
+    async (request, reply) => {
+      const params = z
+        .strictObject({ querySetId: idSchema, versionId: idSchema })
+        .parse(request.params);
+      const body = querySetVersionActivationSchema.parse(request.body);
+      const context = requestContext(request);
+      const result = await repository.activateQuerySetVersion(context, {
+        querySetId: params.querySetId,
+        versionId: params.versionId,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          querySetId: params.querySetId,
+          versionId: params.versionId,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(200).send(result);
+    },
+  );
+  app.post(
+    "/api/query-sets/:querySetId/state",
+    { preHandler: guard("visibility:run", true) },
+    async (request, reply) => {
+      const querySetId = parseIdParams(request.params, "querySetId");
+      const body = querySetStateSchema.parse(request.body);
+      const context = requestContext(request);
+      const result = await repository.transitionQuerySet(context, {
+        querySetId,
+        targetStatus: body.targetStatus,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          querySetId,
+          targetStatus: body.targetStatus,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(200).send(result);
+    },
+  );
 
   app.get("/api/automation", { preHandler: guard("tenant:read") }, async (request) =>
     repository.getAutomationStatus(requestContext(request)),
+  );
+  app.put(
+    "/api/automation/control",
+    { preHandler: guard("automation:manage", true) },
+    async (request, reply) => {
+      const body = automationControlSchema.parse(request.body);
+      const context = requestContext(request);
+      const control = await repository.setTenantAutomationControl(context, {
+        controlId: uuid(),
+        mode: body.mode,
+        quota: body.quota,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          mode: body.mode,
+          quota: body.quota,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(200).send({ control });
+    },
+  );
+  app.put(
+    "/api/automation/controls/:scopeType/:scopeKey",
+    { preHandler: guard("automation:manage", true) },
+    async (request, reply) => {
+      const scope = automationScopeParamsSchema.parse(request.params);
+      if (scope.scopeType === "tenant") {
+        throw new ApiError(
+          400,
+          "AUTOMATION_SCOPE_INVALID",
+          "Use /api/automation/control for the tenant scope",
+        );
+      }
+      const body = scopedAutomationControlSchema.parse(request.body);
+      const context = requestContext(request);
+      const control = await repository.setScopedAutomationControl(context, {
+        controlId: uuid(),
+        scopeType: scope.scopeType,
+        scopeKey: scope.scopeKey,
+        mode: body.mode,
+        quota: body.quota,
+        killSwitchEnabled: body.killSwitchEnabled,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          scopeType: scope.scopeType,
+          scopeKey: scope.scopeKey,
+          mode: body.mode,
+          quota: body.quota,
+          killSwitchEnabled: body.killSwitchEnabled,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(200).send({ control });
+    },
+  );
+  app.post(
+    "/api/automation/circuits/:scopeType/:scopeKey/state",
+    { preHandler: guard("automation:manage", true) },
+    async (request, reply) => {
+      const scope = automationScopeParamsSchema.parse(request.params);
+      const body = circuitStateSchema.parse(request.body);
+      const retryAt = body.targetState === "open" ? (body.retryAt ?? null) : null;
+      if (retryAt !== null) {
+        const retryTime = new Date(retryAt).getTime();
+        const currentTime = now().getTime();
+        if (retryTime <= currentTime || retryTime > currentTime + 30 * 24 * 60 * 60 * 1_000) {
+          throw new ApiError(400, "CIRCUIT_RETRY_INVALID", "retryAt must be in the next 30 days");
+        }
+      }
+      const context = requestContext(request);
+      const circuit = await repository.setCircuitBreakerState(context, {
+        circuitId: uuid(),
+        scopeType: scope.scopeType,
+        scopeKey: scope.scopeKey,
+        targetState: body.targetState,
+        retryAt,
+        reason: body.reason,
+        auditHash: sha256Canonical({
+          tenantId: context.tenantId,
+          scopeType: scope.scopeType,
+          scopeKey: scope.scopeKey,
+          targetState: body.targetState,
+          retryAt,
+          reason: body.reason,
+        }),
+      });
+      return reply.status(200).send({ circuit });
+    },
   );
   app.post(
     "/api/automation/kill-switch",
@@ -2419,6 +2793,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       includesFixture: query.includeFixture,
     };
   });
+  app.get("/openapi.json", async () => openApiDocument(registeredRoutes));
 
   return app;
 }

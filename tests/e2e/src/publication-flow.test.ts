@@ -297,6 +297,103 @@ describe("governed multi-tenant publication flow", () => {
     const capturedAt = new Date(Date.now() - 60_000).toISOString();
     const validUntil = new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
 
+    const automationControlResponse = await app.inject({
+      method: "PUT",
+      url: "/api/automation/control",
+      headers: writeHeaders,
+      payload: {
+        mode: "unattended",
+        quota: {
+          maxConcurrent: 2,
+          perMinute: 8,
+          perDay: 80,
+          cooldownSeconds: 15,
+          errorBudget: 4,
+        },
+        reason: "E2E verifies unattended Dry-run control",
+      },
+    });
+    expect(automationControlResponse.statusCode).toBe(200);
+    expect(automationControlResponse.json()).toMatchObject({
+      control: {
+        mode: "unattended",
+        killSwitchEnabled: false,
+        quota: { maxConcurrent: 2, perMinute: 8, perDay: 80 },
+      },
+    });
+    const automationReadback = await app.inject({
+      method: "GET",
+      url: "/api/automation",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(automationReadback.json()).toMatchObject({
+      control: {
+        mode: "unattended",
+        quota: { cooldownSeconds: 15, errorBudget: 4 },
+      },
+    });
+    const automationAudit = await app.inject({
+      method: "GET",
+      url: "/api/audit-log?action=automation.control_changed",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(automationAudit.json<{ items: readonly { action: string }[] }>().items).toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: "automation.control_changed" })]),
+    );
+    const restoreShadow = await app.inject({
+      method: "PUT",
+      url: "/api/automation/control",
+      headers: writeHeaders,
+      payload: {
+        mode: "shadow",
+        quota: {
+          maxConcurrent: 1,
+          perMinute: 10,
+          perDay: 100,
+          cooldownSeconds: 0,
+          errorBudget: 5,
+        },
+        reason: "Restore conservative E2E baseline",
+      },
+    });
+    expect(restoreShadow.statusCode).toBe(200);
+    const platformControl = await app.inject({
+      method: "PUT",
+      url: "/api/automation/controls/platform/toutiao",
+      headers: writeHeaders,
+      payload: {
+        mode: "unattended",
+        quota: {
+          maxConcurrent: 100,
+          perMinute: 10_000,
+          perDay: 1_000_000,
+          cooldownSeconds: 0,
+          errorBudget: 100_000,
+        },
+        killSwitchEnabled: false,
+        reason: "E2E platform scope Dry-run baseline",
+      },
+    });
+    expect(platformControl.statusCode).toBe(200);
+    const openPlatformCircuit = await app.inject({
+      method: "POST",
+      url: "/api/automation/circuits/platform/toutiao/state",
+      headers: writeHeaders,
+      payload: { targetState: "open", reason: "E2E manual circuit test" },
+    });
+    expect(openPlatformCircuit.json()).toMatchObject({
+      circuit: { scopeType: "platform", scopeKey: "toutiao", state: "open" },
+    });
+    const closePlatformCircuit = await app.inject({
+      method: "POST",
+      url: "/api/automation/circuits/platform/toutiao/state",
+      headers: writeHeaders,
+      payload: { targetState: "closed", reason: "E2E manual circuit reset" },
+    });
+    expect(closePlatformCircuit.json()).toMatchObject({
+      circuit: { state: "closed", failureCount: 0, openedAt: null },
+    });
+
     const evidenceResponse = await app.inject({
       method: "POST",
       url: "/api/evidence-sources",
@@ -1533,6 +1630,57 @@ describe("governed multi-tenant publication flow", () => {
       industry: "healthcare",
       status: "draft",
       currentVersion: 1,
+    });
+    const healthcareQuerySetBody = healthcareQuerySet.json<{ id: string }>();
+    const healthcareQueryVersion = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${healthcareQuerySetBody.id}/versions`,
+      headers: writeHeaders,
+      payload: {
+        prompts: [
+          {
+            key: "evidence-boundary",
+            category: "safety",
+            prompt: "Which claims are directly supported by current healthcare evidence?",
+          },
+        ],
+        reason: "Add evidence-boundary coverage after review",
+      },
+    });
+    expect(healthcareQueryVersion.statusCode).toBe(201);
+    const healthcareQueryVersionBody = healthcareQueryVersion.json<{
+      id: string;
+      version: number;
+    }>();
+    expect(healthcareQueryVersionBody.version).toBe(2);
+    const activateHealthcareVersion = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${healthcareQuerySetBody.id}/versions/${healthcareQueryVersionBody.id}/activate`,
+      headers: writeHeaders,
+      payload: { reason: "Activate reviewed healthcare query version" },
+    });
+    expect(activateHealthcareVersion.json()).toMatchObject({
+      querySet: { status: "active", currentVersion: 2 },
+      previousVersion: 1,
+      previousStatus: "draft",
+      wasChanged: true,
+    });
+    const healthcareVersions = await app.inject({
+      method: "GET",
+      url: `/api/query-sets/${healthcareQuerySetBody.id}/versions`,
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(healthcareVersions.json<{ items: readonly unknown[] }>().items).toHaveLength(2);
+    const retireHealthcareQuerySet = await app.inject({
+      method: "POST",
+      url: `/api/query-sets/${healthcareQuerySetBody.id}/state`,
+      headers: writeHeaders,
+      payload: { targetStatus: "retired", reason: "Complete query-set lifecycle E2E" },
+    });
+    expect(retireHealthcareQuerySet.json()).toMatchObject({
+      querySet: { status: "retired", currentVersion: 2 },
+      previousStatus: "active",
+      wasChanged: true,
     });
 
     const mcpScopeClaim =

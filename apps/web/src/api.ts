@@ -222,6 +222,29 @@ export interface QuerySet {
   readonly updatedAt: string;
 }
 
+export interface QuerySetPrompt {
+  readonly key: string;
+  readonly category: string;
+  readonly prompt: string;
+}
+
+export interface QuerySetVersion {
+  readonly id: string;
+  readonly querySetId: string;
+  readonly version: number;
+  readonly prompts: readonly QuerySetPrompt[];
+  readonly promptHash: string;
+  readonly createdByActorId: string;
+  readonly createdAt: string;
+}
+
+export interface CreateQuerySetInput {
+  readonly name: string;
+  readonly industry: string;
+  readonly description: string;
+  readonly prompts: readonly QuerySetPrompt[];
+}
+
 export interface EvidenceSource {
   readonly id: string;
   readonly type: "url" | "document" | "manual" | "platform_readback";
@@ -653,18 +676,38 @@ export interface VisibilityRunResult {
   readonly wasCreated: boolean;
 }
 
+export type AutomationMode = "shadow" | "supervised" | "unattended" | "paused" | "stopped";
+
+export interface AutomationQuota {
+  readonly [key: string]: number;
+  readonly maxConcurrent: number;
+  readonly perMinute: number;
+  readonly perDay: number;
+  readonly cooldownSeconds: number;
+  readonly errorBudget: number;
+}
+
 export interface AutomationControl {
-  readonly mode: string;
+  readonly mode: AutomationMode;
   readonly killSwitchEnabled: boolean;
   readonly reason: string | null;
   readonly quota: Readonly<Record<string, unknown>>;
   readonly updatedAt: string;
 }
 
-export interface AutomationCircuit {
-  readonly scopeType: string;
+export type AutomationScopeType = "tenant" | "platform" | "account" | "campaign" | "topic";
+
+export interface ScopedAutomationControl extends AutomationControl {
+  readonly id: string;
+  readonly scopeType: AutomationScopeType;
   readonly scopeKey: string;
-  readonly state: string;
+}
+
+export interface AutomationCircuit {
+  readonly id: string;
+  readonly scopeType: AutomationScopeType;
+  readonly scopeKey: string;
+  readonly state: "closed" | "open" | "half_open";
   readonly failureCount: number;
   readonly openedAt: string | null;
   readonly retryAt: string | null;
@@ -674,6 +717,7 @@ export interface AutomationCircuit {
 
 export interface AutomationSnapshot {
   readonly control: AutomationControl;
+  readonly controls: readonly ScopedAutomationControl[];
   readonly circuits: readonly AutomationCircuit[];
 }
 
@@ -855,6 +899,31 @@ export interface GeoApi {
     input: { readonly status: "active" | "disabled"; readonly reason: string },
   ): Promise<{ readonly principal: ServicePrincipal; readonly wasChanged: boolean }>;
   getQuerySets(): Promise<readonly QuerySet[]>;
+  createQuerySet(input: CreateQuerySetInput): Promise<QuerySet>;
+  getQuerySetVersions(querySetId: string): Promise<readonly QuerySetVersion[]>;
+  createQuerySetVersion(
+    querySetId: string,
+    input: { readonly prompts: readonly QuerySetPrompt[]; readonly reason: string },
+  ): Promise<QuerySetVersion>;
+  activateQuerySetVersion(
+    querySetId: string,
+    versionId: string,
+    reason: string,
+  ): Promise<{
+    readonly querySet: QuerySet;
+    readonly previousVersion: number;
+    readonly previousStatus: QuerySet["status"];
+    readonly wasChanged: boolean;
+  }>;
+  transitionQuerySet(
+    querySetId: string,
+    targetStatus: "retired",
+    reason: string,
+  ): Promise<{
+    readonly querySet: QuerySet;
+    readonly previousStatus: QuerySet["status"];
+    readonly wasChanged: boolean;
+  }>;
   getArticleTemplates(): Promise<ArticleTemplateCatalogView>;
   getEvidenceSources(): Promise<readonly EvidenceSource[]>;
   createEvidenceSource(input: CreateEvidenceSourceInput): Promise<EvidenceSource>;
@@ -916,6 +985,30 @@ export interface GeoApi {
     reason: string,
   ): Promise<AutomationBatchCancellationResult>;
   getAutomation(): Promise<AutomationSnapshot>;
+  setAutomationControl(input: {
+    readonly mode: AutomationMode;
+    readonly quota: AutomationQuota;
+    readonly reason: string;
+  }): Promise<AutomationControl>;
+  setScopedAutomationControl(
+    scopeType: Exclude<AutomationScopeType, "tenant">,
+    scopeKey: string,
+    input: {
+      readonly mode: AutomationMode;
+      readonly quota: AutomationQuota;
+      readonly killSwitchEnabled: boolean;
+      readonly reason: string;
+    },
+  ): Promise<ScopedAutomationControl>;
+  setCircuitBreakerState(
+    scopeType: AutomationScopeType,
+    scopeKey: string,
+    input: {
+      readonly targetState: "open" | "closed";
+      readonly retryAt?: string | null;
+      readonly reason: string;
+    },
+  ): Promise<AutomationCircuit>;
   setKillSwitch(input: {
     readonly enabled: boolean;
     readonly reason: string;
@@ -1321,6 +1414,29 @@ function parseQuerySet(value: unknown): QuerySet {
     promptHash: nullableStringValue(item, "promptHash"),
     createdAt: stringValue(item, "createdAt"),
     updatedAt: stringValue(item, "updatedAt"),
+  };
+}
+
+function parseQuerySetPrompt(value: unknown): QuerySetPrompt {
+  const item = recordValue(value, "query-set prompt");
+  return {
+    key: stringValue(item, "key"),
+    category: stringValue(item, "category"),
+    prompt: stringValue(item, "prompt"),
+  };
+}
+
+function parseQuerySetVersion(value: unknown): QuerySetVersion {
+  const item = recordValue(value, "query-set version");
+  if (!Array.isArray(item.prompts)) throw protocolError("prompts must be an array");
+  return {
+    id: stringValue(item, "id"),
+    querySetId: stringValue(item, "querySetId"),
+    version: numberValue(item, "version"),
+    prompts: item.prompts.map(parseQuerySetPrompt),
+    promptHash: stringValue(item, "promptHash"),
+    createdByActorId: stringValue(item, "createdByActorId"),
+    createdAt: stringValue(item, "createdAt"),
   };
 }
 
@@ -1879,10 +1995,12 @@ function parseVisibilityRunResult(value: unknown): VisibilityRunResult {
   };
 }
 
+const AUTOMATION_MODES = ["shadow", "supervised", "unattended", "paused", "stopped"] as const;
+
 function parseAutomationControl(value: unknown): AutomationControl {
   const item = recordValue(value, "automation control");
   return {
-    mode: stringValue(item, "mode"),
+    mode: stringEnumValue(item, "mode", AUTOMATION_MODES),
     killSwitchEnabled: booleanValue(item, "killSwitchEnabled"),
     reason: nullableStringValue(item, "reason"),
     quota: recordField(item, "quota"),
@@ -1890,12 +2008,35 @@ function parseAutomationControl(value: unknown): AutomationControl {
   };
 }
 
+function parseScopedAutomationControl(value: unknown): ScopedAutomationControl {
+  const item = recordValue(value, "scoped automation control");
+  return {
+    ...parseAutomationControl(item),
+    id: stringValue(item, "id"),
+    scopeType: stringEnumValue(item, "scopeType", [
+      "tenant",
+      "platform",
+      "account",
+      "campaign",
+      "topic",
+    ] as const),
+    scopeKey: stringValue(item, "scopeKey"),
+  };
+}
+
 function parseAutomationCircuit(value: unknown): AutomationCircuit {
   const item = recordValue(value, "automation circuit");
   return {
-    scopeType: stringValue(item, "scopeType"),
+    id: stringValue(item, "id"),
+    scopeType: stringEnumValue(item, "scopeType", [
+      "tenant",
+      "platform",
+      "account",
+      "campaign",
+      "topic",
+    ] as const),
     scopeKey: stringValue(item, "scopeKey"),
-    state: stringValue(item, "state"),
+    state: stringEnumValue(item, "state", ["closed", "open", "half_open"] as const),
     failureCount: numberValue(item, "failureCount"),
     openedAt: nullableStringValue(item, "openedAt"),
     retryAt: nullableStringValue(item, "retryAt"),
@@ -1907,8 +2048,12 @@ function parseAutomationCircuit(value: unknown): AutomationCircuit {
 function parseAutomationSnapshot(value: unknown): AutomationSnapshot {
   const body = recordValue(value, "automation response");
   if (!Array.isArray(body.circuits)) throw protocolError("circuits must be an array");
+  if (body.controls !== undefined && !Array.isArray(body.controls)) {
+    throw protocolError("controls must be an array");
+  }
   return {
     control: parseAutomationControl(body.control),
+    controls: Array.isArray(body.controls) ? body.controls.map(parseScopedAutomationControl) : [],
     circuits: body.circuits.map(parseAutomationCircuit),
   };
 }
@@ -2322,6 +2467,73 @@ export class HttpGeoApi implements GeoApi {
     return itemsValue(await this.request("/api/query-sets"), parseQuerySet);
   }
 
+  async createQuerySet(input: CreateQuerySetInput): Promise<QuerySet> {
+    return parseQuerySet(
+      await this.request("/api/query-sets", { method: "POST", body: JSON.stringify(input) }, true),
+    );
+  }
+
+  async getQuerySetVersions(querySetId: string): Promise<readonly QuerySetVersion[]> {
+    return itemsValue(
+      await this.request(`/api/query-sets/${encodeURIComponent(querySetId)}/versions`),
+      parseQuerySetVersion,
+    );
+  }
+
+  async createQuerySetVersion(
+    querySetId: string,
+    input: { readonly prompts: readonly QuerySetPrompt[]; readonly reason: string },
+  ): Promise<QuerySetVersion> {
+    return parseQuerySetVersion(
+      await this.request(
+        `/api/query-sets/${encodeURIComponent(querySetId)}/versions`,
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
+    );
+  }
+
+  async activateQuerySetVersion(querySetId: string, versionId: string, reason: string) {
+    const item = recordValue(
+      await this.request(
+        `/api/query-sets/${encodeURIComponent(querySetId)}/versions/${encodeURIComponent(versionId)}/activate`,
+        { method: "POST", body: JSON.stringify({ reason }) },
+        true,
+      ),
+      "query-set activation result",
+    );
+    return {
+      querySet: parseQuerySet(item.querySet),
+      previousVersion: numberValue(item, "previousVersion"),
+      previousStatus: stringEnumValue(item, "previousStatus", [
+        "draft",
+        "active",
+        "retired",
+      ] as const),
+      wasChanged: booleanValue(item, "wasChanged"),
+    };
+  }
+
+  async transitionQuerySet(querySetId: string, targetStatus: "retired", reason: string) {
+    const item = recordValue(
+      await this.request(
+        `/api/query-sets/${encodeURIComponent(querySetId)}/state`,
+        { method: "POST", body: JSON.stringify({ targetStatus, reason }) },
+        true,
+      ),
+      "query-set transition result",
+    );
+    return {
+      querySet: parseQuerySet(item.querySet),
+      previousStatus: stringEnumValue(item, "previousStatus", [
+        "draft",
+        "active",
+        "retired",
+      ] as const),
+      wasChanged: booleanValue(item, "wasChanged"),
+    };
+  }
+
   async getArticleTemplates(): Promise<ArticleTemplateCatalogView> {
     return parseArticleTemplateCatalog(await this.request("/api/article-templates"));
   }
@@ -2618,6 +2830,63 @@ export class HttpGeoApi implements GeoApi {
 
   async getAutomation(): Promise<AutomationSnapshot> {
     return parseAutomationSnapshot(await this.request("/api/automation"));
+  }
+
+  async setAutomationControl(input: {
+    readonly mode: AutomationMode;
+    readonly quota: AutomationQuota;
+    readonly reason: string;
+  }): Promise<AutomationControl> {
+    const payload = recordValue(
+      await this.request(
+        "/api/automation/control",
+        { method: "PUT", body: JSON.stringify(input) },
+        true,
+      ),
+      "automation control response",
+    );
+    return parseAutomationControl(payload.control);
+  }
+
+  async setScopedAutomationControl(
+    scopeType: Exclude<AutomationScopeType, "tenant">,
+    scopeKey: string,
+    input: {
+      readonly mode: AutomationMode;
+      readonly quota: AutomationQuota;
+      readonly killSwitchEnabled: boolean;
+      readonly reason: string;
+    },
+  ): Promise<ScopedAutomationControl> {
+    const payload = recordValue(
+      await this.request(
+        `/api/automation/controls/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeKey)}`,
+        { method: "PUT", body: JSON.stringify(input) },
+        true,
+      ),
+      "scoped automation control response",
+    );
+    return parseScopedAutomationControl(payload.control);
+  }
+
+  async setCircuitBreakerState(
+    scopeType: AutomationScopeType,
+    scopeKey: string,
+    input: {
+      readonly targetState: "open" | "closed";
+      readonly retryAt?: string | null;
+      readonly reason: string;
+    },
+  ): Promise<AutomationCircuit> {
+    const payload = recordValue(
+      await this.request(
+        `/api/automation/circuits/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeKey)}/state`,
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
+      "circuit breaker response",
+    );
+    return parseAutomationCircuit(payload.circuit);
   }
 
   async setKillSwitch(input: {

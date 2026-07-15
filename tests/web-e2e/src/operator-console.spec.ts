@@ -86,6 +86,9 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
   const accountId = "10000000-0000-4000-8000-000000000701";
   const batchId = "10000000-0000-4000-8000-000000002001";
   const runId = "10000000-0000-4000-8000-000000003001";
+  const querySetId = "10000000-0000-4000-8000-000000007001";
+  const querySetVersionOneId = "10000000-0000-4000-8000-000000007002";
+  const querySetVersionTwoId = "10000000-0000-4000-8000-000000007003";
   const now = "2026-07-15T08:00:00.000Z";
   const session = {
     actor: {
@@ -99,6 +102,8 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
         "content:write",
         "automation:manage",
         "receipt:read",
+        "visibility:read",
+        "visibility:run",
       ],
     },
     tenant: {
@@ -200,6 +205,64 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
     createdAt: now,
     updatedAt: now,
   };
+  const querySets = [
+    {
+      id: querySetId,
+      name: "国内 AI 旅行决策问题集",
+      industry: "travel",
+      status: "active",
+      currentVersion: 2,
+      description: "分别记录豆包与千问的旅行服务发现、核验和比较问题",
+      currentVersionId: querySetVersionTwoId,
+      prompts: [
+        {
+          key: "service-boundary",
+          category: "verification",
+          prompt: "如何核验出境游服务边界？",
+        },
+      ],
+      promptHash: "b".repeat(64),
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  const querySetVersions = [
+    {
+      id: querySetVersionTwoId,
+      querySetId,
+      version: 2,
+      prompts: [
+        {
+          key: "service-boundary",
+          category: "verification",
+          prompt: "如何核验出境游服务边界？",
+        },
+        {
+          key: "contact-check",
+          category: "verification",
+          prompt: "中通国际旅行社的官方咨询方式是什么？",
+        },
+      ],
+      promptHash: "b".repeat(64),
+      createdByActorId: actorId,
+      createdAt: now,
+    },
+    {
+      id: querySetVersionOneId,
+      querySetId,
+      version: 1,
+      prompts: [
+        {
+          key: "service-discovery",
+          category: "discovery",
+          prompt: "有哪些适合首次出境游客的服务？",
+        },
+      ],
+      promptHash: "a".repeat(64),
+      createdByActorId: actorId,
+      createdAt: "2026-07-14T08:00:00.000Z",
+    },
+  ];
   const run = {
     id: runId,
     batchId,
@@ -308,7 +371,8 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
       ],
       ["/api/members", items([])],
       ["/api/policies", items(policies)],
-      ["/api/query-sets", items([])],
+      ["/api/query-sets", items(querySets)],
+      [`/api/query-sets/${querySetId}/versions`, items(querySetVersions)],
       ["/api/evidence-sources", items([])],
       ["/api/facts", items([])],
       ["/api/campaigns", items(campaigns)],
@@ -323,11 +387,47 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
           control: {
             mode: "unattended",
             killSwitchEnabled: false,
-            reason: null,
-            quota: { dryRunOnly: true },
+            reason: "Dry-run unattended operations approved",
+            quota: {
+              maxConcurrent: 2,
+              perMinute: 30,
+              perDay: 300,
+              cooldownSeconds: 5,
+              errorBudget: 10,
+            },
             updatedAt: now,
           },
-          circuits: [],
+          controls: [
+            {
+              id: "10000000-0000-4000-8000-000000008001",
+              scopeType: "platform",
+              scopeKey: "toutiao",
+              mode: "supervised",
+              killSwitchEnabled: false,
+              reason: "Toutiao canary quota",
+              quota: {
+                maxConcurrent: 1,
+                perMinute: 10,
+                perDay: 100,
+                cooldownSeconds: 10,
+                errorBudget: 5,
+              },
+              updatedAt: now,
+            },
+          ],
+          circuits: [
+            {
+              id: "10000000-0000-4000-8000-000000008002",
+              scopeType: "platform",
+              scopeKey: "sohu",
+              state: "closed",
+              failureCount: 0,
+              openedAt: null,
+              retryAt: null,
+              reason: "Manual recovery completed",
+              updatedAt: now,
+            },
+          ],
         },
       ],
       ["/api/automation-batches", items([batch])],
@@ -505,4 +605,66 @@ test("live policy draft editor stays usable across viewports", async ({ page }, 
     ".governance-dialog-actions",
   ]);
   await attachScreenshot(page, testInfo, "policy-draft-editor", false);
+});
+
+test("live query-set governance remains readable and bounded", async ({ page }, testInfo) => {
+  await installAutomationApiFixture(page);
+  await page.goto("/visibility");
+
+  await expect(page.getByRole("heading", { level: 1, name: "AI 可见性" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "问题集治理" })).toBeVisible();
+  await expect(page.getByText("国内 AI 旅行决策问题集", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("v2", { exact: true })).toBeVisible();
+  await expect(page.getByText("当前", { exact: true })).toBeVisible();
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [
+    ".query-set-manager > .panel-heading",
+    ".query-set-version-heading",
+    ".query-version-list > div",
+  ]);
+  await attachScreenshot(page, testInfo, "query-set-governance");
+
+  await page.getByRole("button", { name: "新版本", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: /创建 国内 AI 旅行决策问题集 新版本/ });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("问题内容 1")).toHaveValue("如何核验出境游服务边界？");
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+  await attachScreenshot(page, testInfo, "query-set-version-dialog", false);
+});
+
+test("live automation settings expose scoped controls without overlap", async ({
+  page,
+}, testInfo) => {
+  await installAutomationApiFixture(page);
+  await page.goto("/settings");
+
+  await expect(page.getByRole("heading", { level: 1, name: "系统设置" })).toBeVisible();
+  await expect(page.getByText("细分范围控制", { exact: true })).toBeVisible();
+  await expect(page.getByText("platform:toutiao", { exact: true })).toBeVisible();
+  await expect(page.getByText("platform:sohu", { exact: true })).toBeVisible();
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [
+    ".automation-subsection-heading",
+    ".scope-control-list > div",
+    ".circuit-list > div",
+  ]);
+  await attachScreenshot(page, testInfo, "automation-settings-live");
+
+  await page.getByRole("button", { name: "添加范围控制" }).click();
+  const scopedDialog = page.getByRole("dialog", { name: "添加范围控制" });
+  await expect(scopedDialog).toBeVisible();
+  await expect(scopedDialog.getByLabel("范围类型")).toHaveValue("platform");
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+  await attachScreenshot(page, testInfo, "scoped-control-dialog", false);
+  await scopedDialog.getByRole("button", { name: "关闭" }).click();
+
+  await page.getByRole("button", { name: "手动熔断" }).click();
+  const circuitDialog = page.getByRole("dialog", { name: "人工熔断处置" });
+  await expect(circuitDialog).toBeVisible();
+  await expect(circuitDialog.getByLabel("熔断范围类型")).toHaveValue("tenant");
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+  await attachScreenshot(page, testInfo, "circuit-dialog", false);
 });

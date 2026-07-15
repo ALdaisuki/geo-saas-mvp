@@ -12,21 +12,21 @@ Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可
 
 ## 当前能力边界
 
-| 能力                        | 当前状态                                           | 不能据此宣称                                   |
-| --------------------------- | -------------------------------------------------- | ---------------------------------------------- |
-| PostgreSQL 多租户数据与 RLS | 已实现，需真实 PostgreSQL 验证                     | 单元测试等于生产隔离证明                       |
-| 租户会话与切换              | 登录后列出成员租户并重签租户会话                   | 一个会话可跨租户访问                           |
-| Kill Switch、撤权与排队取消 | 租户急停、grant revoke、queued/retry cancel 已实现 | 自动撤权、取消已租约作业或停止已发出的外部请求 |
-| 发布前审计与一次性 grant    | 已实现确定性路径                                   | 模型可自行批准发布                             |
-| 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链             | 已接入真实生图 API 或图片可直接生产投放        |
-| GEO 文章模板目录            | 21 套共享 V1 模板贯通 Web、HTTP API、Pi 与 MCP     | 模板可绕过事实、策略或最终变体审计             |
-| Brand Agent Profile         | 品牌级不可变版本贯通 Web、HTTP API、Pi、MCP 与审计 | Profile 是事实来源或可绕过正文闭合与审计       |
-| 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt              | 已发文、公开 API 或无人值守投放                |
-| 豆包/千问可见性             | fixture + manual import                            | 已调用真实产品搜索或可等同 Google              |
-| 品牌记忆正负反馈闭环        | 未纳入第一版；当前只保留显式治理上下文             | 系统会依据文章或审计结果自动改写长期记忆       |
-| GEO MCP                     | 11 个静态白名单工具                                | 任意 MCP 工具访问或 Pi 内建 MCP                |
-| Pi Agent 与批次 Producer    | `agent-mcp` 内置；多租户租约恢复，固定 Dry-run     | 已向外部平台实发或绕过发布前审计               |
-| Operator 登录               | 显式一次性 bootstrap CLI                           | `db:seed` 后可直接登录或存在共享默认密码       |
+| 能力                        | 当前状态                                              | 不能据此宣称                                 |
+| --------------------------- | ----------------------------------------------------- | -------------------------------------------- |
+| PostgreSQL 多租户数据与 RLS | 已实现，需真实 PostgreSQL 验证                        | 单元测试等于生产隔离证明                     |
+| 租户会话与切换              | 登录后列出成员租户并重签租户会话                      | 一个会话可跨租户访问                         |
+| 自动化控制与急停            | 租户模式、五维配额、Kill Switch、撤权和排队取消已实现 | 模式变更会提升平台能力或停止已发出的外部请求 |
+| 发布前审计与一次性 grant    | 已实现确定性路径                                      | 模型可自行批准发布                           |
+| 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链                | 已接入真实生图 API 或图片可直接生产投放      |
+| GEO 文章模板目录            | 21 套共享 V1 模板贯通 Web、HTTP API、Pi 与 MCP        | 模板可绕过事实、策略或最终变体审计           |
+| Brand Agent Profile         | 品牌级不可变版本贯通 Web、HTTP API、Pi、MCP 与审计    | Profile 是事实来源或可绕过正文闭合与审计     |
+| 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt                 | 已发文、公开 API 或无人值守投放              |
+| 豆包/千问可见性             | fixture + manual import                               | 已调用真实产品搜索或可等同 Google            |
+| 品牌记忆正负反馈闭环        | 未纳入第一版；当前只保留显式治理上下文                | 系统会依据文章或审计结果自动改写长期记忆     |
+| GEO MCP                     | 11 个静态白名单工具                                   | 任意 MCP 工具访问或 Pi 内建 MCP              |
+| Pi Agent 与批次 Producer    | `agent-mcp` 内置；多租户租约恢复，固定 Dry-run        | 已向外部平台实发或绕过发布前审计             |
+| Operator 登录               | 显式一次性 bootstrap CLI                              | `db:seed` 后可直接登录或存在共享默认密码     |
 
 `db:seed` 创建两个隔离租户、政策、渠道和 fixture 数据，但 seed 用户是 `disabled`，密码字段为 `seed-disabled`。这是安全默认值，不是演示账号。生产客户不走 seed：先按 [Tenant and Operator Provisioning](docs/ops/operator-provisioning.md) 执行 admin-only `db:provision:tenant`，合并输出的 worker 映射，再对已创建 slug 执行独立的 `db:bootstrap:operator`。租户 owner API 无权跨租户创建客户。
 

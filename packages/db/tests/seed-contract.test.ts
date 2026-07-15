@@ -56,4 +56,11 @@ describe("database seed contract", () => {
     expect(seedSource).toContain("SEED_IDS.synthetic.workerPrincipal");
     expect(seedSource).toContain("'worker', 'active'");
   });
+
+  it("seeds one immutable active Brand Agent Profile per fixture brand", () => {
+    expect(seedSource).toContain("SEED_IDS.zhongtong.brandAgentProfile");
+    expect(seedSource).toContain("SEED_IDS.synthetic.brandAgentProfile");
+    expect(seedSource).toContain("insert into geo.brand_agent_profiles");
+    expect(seedSource).toContain("defaultBrandAgentProfileDocument");
+  });
 });

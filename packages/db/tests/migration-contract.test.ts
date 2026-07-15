@@ -13,6 +13,7 @@ const expectedTables = [
   "api_keys",
   "sessions",
   "brands",
+  "brand_agent_profiles",
   "brand_competitors",
   "tenant_contacts",
   "policy_bundles",
@@ -142,6 +143,7 @@ describe("PostgreSQL migration contract", () => {
     for (const tableName of tenantTables.filter(
       (name) =>
         name !== "brand_competitors" &&
+        name !== "brand_agent_profiles" &&
         name !== "publication_readbacks" &&
         name !== "automation_batches" &&
         name !== "automation_runs" &&
@@ -242,6 +244,27 @@ describe("PostgreSQL migration contract", () => {
     expect(migrationSql).toMatch(
       /REVOKE UPDATE, DELETE, TRUNCATE[\s\S]*media_generation_attempts[\s\S]*media_assets[\s\S]*content_media_bindings[\s\S]*media_inspections FROM geo_runtime/i,
     );
+  });
+
+  it("versions tenant-scoped Brand Agent Profiles with one active document per brand", () => {
+    const profiles = tableDefinition("brand_agent_profiles");
+    expect(profiles).toContain("brand_id uuid NOT NULL");
+    expect(profiles).toContain("version integer NOT NULL CHECK (version > 0)");
+    expect(profiles).toContain("document_hash geo.sha256_hex NOT NULL");
+    expect(profiles).toContain("UNIQUE (tenant_id, brand_id, version)");
+    expect(profiles).toMatch(
+      /FOREIGN KEY \(tenant_id, brand_id\)[\s\S]*REFERENCES geo\.brands \(tenant_id, id\)/i,
+    );
+    expect(migrationSql).toContain("brand_agent_profiles_one_active_per_brand");
+    expect(migrationSql).toContain("brand_agent_profiles_transition_only");
+    expect(migrationSql).toContain("ALTER TABLE geo.brand_agent_profiles FORCE ROW LEVEL SECURITY");
+    expect(migrationSql).toContain("CREATE POLICY tenant_isolation ON geo.brand_agent_profiles");
+    expect(migrationSql).toContain(
+      "GRANT UPDATE (status, retired_at) ON TABLE geo.brand_agent_profiles TO geo_runtime",
+    );
+    expect(migrationSql).toContain("brand_agent_profile_id uuid");
+    expect(migrationSql).toContain("brand_agent_profile_hash geo.sha256_hex");
+    expect(migrationSql).toContain("tenant_provisioning_receipts_brand_agent_profile_fk");
   });
 
   it("persists governed research policies and redacted append-only capture records", () => {

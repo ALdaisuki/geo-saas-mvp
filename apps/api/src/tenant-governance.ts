@@ -19,7 +19,7 @@ export function normalizeContactValue(type: ContactType, rawValue: string): stri
   const value = rawValue.trim().normalize("NFKC");
   let normalized: string;
   if (type === "phone") {
-    normalized = value.replace(/[\s()\-]/gu, "");
+    normalized = value.replace(/[\s()-]/gu, "");
   } else if (type === "email" || type === "wechat") {
     normalized = value.toLocaleLowerCase("en-US");
   } else if (type === "website") {

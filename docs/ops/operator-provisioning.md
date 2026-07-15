@@ -45,9 +45,9 @@ Each contact must contain exactly `type`, `label`, `value`, `normalizedValue` an
 ]
 ```
 
-In one transaction the command creates an active industry-neutral tenant, one primary brand, the contacts, a tenant `shadow` control with conservative database-enforced quotas, three active `manual_only` accounts supporting only `dry_run`, one active worker service principal, one active `geo.audit-policy.v1` baseline policy bundle, and one active provider-neutral Doubao/Qwen baseline query set with version 1. It creates no platform credential, operator, live connector capability, live provider call, or cross-tenant resource. The baseline pack version is immutable and industry-neutral; later policy/query activation remains a separate administrative workflow.
+In one transaction the command creates an active industry-neutral tenant, one primary brand, the contacts, a tenant `shadow` control with conservative database-enforced quotas, three active `manual_only` accounts supporting only `dry_run`, one active worker service principal, one active `baseline-v1` policy bundle, one active provider-neutral Doubao/Qwen baseline query set with version 1, and one active `geo.brand-agent-profile.v1` version for the primary brand. It creates no platform credential, operator, live connector capability, live provider call, or cross-tenant resource. The baseline pack and Profile are immutable and industry-neutral; later policy/query/Profile changes remain separate tenant-governed workflows.
 
-The append-only admin receipt binds the idempotency key to the canonical request hash and all result IDs, including `policyBundleId`, `querySetId`, and `querySetVersionId`. Exact same-key replays verify the complete tenant, brand, contacts, accounts, worker, automation control, policy document/hash, and query prompts/hash before returning the original IDs with `wasCreated=false`. A changed request with the same key, a different key for an existing slug, or drift in any provisioned baseline is rejected; this command never updates or adopts an existing tenant.
+The append-only admin receipt binds the idempotency key to the canonical request hash and all result IDs, including `policyBundleId`, `querySetId`, `querySetVersionId`, `brandAgentProfileId`, and `brandAgentProfileHash`. Exact same-key replays verify the complete tenant, brand, contacts, accounts, worker, automation control, policy document/hash, query prompts/hash, and exact Profile document/hash before returning the original IDs with `wasCreated=false`. A changed request with the same key, a different key for an existing slug, or drift in any provisioned baseline is rejected; this command never updates or adopts an existing tenant.
 
 Run the explicit Compose profile after migrations and role bootstrap succeed:
 
@@ -55,7 +55,7 @@ Run the explicit Compose profile after migrations and role bootstrap succeed:
 docker compose --profile tenant-provisioning run --rm db-provision-tenant
 ```
 
-The single JSON result contains the fixed `event` discriminator, `tenantId`, `brandId`, `workerServicePrincipalId`, `policyBundleId`, `querySetId`, `querySetVersionId`, `wasCreated`, and a `workerTenantActorsJsonFragment`. It contains no database URL, credential or secret. Merge the fragment into the deployment's complete `WORKER_TENANT_ACTORS_JSON` object before starting the worker; do not replace mappings for existing tenants.
+The single JSON result contains the fixed `event` discriminator, `tenantId`, `brandId`, `workerServicePrincipalId`, `policyBundleId`, `querySetId`, `querySetVersionId`, `brandAgentProfileId`, `brandAgentProfileHash`, `wasCreated`, and a `workerTenantActorsJsonFragment`. It contains no database URL, credential or secret. Merge the fragment into the deployment's complete `WORKER_TENANT_ACTORS_JSON` object before starting the worker; do not replace mappings for existing tenants.
 
 For direct development, export `DATABASE_ADMIN_URL` plus all ten `GEO_PROVISION_*` variables and run `pnpm db:provision:tenant`. The applications do not load `.env` automatically.
 

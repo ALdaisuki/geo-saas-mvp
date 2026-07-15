@@ -1,5 +1,5 @@
 import { PlasticPromiseGovernanceClient, type McpToolCaller } from "@geo/agent";
-import type { ActorContext } from "@geo/contracts";
+import type { ActorContext, BrandAgentProfile } from "@geo/contracts";
 import {
   fauxAssistantMessage,
   registerFauxProvider,
@@ -24,6 +24,7 @@ const ids = {
   artifact: "10000000-0000-4000-8000-000000000606",
   publication: "10000000-0000-4000-8000-000000000604",
   outbox: "10000000-0000-4000-8000-000000000605",
+  profile: "10000000-0000-4000-8000-000000000607",
 };
 
 const principal: ActorContext = {
@@ -70,6 +71,7 @@ function governance(
 function fakeApi(
   publicationInputs: PublicationRequestInput[] = [],
   scopeToolNames: string[] = [],
+  brandAgentProfile: Readonly<BrandAgentProfile> | null = null,
 ): InternalGeoApiClient {
   return {
     getTenantContext: async () => ({ tenantId: ids.tenant }),
@@ -77,6 +79,7 @@ function fakeApi(
       version: "geo.article-templates.v1" as const,
       items: [],
     }),
+    getBrandAgentProfile: async () => brandAgentProfile,
     lookupFacts: async () => ({ facts: [], evidence: [] }),
     proposeDraft: async () => ({ contentItemId: ids.content, contentVersionId: ids.version }),
     previewVariant: async () => ({ variantId: ids.variant }),
@@ -192,6 +195,60 @@ describe("Pi agent run service", () => {
       response: "已完成租户范围内的证据审阅。",
     });
     expect(faux.state.callCount).toBe(1);
+  });
+
+  it("injects the selected immutable Brand Agent Profile into the real Pi system prompt", async () => {
+    const profile: BrandAgentProfile = {
+      id: ids.profile,
+      brandId: ids.brand,
+      version: 3,
+      status: "active",
+      document: {
+        schemaVersion: "geo.brand-agent-profile.v1",
+        voice: "克制、清晰，先给结论再解释",
+        audiences: ["首次出境游客"],
+        objectives: ["帮助客户核验服务边界"],
+        requiredPoints: ["说明信息有效期"],
+        forbiddenClaims: ["保证签证通过"],
+        callToAction: "通过官方热线核验当前行程。",
+        agentInstructions: "优先选择证据完整的文章策略。",
+      },
+      documentHash: "a".repeat(64),
+      effectiveAt: "2026-07-15T12:00:00.000Z",
+      retiredAt: null,
+      createdAt: "2026-07-15T12:00:00.000Z",
+    };
+    let systemPrompt = "";
+    const faux = registerFauxProvider({ provider: "geo-pi-profile-test" });
+    fauxRegistrations.push(faux);
+    faux.setResponses([
+      (context) => {
+        systemPrompt = context.systemPrompt ?? "";
+        return fauxAssistantMessage("已按品牌约定选择文章策略。");
+      },
+    ]);
+    const service = new RealPiAgentRunService({
+      api: fakeApi([], [], profile),
+      governance: governance(),
+      provider: "geo-pi-profile-test",
+      model: faux.getModel() as unknown as Model<Api>,
+      modelId: faux.getModel().id,
+      apiKey: "test-key",
+    });
+
+    await service.run(principal, {
+      workflow: "prompt",
+      brandId: ids.brand,
+      prompt: "为品牌规划下一篇文章",
+    });
+
+    expect(systemPrompt).toContain(`Brand ID: ${ids.brand}`);
+    expect(systemPrompt).toContain(`Profile ID: ${ids.profile}`);
+    expect(systemPrompt).toContain("Profile version: 3");
+    expect(systemPrompt).toContain(`Profile document SHA-256: ${"a".repeat(64)}`);
+    expect(systemPrompt).toContain('"voice":"克制、清晰，先给结论再解释"');
+    expect(systemPrompt).toContain("must not bypass canonical closed-content rendering");
+    expect(systemPrompt).toContain("must not bypass deterministic audit");
   });
 
   it("fails the run without exposing a Pi provider error as a successful empty response", async () => {

@@ -4,6 +4,7 @@ import { buildBaselineAuditPolicyDocument, sha256Canonical } from "@geo/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 
 import type { Database, JsonObject, JsonValue } from "./types.js";
+import { defaultBrandAgentProfileDocument } from "./brand-agent-profile.js";
 
 const TENANT_SLUG = /^[a-z0-9][a-z0-9-]{1,62}$/u;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/u;
@@ -63,6 +64,8 @@ export interface ProvisionTenantResult {
   readonly policyBundleId: string;
   readonly querySetId: string;
   readonly querySetVersionId: string;
+  readonly brandAgentProfileId: string;
+  readonly brandAgentProfileHash: string;
   readonly wasCreated: boolean;
 }
 
@@ -90,6 +93,8 @@ interface ProvisioningReceiptRow {
   policy_bundle_id: string;
   query_set_id: string;
   query_set_version_id: string;
+  brand_agent_profile_id: string;
+  brand_agent_profile_hash: string;
 }
 
 export interface ProvisionTenantOptions {
@@ -318,7 +323,8 @@ async function findReceipt(
     select receipt.idempotency_key, receipt.request_hash, receipt.tenant_id,
            tenant.slug as tenant_slug, receipt.brand_id,
            receipt.worker_service_principal_id, receipt.policy_bundle_id,
-           receipt.query_set_id, receipt.query_set_version_id
+           receipt.query_set_id, receipt.query_set_version_id,
+           receipt.brand_agent_profile_id, receipt.brand_agent_profile_hash
     from geo.tenant_provisioning_receipts as receipt
     join geo.tenants as tenant on tenant.id = receipt.tenant_id
     where receipt.idempotency_key = ${idempotencyKey}
@@ -385,6 +391,37 @@ async function assertProvisionedState(
     !brand.is_primary
   ) {
     conflict("Existing provisioned primary brand differs from the original request");
+  }
+
+  const expectedProfileDocument = defaultBrandAgentProfileDocument();
+  const expectedProfileHash = sha256Canonical(expectedProfileDocument);
+  const profileResult = await sql<{
+    brand_id: string;
+    version: number;
+    status: string;
+    document: unknown;
+    document_hash: string;
+    created_by_actor_id: string;
+    retired_at: Date | null;
+  }>`
+    select brand_id, version, status, document, document_hash,
+           created_by_actor_id, retired_at
+    from geo.brand_agent_profiles
+    where tenant_id = ${receipt.tenant_id} and id = ${receipt.brand_agent_profile_id}
+  `.execute(transaction);
+  const profile = profileResult.rows[0];
+  if (
+    profile === undefined ||
+    profile.brand_id !== receipt.brand_id ||
+    profile.version !== 1 ||
+    profile.status !== "active" ||
+    profile.document_hash !== expectedProfileHash ||
+    profile.document_hash !== receipt.brand_agent_profile_hash ||
+    profile.created_by_actor_id !== receipt.worker_service_principal_id ||
+    profile.retired_at !== null ||
+    !sameCanonical(profile.document, expectedProfileDocument)
+  ) {
+    conflict("Existing provisioned Brand Agent Profile differs from the active baseline");
   }
 
   const contactsResult = await sql<{
@@ -575,6 +612,7 @@ async function createProvisionedTenant(
   const policyBundleId = idGenerator();
   const querySetId = idGenerator();
   const querySetVersionId = idGenerator();
+  const brandAgentProfileId = idGenerator();
 
   await sql`
     insert into geo.tenants (
@@ -642,6 +680,19 @@ async function createProvisionedTenant(
     values (${tenantId}, ${workerServicePrincipalId}, ${input.workerName}, 'worker', 'active')
   `.execute(transaction);
 
+  const brandAgentProfileDocument = defaultBrandAgentProfileDocument();
+  const brandAgentProfileHash = sha256Canonical(brandAgentProfileDocument);
+  await sql`
+    insert into geo.brand_agent_profiles (
+      tenant_id, id, brand_id, version, status, document, document_hash,
+      created_by_actor_id, effective_at
+    ) values (
+      ${tenantId}, ${brandAgentProfileId}, ${brandId}, 1, 'active',
+      ${JSON.stringify(brandAgentProfileDocument)}::jsonb, ${brandAgentProfileHash},
+      ${workerServicePrincipalId}, clock_timestamp()
+    )
+  `.execute(transaction);
+
   const policyDocument = baselinePolicyDocument(input);
   await sql`
     insert into geo.policy_bundles (
@@ -676,10 +727,12 @@ async function createProvisionedTenant(
   await sql`
     insert into geo.tenant_provisioning_receipts (
       idempotency_key, request_hash, tenant_id, brand_id, worker_service_principal_id,
-      policy_bundle_id, query_set_id, query_set_version_id
+      policy_bundle_id, query_set_id, query_set_version_id,
+      brand_agent_profile_id, brand_agent_profile_hash
     ) values (
       ${input.idempotencyKey}, ${hash}, ${tenantId}, ${brandId}, ${workerServicePrincipalId},
-      ${policyBundleId}, ${querySetId}, ${querySetVersionId}
+      ${policyBundleId}, ${querySetId}, ${querySetVersionId},
+      ${brandAgentProfileId}, ${brandAgentProfileHash}
     )
   `.execute(transaction);
 
@@ -690,6 +743,8 @@ async function createProvisionedTenant(
     policyBundleId,
     querySetId,
     querySetVersionId,
+    brandAgentProfileId,
+    brandAgentProfileHash,
     wasCreated: true,
   };
 }
@@ -723,6 +778,8 @@ export async function provisionTenant(
         policyBundleId: receipt.policy_bundle_id,
         querySetId: receipt.query_set_id,
         querySetVersionId: receipt.query_set_version_id,
+        brandAgentProfileId: receipt.brand_agent_profile_id,
+        brandAgentProfileHash: receipt.brand_agent_profile_hash,
         wasCreated: false,
       };
     }

@@ -1,6 +1,7 @@
 import type {
   ActorContext,
   ArticleTemplateCatalog,
+  BrandAgentProfile,
   ExecutionLevel,
   MediaRole,
   Platform,
@@ -64,6 +65,10 @@ export interface InternalGeoApiClient {
   getArticleTemplateCatalog(
     principal: Readonly<ActorContext>,
   ): Promise<Readonly<ArticleTemplateCatalog>>;
+  getBrandAgentProfile(
+    principal: Readonly<ActorContext>,
+    brandId: string,
+  ): Promise<Readonly<BrandAgentProfile> | null>;
   lookupFacts(
     principal: Readonly<ActorContext>,
     input: Readonly<TenantFactLookupInput>,

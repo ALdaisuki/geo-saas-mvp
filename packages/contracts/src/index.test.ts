@@ -6,6 +6,9 @@ import {
   automationServicePrincipalCreateRequestSchema,
   automationRunStateSchema,
   automationRunTargetStateSchema,
+  brandAgentProfileDocumentSchema,
+  brandAgentProfileReferenceSchema,
+  brandAgentProfileSchema,
   canonicalBodyBlockSchema,
   canonicalInlineBlockSchema,
   channelAccountCreateRequestSchema,
@@ -177,6 +180,7 @@ describe("publication contracts", () => {
     const payload = publicationVariantPayloadSchema.parse({
       editorialProfile: "guide",
       articleTemplateId: "step-by-step-guide",
+      brandAgentProfile: { id, version: 3, documentHash: hash },
       title: "当前服务信息",
       summary: "以下内容来自当前有效的事实与联系方式。",
       bodyMarkdown: "## 当前可核验信息\n\n当前服务以已核验材料为准。",
@@ -197,9 +201,52 @@ describe("publication contracts", () => {
     expect(payload.bodyBlocks).toHaveLength(3);
     expect(payload.editorialProfile).toBe("guide");
     expect(payload.articleTemplateId).toBe("step-by-step-guide");
+    expect(payload.brandAgentProfile).toEqual({ id, version: 3, documentHash: hash });
     expect(payload.titleBlocks).toEqual([
       { type: "template", templateId: "generic.title.current-service" },
     ]);
+  });
+
+  it("keeps brand agent instructions structured, bounded, and separately attributable", () => {
+    const document = brandAgentProfileDocumentSchema.parse({
+      schemaVersion: "geo.brand-agent-profile.v1",
+      voice: "克制、清晰、先回答再解释",
+      audiences: ["首次出境游客", "银发游客家庭"],
+      objectives: ["帮助客户核验服务边界"],
+      requiredPoints: ["说明信息有效期"],
+      forbiddenClaims: ["保证签证通过"],
+      callToAction: "建议客户通过官方热线核验当前行程。",
+      agentInstructions: "优先选择可被事实和证据完整支持的文章策略。",
+    });
+    const reference = brandAgentProfileReferenceSchema.parse({
+      id,
+      version: 3,
+      documentHash: hash,
+    });
+
+    expect(document.schemaVersion).toBe("geo.brand-agent-profile.v1");
+    expect(reference.version).toBe(3);
+    expect(
+      brandAgentProfileSchema.parse({
+        ...reference,
+        brandId: id,
+        status: "active",
+        document,
+        effectiveAt: "2026-07-15T12:00:00.000Z",
+        retiredAt: null,
+        createdAt: "2026-07-15T12:00:00.000Z",
+      }).brandId,
+    ).toBe(id);
+    expect(
+      brandAgentProfileDocumentSchema.safeParse({
+        ...document,
+        audiences: ["银发游客", "银发游客"],
+      }).success,
+    ).toBe(false);
+    expect(
+      brandAgentProfileReferenceSchema.safeParse({ ...reference, documentHash: "not-a-hash" })
+        .success,
+    ).toBe(false);
   });
 
   it("rejects article template identifiers that cannot be safely attributed", () => {

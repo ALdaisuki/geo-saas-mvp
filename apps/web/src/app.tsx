@@ -42,6 +42,7 @@ import {
   type AuditArtifact,
   type AutomationSnapshot,
   type Brand,
+  type BrandAgentProfile,
   type Campaign,
   type ChannelAccount,
   type ContentItem,
@@ -59,6 +60,7 @@ import {
   type VisibilityProviderSummary,
 } from "./api.js";
 import { ArticleTemplateCatalog } from "./article-template-catalog.js";
+import { BrandAgentProfileEditor } from "./brand-agent-profile-editor.js";
 import {
   ARTICLE_TEMPLATE_CATALOG_VERSION,
   ARTICLE_TEMPLATES,
@@ -1045,6 +1047,7 @@ function CustomersView({
   contactsEmpty,
   discoveredTenants,
   brands,
+  brandAgentProfiles,
   members,
   policies,
   contacts,
@@ -1052,6 +1055,7 @@ function CustomersView({
   principals,
   querySets,
   brandResource,
+  brandAgentProfileResource,
   memberResource,
   policyResource,
   querySetResource,
@@ -1068,6 +1072,7 @@ function CustomersView({
   contactsEmpty: boolean;
   discoveredTenants: readonly TenantOption[];
   brands: readonly Brand[];
+  brandAgentProfiles: readonly BrandAgentProfile[];
   members: readonly TenantMember[];
   policies: readonly PolicyBundle[];
   contacts: readonly TenantContact[];
@@ -1075,6 +1080,7 @@ function CustomersView({
   principals: readonly ServicePrincipal[];
   querySets: readonly QuerySet[];
   brandResource: ApiResource<readonly Brand[]>;
+  brandAgentProfileResource: ApiResource<readonly BrandAgentProfile[]>;
   memberResource: ApiResource<readonly TenantMember[]>;
   policyResource: ApiResource<readonly PolicyBundle[]>;
   querySetResource: ApiResource<readonly QuerySet[]>;
@@ -1197,6 +1203,28 @@ function CustomersView({
         )}
         {mode === "live" ? (
           <SourceCaption endpoint="GET /api/auth/tenants + GET /api/tenant + GET /api/contacts" />
+        ) : null}
+      </section>
+      <section className="panel">
+        <PanelHeading title="Brand Agent Profile" meta="品牌级 Pi Agent 写作约定 · 不可变版本" />
+        {mode === "live" ? (
+          <ResourceState resource={brandAgentProfileResource} empty={false} emptyLabel="" />
+        ) : null}
+        <BrandAgentProfileEditor
+          mode={mode}
+          brands={brands}
+          profiles={brandAgentProfiles}
+          capabilities={capabilities}
+          demoBrandName={
+            customers.find((customer) => customer.id === currentTenantId)?.name ?? "演示品牌"
+          }
+          onSave={async (brandId, input) => {
+            await api.createBrandAgentProfile(brandId, input);
+          }}
+          onChanged={onChanged}
+        />
+        {mode === "live" ? (
+          <SourceCaption endpoint="GET /api/brand-agent-profiles + POST /api/brands/:brandId/agent-profile" />
         ) : null}
       </section>
       {mode === "live" ? (
@@ -3184,6 +3212,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                   contactsEmpty={liveContacts.length === 0}
                   discoveredTenants={knownTenants}
                   brands={dashboard.brands.data}
+                  brandAgentProfiles={dashboard.brandAgentProfiles.data}
                   members={dashboard.members.data}
                   policies={dashboard.policies.data}
                   contacts={dashboard.contacts.data}
@@ -3191,6 +3220,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                   principals={dashboard.servicePrincipals.data}
                   querySets={dashboard.querySets.data}
                   brandResource={dashboard.brands}
+                  brandAgentProfileResource={dashboard.brandAgentProfiles}
                   memberResource={dashboard.members}
                   policyResource={dashboard.policies}
                   querySetResource={dashboard.querySets}

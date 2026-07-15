@@ -16,6 +16,7 @@ const articleTemplateId = z
 export const geoMcpToolSchemas = {
   geo_tenant_context: z.object({ tenantId }).strict(),
   geo_template_catalog: z.object({ tenantId }).strict(),
+  geo_brand_profile: z.object({ tenantId, brandId: resourceId }).strict(),
   geo_fact_lookup: z
     .object({
       tenantId,
@@ -101,6 +102,11 @@ export const geoMcpToolMetadata: Readonly<
   geo_template_catalog: {
     title: "Article template catalog",
     description: "Read the governed V1 article strategy catalog.",
+    readOnly: true,
+  },
+  geo_brand_profile: {
+    title: "Brand Agent Profile",
+    description: "Read the active versioned Agent instructions for a tenant-scoped brand.",
     readOnly: true,
   },
   geo_fact_lookup: {

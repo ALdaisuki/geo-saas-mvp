@@ -196,6 +196,7 @@ class FakeRepository implements ApiRepository {
   readonly mediaAssets = new Map<string, Awaited<ReturnType<ApiRepository["completeMediaJob"]>>>();
   readonly visibilityRuns: Parameters<ApiRepository["persistVisibilityRun"]>[1][] = [];
   readonly brandInputs: Parameters<ApiRepository["createBrand"]>[1][] = [];
+  readonly brandAgentProfileInputs: Parameters<ApiRepository["createBrandAgentProfile"]>[1][] = [];
   readonly policyInputs: Parameters<ApiRepository["createPolicyBundle"]>[1][] = [];
   readonly memberCreateInputs: Parameters<ApiRepository["createMember"]>[1][] = [];
   readonly memberUpdateInputs: Parameters<ApiRepository["updateMember"]>[1][] = [];
@@ -324,6 +325,32 @@ class FakeRepository implements ApiRepository {
       ...input,
       createdAt: fixedNow.toISOString(),
       updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  async listBrandAgentProfiles() {
+    return [];
+  }
+
+  async getBrandAgentProfile() {
+    return null;
+  }
+
+  async createBrandAgentProfile(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["createBrandAgentProfile"]>[1],
+  ) {
+    this.brandAgentProfileInputs.push(input);
+    return {
+      id: input.id,
+      brandId: input.brandId,
+      version: this.brandAgentProfileInputs.length,
+      status: "active" as const,
+      document: input.document,
+      documentHash: input.documentHash,
+      effectiveAt: input.effectiveAt,
+      retiredAt: null,
+      createdAt: input.effectiveAt,
     };
   }
 
@@ -2220,6 +2247,53 @@ describe("Fastify API security and vertical publication flow", () => {
         { key: "service", category: "discovery", prompt: "Which service fits this need?" },
       ]),
     );
+  });
+
+  it("creates a versioned Brand Agent Profile with a canonical document hash", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const document = {
+      schemaVersion: "geo.brand-agent-profile.v1" as const,
+      voice: "克制、清晰、先回答再解释",
+      audiences: ["首次出境游客"],
+      objectives: ["帮助客户核验服务边界"],
+      requiredPoints: ["说明信息有效期"],
+      forbiddenClaims: ["保证签证通过"],
+      callToAction: "通过官方热线核验当前行程。",
+      agentInstructions: "优先选择有完整事实和证据支持的文章策略。",
+    };
+
+    const [listed, missing, created] = await Promise.all([
+      app.inject({ method: "GET", url: "/api/brand-agent-profiles", headers }),
+      app.inject({
+        method: "GET",
+        url: `/api/brands/${ids.brand}/agent-profile`,
+        headers,
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/brands/${ids.brand}/agent-profile`,
+        headers,
+        payload: { document, reason: "建立第一版品牌编排约定" },
+      }),
+    ]);
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual({ items: [] });
+    expect(missing.statusCode).toBe(404);
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ brandId: ids.brand, version: 1, document });
+    expect(repository.brandAgentProfileInputs[0]).toMatchObject({
+      brandId: ids.brand,
+      document,
+      documentHash: sha256Canonical(document),
+      reason: "建立第一版品牌编排约定",
+    });
   });
 
   it("rejects policy documents with unknown fields or a mismatched rules version", async () => {

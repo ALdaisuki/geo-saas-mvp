@@ -26,6 +26,9 @@ The API is tenant-scoped after login. `DATABASE_IDENTITY_URL` uses `geo_identity
 | `POST /api/auth/switch-tenant`                                  | session + CSRF                       | Accept `{ tenantSlug }`, revoke the old session and issue a new tenant-scoped session         |
 | `GET /api/tenant`                                               | `tenant:read`                        | Tenant summary                                                                                |
 | `GET/POST /api/brands`                                          | `tenant:read` / `tenant:manage`      | List tenant brands or create a vertical-neutral brand                                         |
+| `GET /api/brand-agent-profiles`                                 | `content:read`                       | List the current tenant's active immutable Brand Agent Profiles                               |
+| `GET /api/brands/:brandId/agent-profile`                        | `content:read`                       | Read the active Profile for one tenant-scoped brand or return 404                             |
+| `POST /api/brands/:brandId/agent-profile`                       | `tenant:manage` + CSRF               | Validate the strict document, retire the prior active row and create the next version         |
 | `GET /api/members`                                              | `member:manage`                      | List tenant members and effective capabilities                                                |
 | `GET/POST /api/policies`                                        | `audit:read` / `tenant:manage`       | List policy bundles or create an immutable draft bundle                                       |
 | `GET/POST /api/query-sets`                                      | `visibility:read` / `visibility:run` | List query sets or create version 1 with provider-neutral prompts                             |
@@ -94,6 +97,14 @@ Campaign creation always starts in `draft`. The state command accepts `{ status,
 Automation batch input never contains `tenantId` or an execution level. The authenticated transaction supplies tenant scope and the server fixes every batch to `dry_run`. Creation accepts at most 50 unique slots and at most three unique active Dry-run accounts per slot. Runtime mutations require the current actor's `automation:execute`; the API prefixes the submitted Producer ID with that actor ID before database lease comparison, so another login cannot heartbeat or checkpoint the lease. Claim and every mutation fail closed on tenant/Campaign state, Kill Switch or open/half-open circuit conditions. Automation state changes do not emit publication outbox topics; only the normal audited publication request may create a publication job/outbox event.
 
 `POST /agent/runs` is not an API-port route. It is served by `agent-mcp` on port `9021`, uses an MCP bearer principal rather than browser session/CSRF authentication, and is documented in [mcp-tools.md](mcp-tools.md).
+
+## Brand Agent Profile contract
+
+`geo.brand-agent-profile.v1` is a strict brand-scoped writing configuration with `voice`, non-empty `audiences`, non-empty `objectives`, `requiredPoints`, `forbiddenClaims`, `callToAction`, and `agentInstructions`. Unknown keys, duplicate list values, empty required fields and oversized values are rejected. The POST body is exactly `{ document, reason }`; `reason` is trimmed to 3-1,000 characters. The server computes `documentHash=SHA-256(canonical(document))` and does not accept a caller-supplied ID, version, status, hash or timestamp.
+
+Creation takes a tenant-and-brand advisory lock, verifies the brand through tenant RLS, retires the current active row, and inserts the next positive integer version in one transaction. The database allows at most one active Profile per tenant/brand and permits only `active -> retired`; rows cannot be deleted. Provisioning creates version 1 and binds its ID/hash into the append-only tenant receipt. List/read endpoints expose active rows only, while audit repository reads use exact historical ID plus version so an old content version remains verifiable after the Profile retires.
+
+Profile text is not evidence and cannot supply claims, contacts, credentials, platform capability or publication authorization. Governed article payloads may carry only the immutable reference `{ id, version, documentHash }`. Platform rendering preserves that reference, and deterministic audit requires it to exactly match the tenant/brand snapshot while recomputing the stored document hash. Missing-on-one-side, stale-version, cross-brand or hash-mismatched references fail with `AUDIT_CONTEXT_MISMATCH` or `AUDIT_BRAND_SNAPSHOT_INVALID` before any grant is issued.
 
 ## Canonical content and platform variants
 

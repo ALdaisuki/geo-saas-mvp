@@ -69,6 +69,22 @@ describe("PostgreSQL repository contracts", () => {
     );
   });
 
+  it("loads the exact immutable Brand Agent Profile referenced by the audit payload", () => {
+    const auditBlock = repositorySource.slice(
+      repositorySource.indexOf("async loadAuditContext"),
+      repositorySource.indexOf("async findAuditByIdempotency"),
+    );
+
+    expect(auditBlock).toContain("from geo.brand_agent_profiles");
+    expect(auditBlock).toContain("profile.tenant_id = ${context.tenantId}");
+    expect(auditBlock).toContain("profile.id = ${profileReference.id}");
+    expect(auditBlock).toContain("profile.version = ${profileReference.version}");
+    expect(auditBlock).toContain("profileRow.brand_id !== variantRow.brand_id");
+    expect(auditBlock).toContain("profileRow.document_hash !== profileReference.documentHash");
+    expect(auditBlock).toContain("sha256Canonical(profileDocument)");
+    expect(auditBlock).toContain("agentProfile:");
+  });
+
   it("loads and records manual package exports inside the audited tenant data flow", () => {
     const sourceStart = repositorySource.indexOf("async loadManualPublicationPackageSource");
     const recordStart = repositorySource.indexOf("async recordManualPublicationPackageExport");

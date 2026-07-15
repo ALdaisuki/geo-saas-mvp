@@ -12,9 +12,7 @@ describe("tenant governance invariants", () => {
   it("normalizes contact identities without changing their displayed values", () => {
     expect(normalizeContactValue("phone", "400-113-3986")).toBe("4001133986");
     expect(normalizeContactValue("wechat", " ZTGL3411 ")).toBe("ztgl3411");
-    expect(normalizeContactValue("email", " Service@Example.COM ")).toBe(
-      "service@example.com",
-    );
+    expect(normalizeContactValue("email", " Service@Example.COM ")).toBe("service@example.com");
     expect(normalizeContactValue("website", "https://EXAMPLE.com/contact/")).toBe(
       "https://example.com/contact",
     );

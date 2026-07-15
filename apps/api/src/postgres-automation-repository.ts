@@ -14,7 +14,6 @@ import type {
   CheckpointAutomationDraftInput,
   CheckpointAutomationTargetInput,
   ClaimAutomationRunsInput,
-  CreateAutomationBatchInput,
   HeartbeatAutomationRunInput,
   ReconcileAutomationRunInput,
 } from "./automation-repository.js";
@@ -235,9 +234,10 @@ async function selectRuns(
   input: AutomationRunListInput & { readonly runIds?: readonly string[] },
 ): Promise<AutomationRunView[]> {
   if (input.runIds?.length === 0) return [];
-  const runIds = input.runIds === undefined
-    ? sql`true`
-    : sql`run.id in (${sql.join(input.runIds.map((runId) => sql`${runId}::uuid`))})`;
+  const runIds =
+    input.runIds === undefined
+      ? sql`true`
+      : sql`run.id in (${sql.join(input.runIds.map((runId) => sql`${runId}::uuid`))})`;
   const result = await sql<AutomationRunRow>`
     select run.id, run.batch_id, run.campaign_id, campaign.brand_id,
            run.slot_key, run.topic_key, run.brief, run.state, run.stage,
@@ -318,7 +318,9 @@ export function createPostgresAutomationRepository(
         }
 
         const accountIds = [
-          ...new Set(input.runs.flatMap((run) => run.targets.map((target) => target.channelAccountId))),
+          ...new Set(
+            input.runs.flatMap((run) => run.targets.map((target) => target.channelAccountId)),
+          ),
         ];
         const accountList = sql.join(accountIds.map((accountId) => sql`${accountId}::uuid`));
         const accounts = await sql<{
@@ -461,12 +463,10 @@ export function createPostgresAutomationRepository(
           runIds: claimed.rows.map((row) => row.id),
         });
         const evaluatedAt = new Date().toISOString();
-        return runs.map(
-          (run): AutomationRunLease => ({
-            ...run,
-            tenantGate: { allowed: true, evaluatedAt },
-          }),
-        );
+        return runs.map((run): AutomationRunLease => ({
+          ...run,
+          tenantGate: { allowed: true, evaluatedAt },
+        }));
       });
     },
 

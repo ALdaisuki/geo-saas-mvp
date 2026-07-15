@@ -96,6 +96,17 @@ export interface BrandsTable extends TenantRow, MutableRow {
   is_primary: Generated<boolean>;
 }
 
+export interface BrandAgentProfilesTable extends TenantRow, CreatedRow {
+  brand_id: string;
+  version: number;
+  status: "active" | "retired";
+  document: JsonColumn<JsonObject>;
+  document_hash: string;
+  created_by_actor_id: string;
+  effective_at: RequiredDbTimestamp;
+  retired_at: NullableDbTimestamp;
+}
+
 export interface BrandCompetitorsTable extends TenantRow, CreatedRow {
   brand_id: string;
   canonical_name: string;
@@ -712,6 +723,8 @@ export interface TenantProvisioningReceiptsTable extends CreatedRow {
   policy_bundle_id: string;
   query_set_id: string;
   query_set_version_id: string;
+  brand_agent_profile_id: string;
+  brand_agent_profile_hash: string;
 }
 
 export interface Database {
@@ -722,6 +735,7 @@ export interface Database {
   api_keys: ApiKeysTable;
   sessions: SessionsTable;
   brands: BrandsTable;
+  brand_agent_profiles: BrandAgentProfilesTable;
   brand_competitors: BrandCompetitorsTable;
   tenant_contacts: TenantContactsTable;
   policy_bundles: PolicyBundlesTable;
@@ -769,6 +783,7 @@ export const TENANT_TABLES = [
   "api_keys",
   "sessions",
   "brands",
+  "brand_agent_profiles",
   "brand_competitors",
   "tenant_contacts",
   "policy_bundles",

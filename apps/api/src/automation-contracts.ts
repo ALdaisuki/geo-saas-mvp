@@ -29,9 +29,7 @@ export { automationBatchCreateRequestSchema };
 export const automationBatchListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   before: isoDateTimeSchema.optional(),
-  state: z
-    .enum(["scheduled", "running", "completed", "partially_failed", "cancelled"])
-    .optional(),
+  state: z.enum(["scheduled", "running", "completed", "partially_failed", "cancelled"]).optional(),
   campaignId: idSchema.optional(),
 });
 

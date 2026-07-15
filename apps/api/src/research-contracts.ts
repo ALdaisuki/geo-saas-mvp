@@ -30,10 +30,18 @@ export const researchSourceCreateRequestSchema = z.strictObject({
     .array(allowedHostSchema)
     .min(1)
     .max(50)
-    .refine((values) => new Set(values.map((value) => value.toLowerCase())).size === values.length, {
-      message: "Research hosts must be unique",
-    }),
-  userAgent: z.string().trim().min(8).max(256).refine((value) => !/[\r\n]/u.test(value)),
+    .refine(
+      (values) => new Set(values.map((value) => value.toLowerCase())).size === values.length,
+      {
+        message: "Research hosts must be unique",
+      },
+    ),
+  userAgent: z
+    .string()
+    .trim()
+    .min(8)
+    .max(256)
+    .refine((value) => !/[\r\n]/u.test(value)),
   bounds: researchBoundsSchema,
   respectRobots: z.literal(true).default(true),
 });

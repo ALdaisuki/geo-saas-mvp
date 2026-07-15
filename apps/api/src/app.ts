@@ -8,6 +8,7 @@ import {
   automationServicePrincipalCreateRequestSchema,
   ARTICLE_TEMPLATE_CATALOG_VERSION,
   ARTICLE_TEMPLATES,
+  brandAgentProfileDocumentSchema,
   channelAccountCreateRequestSchema,
   channelAccountUpdateRequestSchema,
   contactCreateRequestSchema,
@@ -186,6 +187,11 @@ const brandSchema = z.object({
   industry: z.string().trim().min(1).max(100),
   websiteUrl: z.string().url().max(2_000).nullable().optional(),
   isPrimary: z.boolean().default(false),
+});
+
+const brandAgentProfileRequestSchema = z.strictObject({
+  document: brandAgentProfileDocumentSchema,
+  reason: z.string().trim().min(3).max(1_000),
 });
 
 const policyBundleSchema = z
@@ -1028,6 +1034,42 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     });
     return reply.status(201).send(brand);
   });
+  app.get("/api/brand-agent-profiles", { preHandler: guard("content:read") }, async (request) => ({
+    items: await repository.listBrandAgentProfiles(requestContext(request)),
+  }));
+  app.get(
+    "/api/brands/:brandId/agent-profile",
+    { preHandler: guard("content:read") },
+    async (request) => {
+      const brandId = parseIdParams(request.params, "brandId");
+      const profile = await repository.getBrandAgentProfile(requestContext(request), brandId);
+      if (profile === null) {
+        throw new ApiError(
+          404,
+          "BRAND_AGENT_PROFILE_NOT_FOUND",
+          "Brand Agent Profile was not found",
+        );
+      }
+      return profile;
+    },
+  );
+  app.post(
+    "/api/brands/:brandId/agent-profile",
+    { preHandler: guard("tenant:manage", true) },
+    async (request, reply) => {
+      const brandId = parseIdParams(request.params, "brandId");
+      const body = brandAgentProfileRequestSchema.parse(request.body);
+      const profile = await repository.createBrandAgentProfile(requestContext(request), {
+        id: uuid(),
+        brandId,
+        document: body.document,
+        documentHash: sha256Canonical(body.document),
+        effectiveAt: now().toISOString(),
+        reason: body.reason,
+      });
+      return reply.status(201).send(profile);
+    },
+  );
   app.get("/api/members", { preHandler: guard("member:manage") }, async (request) => ({
     items: await repository.listMembers(requestContext(request)),
   }));

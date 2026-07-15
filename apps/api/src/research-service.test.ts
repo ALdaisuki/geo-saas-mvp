@@ -185,19 +185,20 @@ class FakeResearchRepository implements ResearchRepository {
   }
 }
 
-function service(options: {
-  repository?: FakeResearchRepository;
-  collectPage?: (input: { url: string; policy: ResearchPolicy }) => Promise<ResearchPageSnapshot>;
-  discoverSitemapUrls?: (input: {
-    originUrl: string;
-    policy: ResearchPolicy;
-  }) => Promise<readonly string[]>;
-} = {}) {
+function service(
+  options: {
+    repository?: FakeResearchRepository;
+    collectPage?: (input: { url: string; policy: ResearchPolicy }) => Promise<ResearchPageSnapshot>;
+    discoverSitemapUrls?: (input: {
+      originUrl: string;
+      policy: ResearchPolicy;
+    }) => Promise<readonly string[]>;
+  } = {},
+) {
   const repository = options.repository ?? new FakeResearchRepository();
   const collectPage = vi.fn(options.collectPage ?? (async () => snapshot));
   const discoverSitemapUrls = vi.fn(
-    options.discoverSitemapUrls ??
-      (async () => ["https://travel.example/destinations/shanghai"]),
+    options.discoverSitemapUrls ?? (async () => ["https://travel.example/destinations/shanghai"]),
   );
   let uuidCounter = 0;
   return {

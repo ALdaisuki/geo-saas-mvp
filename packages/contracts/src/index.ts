@@ -48,6 +48,41 @@ export const editorialProfileSchema = z.enum([
 ]);
 export type EditorialProfile = z.infer<typeof editorialProfileSchema>;
 
+const brandAgentProfileListSchema = z
+  .array(z.string().trim().min(1).max(300))
+  .max(50)
+  .refine((values) => new Set(values).size === values.length, "Values must be unique");
+
+export const brandAgentProfileDocumentSchema = z.strictObject({
+  schemaVersion: z.literal("geo.brand-agent-profile.v1"),
+  voice: z.string().trim().min(1).max(1_000),
+  audiences: brandAgentProfileListSchema.min(1),
+  objectives: brandAgentProfileListSchema.min(1),
+  requiredPoints: brandAgentProfileListSchema,
+  forbiddenClaims: brandAgentProfileListSchema,
+  callToAction: z.string().trim().min(1).max(1_000),
+  agentInstructions: z.string().trim().min(1).max(10_000),
+});
+export type BrandAgentProfileDocument = z.infer<typeof brandAgentProfileDocumentSchema>;
+
+export const brandAgentProfileReferenceSchema = z.strictObject({
+  id: idSchema,
+  version: z.number().int().positive().safe(),
+  documentHash: sha256Schema,
+});
+export type BrandAgentProfileReference = z.infer<typeof brandAgentProfileReferenceSchema>;
+
+export const brandAgentProfileSchema = z.strictObject({
+  ...brandAgentProfileReferenceSchema.shape,
+  brandId: idSchema,
+  status: z.enum(["active", "retired"]),
+  document: brandAgentProfileDocumentSchema,
+  effectiveAt: isoDateTimeSchema,
+  retiredAt: isoDateTimeSchema.nullable(),
+  createdAt: isoDateTimeSchema,
+});
+export type BrandAgentProfile = z.infer<typeof brandAgentProfileSchema>;
+
 export const connectorCapabilitySchema = z.enum([
   "public_api",
   "partner_api",
@@ -788,6 +823,7 @@ export const publicationVariantPayloadSchema = z
       .max(100)
       .regex(/^[a-z0-9][a-z0-9-]*$/u)
       .optional(),
+    brandAgentProfile: brandAgentProfileReferenceSchema.optional(),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(500),
     bodyMarkdown: z.string().trim().min(1).max(100_000),

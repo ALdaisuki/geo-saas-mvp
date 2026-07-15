@@ -34,6 +34,7 @@ function mockApi(): InternalGeoApiClient {
       version: "geo.article-templates.v1" as const,
       items: [],
     })),
+    getBrandAgentProfile: vi.fn(async () => null),
     lookupFacts: vi.fn(async () => ({ facts: [] })),
     proposeDraft: vi.fn(async () => ({ contentVersionId: variantId })),
     previewVariant: vi.fn(async () => ({ variantId })),
@@ -47,10 +48,11 @@ function mockApi(): InternalGeoApiClient {
 }
 
 describe("GEO MCP schemas", () => {
-  it("publishes exactly ten bounded application tools", () => {
+  it("publishes exactly eleven bounded application tools", () => {
     expect(GEO_MCP_TOOL_NAMES).toEqual([
       "geo_tenant_context",
       "geo_template_catalog",
+      "geo_brand_profile",
       "geo_fact_lookup",
       "geo_draft_proposal",
       "geo_variant_preview",
@@ -60,7 +62,9 @@ describe("GEO MCP schemas", () => {
       "geo_media_production_request",
       "geo_media_job_status",
     ]);
-    expect(GEO_MCP_TOOL_NAMES.join(" ")).not.toMatch(/grant|connector|browser|http|file|shell/i);
+    expect(GEO_MCP_TOOL_NAMES.join(" ")).not.toMatch(
+      /(?:^|_)(?:grant|connector|browser|http|file|shell)(?:_|$)/i,
+    );
   });
 
   it("rejects malformed, extra, and arbitrary destination arguments", () => {
@@ -133,6 +137,41 @@ describe("authenticated internal API mapping", () => {
     });
 
     expect(api.getArticleTemplateCatalog).toHaveBeenCalledWith(principal);
+  });
+
+  it("reads the active Brand Agent Profile through an exact brand scope", async () => {
+    const api = mockApi();
+    vi.mocked(api.getBrandAgentProfile).mockResolvedValue({
+      id: variantId,
+      brandId,
+      version: 2,
+      status: "active",
+      document: {
+        schemaVersion: "geo.brand-agent-profile.v1",
+        voice: "清晰克制",
+        audiences: ["首次出境游客"],
+        objectives: ["核验服务边界"],
+        requiredPoints: [],
+        forbiddenClaims: ["保证签证通过"],
+        callToAction: "联系官方热线核验。",
+        agentInstructions: "只选择证据充分的策略。",
+      },
+      documentHash: "a".repeat(64),
+      effectiveAt: "2026-07-15T12:00:00.000Z",
+      retiredAt: null,
+      createdAt: "2026-07-15T12:00:00.000Z",
+    });
+
+    await expect(
+      invokeGeoMcpTool({
+        toolName: "geo_brand_profile",
+        args: { tenantId, brandId },
+        principal,
+        api,
+        authorizeScope: () => true,
+      }),
+    ).resolves.toMatchObject({ configured: true, profile: { brandId, version: 2 } });
+    expect(api.getBrandAgentProfile).toHaveBeenCalledWith(principal, brandId);
   });
 
   it("rejects tenant mismatch before scope checks or API access", async () => {

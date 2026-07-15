@@ -20,23 +20,24 @@ Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可
 | 发布前审计与一次性 grant    | 已实现确定性路径                                   | 模型可自行批准发布                             |
 | 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链             | 已接入真实生图 API 或图片可直接生产投放        |
 | GEO 文章模板目录            | 21 套共享 V1 模板贯通 Web、HTTP API、Pi 与 MCP     | 模板可绕过事实、策略或最终变体审计             |
+| Brand Agent Profile         | 品牌级不可变版本贯通 Web、HTTP API、Pi、MCP 与审计 | Profile 是事实来源或可绕过正文闭合与审计       |
 | 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt              | 已发文、公开 API 或无人值守投放                |
 | 豆包/千问可见性             | fixture + manual import                            | 已调用真实产品搜索或可等同 Google              |
 | 品牌记忆正负反馈闭环        | 未纳入第一版；当前只保留显式治理上下文             | 系统会依据文章或审计结果自动改写长期记忆       |
-| GEO MCP                     | 10 个静态白名单工具                                | 任意 MCP 工具访问或 Pi 内建 MCP                |
+| GEO MCP                     | 11 个静态白名单工具                                | 任意 MCP 工具访问或 Pi 内建 MCP                |
 | Pi Agent 与批次 Producer    | `agent-mcp` 内置；多租户租约恢复，固定 Dry-run     | 已向外部平台实发或绕过发布前审计               |
 | Operator 登录               | 显式一次性 bootstrap CLI                           | `db:seed` 后可直接登录或存在共享默认密码       |
 
 `db:seed` 创建两个隔离租户、政策、渠道和 fixture 数据，但 seed 用户是 `disabled`，密码字段为 `seed-disabled`。这是安全默认值，不是演示账号。生产客户不走 seed：先按 [Tenant and Operator Provisioning](docs/ops/operator-provisioning.md) 执行 admin-only `db:provision:tenant`，合并输出的 worker 映射，再对已创建 slug 执行独立的 `db:bootstrap:operator`。租户 owner API 无权跨租户创建客户。
 
-`db:provision:tenant` 会在同一事务中创建 active `geo.audit-policy.v1` 基线策略和 active 豆包/千问基准 query set/version，并把三个 ID 写入不可变 receipt。它不会创建平台凭据、真实发布能力或真实模型搜索调用。
+`db:provision:tenant` 会在同一事务中创建 active `baseline-v1` 审计策略、active 豆包/千问基准 query set/version 和初始 active Brand Agent Profile，并把策略、查询集、Profile ID 与 Profile 文档哈希写入不可变 receipt。它不会创建平台凭据、真实发布能力或真实模型搜索调用。
 
 ## Pi Agent 运行入口
 
 `POST /agent/runs` 与 `/mcp` 共用 `MCP_PRINCIPALS_JSON` bearer 身份、Host/Origin 白名单和 1 MiB 请求上限，并要求显式 `Content-Length`、拒绝 transfer encoding。同一租户与操作者组合同时只能运行一个请求；并发请求返回 `409 AGENT_RUN_ACTIVE`。run 默认限时 120 秒，可用 `AGENT_RUN_TIMEOUT_MS` 在 1 秒到 15 分钟内调整；超时返回 `504` 并中止 Pi loop，在底层任务真正结束前不会释放并发锁。
 
 - fixture 模式只接受 `{ workflow: "draft_to_publication", tenantId, brandId, campaignId, channelAccountId, platform, topic, idempotencyKey }`，并把执行级别固定为 `dry_run`。
-- 真实 Pi 模式只接受 `{ workflow: "prompt", prompt }`，其模型只能调用静态白名单工具；provider 失败返回脱敏 `502`，provider/model/API key 的存在不代表任何平台连接器已上线。
+- 真实 Pi 模式接受 `{ workflow: "prompt", prompt, brandId? }`。提供 `brandId` 时，服务在模型调用前读取该品牌的 active Profile，把 Profile ID、版本、哈希和结构化文档注入 system prompt；缺失、跨品牌或非 active Profile 会 fail closed。模型仍只能调用静态白名单工具，Profile 也不能绕过事实、闭合正文、确定性审计或发布边界。
 
 后台批次由 `AUTOMATION_PRODUCER_ENABLED` 显式开启。标准 `.env.example` 将它设为 `true`，因为本 MVP 的无人值守范围只覆盖 Dry-run 链；删除该变量或直接运行进程时仍默认关闭。`AUTOMATION_PRODUCER_ID` 应在重启间保持稳定，并发最多 16。Producer 只使用 `MCP_PRINCIPALS_JSON` 中具备 `automation:execute` 的租户身份，所有 claim、heartbeat、checkpoint 和 reconcile 都再次经过 API 权限、租户状态、Campaign 状态、Kill Switch 与 circuit gate。`GET /health/live` 返回不含凭据的 Producer 状态。
 
@@ -96,6 +97,7 @@ pnpm verify:mvp
 - [威胁模型](docs/security/threat-model.md)
 - [HTTP API](docs/api/http-api.md)
 - [GEO MCP 与证据边界](docs/api/mcp-tools.md)
+- [Brand Agent Profile 设计](docs/superpowers/specs/2026-07-16-brand-agent-profile-design.md)
 - [平台 API Onboarding](docs/api/platform-onboarding.md)
 - [MVP 设计](docs/superpowers/specs/2026-07-13-geo-saas-mvp-design.md)
 - [典范分析](docs/superpowers/specs/engineering-patterns/2026-07-13-geo-agent-publishing.md)

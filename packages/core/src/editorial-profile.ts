@@ -1,4 +1,5 @@
 import type {
+  BrandAgentProfileReference,
   CanonicalBodyBlock,
   EditorialProfile,
   PublicationVariantPayload,
@@ -27,6 +28,7 @@ export const EDITORIAL_PROFILES: readonly EditorialProfile[] = [
 export interface RenderEditorialSourcePayloadInput {
   readonly editorialProfile: EditorialProfile;
   readonly articleTemplateId?: string;
+  readonly brandAgentProfile?: BrandAgentProfileReference;
   readonly policy: AuditPolicy;
   readonly factSnapshot: FactSnapshot;
   readonly contacts: readonly TenantContact[];
@@ -103,6 +105,9 @@ export function renderEditorialSourcePayload(
     ...(input.articleTemplateId === undefined
       ? {}
       : { articleTemplateId: input.articleTemplateId }),
+    ...(input.brandAgentProfile === undefined
+      ? {}
+      : { brandAgentProfile: { ...input.brandAgentProfile } }),
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",

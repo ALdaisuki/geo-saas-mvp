@@ -18,6 +18,10 @@ const articleTemplateId = Type.String({
 const schemas = {
   geo_tenant_context: Type.Object({ tenantId }, { additionalProperties: false }),
   geo_template_catalog: Type.Object({ tenantId }, { additionalProperties: false }),
+  geo_brand_profile: Type.Object(
+    { tenantId, brandId: resourceId },
+    { additionalProperties: false },
+  ),
   geo_fact_lookup: Type.Object(
     {
       tenantId,
@@ -133,6 +137,10 @@ const descriptions: Readonly<Record<AgentToolName, { label: string; description:
   geo_template_catalog: {
     label: "Article template catalog",
     description: "Read the governed article strategies and their evidence boundaries.",
+  },
+  geo_brand_profile: {
+    label: "Brand Agent Profile",
+    description: "Read active tenant-owned brand voice, audience, and Agent instructions.",
   },
   geo_fact_lookup: {
     label: "Fact lookup",

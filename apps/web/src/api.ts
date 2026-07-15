@@ -113,6 +113,34 @@ export interface Brand {
   readonly updatedAt: string;
 }
 
+export interface BrandAgentProfileDocument {
+  readonly schemaVersion: "geo.brand-agent-profile.v1";
+  readonly voice: string;
+  readonly audiences: readonly string[];
+  readonly objectives: readonly string[];
+  readonly requiredPoints: readonly string[];
+  readonly forbiddenClaims: readonly string[];
+  readonly callToAction: string;
+  readonly agentInstructions: string;
+}
+
+export interface BrandAgentProfile {
+  readonly id: string;
+  readonly brandId: string;
+  readonly version: number;
+  readonly status: "active" | "retired";
+  readonly document: BrandAgentProfileDocument;
+  readonly documentHash: string;
+  readonly effectiveAt: string;
+  readonly retiredAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface CreateBrandAgentProfileInput {
+  readonly document: BrandAgentProfileDocument;
+  readonly reason: string;
+}
+
 export interface TenantMember {
   readonly id: string;
   readonly userId: string;
@@ -802,6 +830,11 @@ export interface GeoApi {
     input: UpdateChannelAccountInput,
   ): Promise<ChannelAccount>;
   getBrands(): Promise<readonly Brand[]>;
+  getBrandAgentProfiles(): Promise<readonly BrandAgentProfile[]>;
+  createBrandAgentProfile(
+    brandId: string,
+    input: CreateBrandAgentProfileInput,
+  ): Promise<BrandAgentProfile>;
   getMembers(): Promise<readonly TenantMember[]>;
   createMember(input: CreateMemberInput): Promise<TenantMember>;
   updateMember(memberId: string, input: UpdateMemberInput): Promise<TenantMember>;
@@ -1178,6 +1211,51 @@ function parseBrand(value: unknown): Brand {
     isPrimary: booleanValue(item, "isPrimary"),
     createdAt: stringValue(item, "createdAt"),
     updatedAt: stringValue(item, "updatedAt"),
+  };
+}
+
+function parseBrandAgentProfileDocument(value: unknown): BrandAgentProfileDocument {
+  const document = recordValue(value, "Brand Agent Profile document");
+  const schemaVersion = stringValue(document, "schemaVersion");
+  if (schemaVersion !== "geo.brand-agent-profile.v1") {
+    throw protocolError(`unsupported Brand Agent Profile schema: ${schemaVersion}`);
+  }
+  return {
+    schemaVersion,
+    voice: stringValue(document, "voice"),
+    audiences: stringArrayValue(document, "audiences"),
+    objectives: stringArrayValue(document, "objectives"),
+    requiredPoints: stringArrayValue(document, "requiredPoints"),
+    forbiddenClaims: stringArrayValue(document, "forbiddenClaims"),
+    callToAction: stringValue(document, "callToAction"),
+    agentInstructions: stringValue(document, "agentInstructions"),
+  };
+}
+
+function parseBrandAgentProfile(value: unknown): BrandAgentProfile {
+  const item = recordValue(value, "Brand Agent Profile");
+  const status = stringValue(item, "status");
+  const version = numberValue(item, "version");
+  const documentHash = stringValue(item, "documentHash");
+  if (status !== "active" && status !== "retired") {
+    throw protocolError(`unsupported Brand Agent Profile status: ${status}`);
+  }
+  if (!Number.isSafeInteger(version) || version <= 0) {
+    throw protocolError("Brand Agent Profile version must be a positive safe integer");
+  }
+  if (!/^[a-f0-9]{64}$/u.test(documentHash)) {
+    throw protocolError("Brand Agent Profile documentHash must be SHA-256");
+  }
+  return {
+    id: stringValue(item, "id"),
+    brandId: stringValue(item, "brandId"),
+    version,
+    status,
+    document: parseBrandAgentProfileDocument(item.document),
+    documentHash,
+    effectiveAt: stringValue(item, "effectiveAt"),
+    retiredAt: nullableStringValue(item, "retiredAt"),
+    createdAt: stringValue(item, "createdAt"),
   };
 }
 
@@ -2126,6 +2204,23 @@ export class HttpGeoApi implements GeoApi {
 
   async getBrands(): Promise<readonly Brand[]> {
     return itemsValue(await this.request("/api/brands"), parseBrand);
+  }
+
+  async getBrandAgentProfiles(): Promise<readonly BrandAgentProfile[]> {
+    return itemsValue(await this.request("/api/brand-agent-profiles"), parseBrandAgentProfile);
+  }
+
+  async createBrandAgentProfile(
+    brandId: string,
+    input: CreateBrandAgentProfileInput,
+  ): Promise<BrandAgentProfile> {
+    return parseBrandAgentProfile(
+      await this.request(
+        `/api/brands/${encodeURIComponent(brandId)}/agent-profile`,
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
+    );
   }
 
   async getMembers(): Promise<readonly TenantMember[]> {

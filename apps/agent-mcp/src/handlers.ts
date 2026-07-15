@@ -6,6 +6,7 @@ import { GEO_MCP_TOOL_NAMES, geoMcpToolSchemas, type GeoMcpToolName } from "./to
 const REQUIRED_CAPABILITY = {
   geo_tenant_context: "tenant:read",
   geo_template_catalog: "content:read",
+  geo_brand_profile: "content:read",
   geo_fact_lookup: "content:read",
   geo_draft_proposal: "content:write",
   geo_variant_preview: "content:write",
@@ -105,6 +106,12 @@ export async function invokeGeoMcpTool(options: {
     case "geo_template_catalog":
       result = await options.api.getArticleTemplateCatalog(options.principal);
       break;
+    case "geo_brand_profile": {
+      const brandId = String(input.brandId);
+      const profile = await options.api.getBrandAgentProfile(options.principal, brandId);
+      result = { brandId, configured: profile !== null, profile };
+      break;
+    }
     case "geo_fact_lookup":
       result = await options.api.lookupFacts(options.principal, {
         brandId: String(input.brandId),

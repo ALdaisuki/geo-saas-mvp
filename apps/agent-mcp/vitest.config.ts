@@ -15,6 +15,7 @@ export default defineConfig({
       "@geo/contracts": fileURLToPath(
         new URL("../../packages/contracts/src/index.ts", import.meta.url),
       ),
+      "@geo/core": fileURLToPath(new URL("../../packages/core/src/index.ts", import.meta.url)),
     },
   },
   test: {

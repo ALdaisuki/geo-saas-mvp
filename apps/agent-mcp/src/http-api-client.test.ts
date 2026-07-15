@@ -37,6 +37,7 @@ const ids = {
   contact: "00000000-0000-4000-8000-000000000015",
   policy: "00000000-0000-4000-8000-000000000016",
   auditRun: "00000000-0000-4000-8000-000000000017",
+  profile: "00000000-0000-4000-8000-000000000018",
 };
 
 const accessToken = "mcp-access-token-that-is-longer-than-thirty-two-bytes";
@@ -119,6 +120,29 @@ describe("GEO API session and destination policy", () => {
         return jsonResponse({
           version: ARTICLE_TEMPLATE_CATALOG_VERSION,
           items: ARTICLE_TEMPLATES,
+        });
+      }
+      if (url.pathname === `/api/brands/${ids.brand}/agent-profile`) {
+        const profileDocument = {
+          schemaVersion: "geo.brand-agent-profile.v1",
+          voice: "克制、清晰、先回答再解释",
+          audiences: ["首次出境游客"],
+          objectives: ["帮助客户核验服务边界"],
+          requiredPoints: ["说明信息有效期"],
+          forbiddenClaims: ["保证签证通过"],
+          callToAction: "通过官方热线核验当前行程。",
+          agentInstructions: "优先选择有完整事实和证据支持的文章策略。",
+        } as const;
+        return jsonResponse({
+          id: ids.profile,
+          brandId: ids.brand,
+          version: 2,
+          status: "active",
+          document: profileDocument,
+          documentHash: sha256Canonical(profileDocument),
+          effectiveAt: "2026-07-15T12:00:00.000Z",
+          retiredAt: null,
+          createdAt: "2026-07-15T12:00:00.000Z",
         });
       }
       if (url.pathname === "/api/automation") {
@@ -222,6 +246,11 @@ describe("GEO API session and destination policy", () => {
     expect(payload).toMatchObject({
       editorialProfile: "comparison",
       articleTemplateId: "comparison-matrix",
+      brandAgentProfile: {
+        id: ids.profile,
+        version: 2,
+        documentHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      },
       titleBlocks: [{ type: "template", templateId: "editorial.comparison.title" }],
       claims: [{ id: ids.fact, text: "最终服务范围以签约前确认材料为准" }],
       contactIds: [ids.contact],

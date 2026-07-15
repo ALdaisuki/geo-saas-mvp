@@ -202,6 +202,9 @@ export function renderPlatformPublicationVariant(
     ...(input.sourcePayload.articleTemplateId === undefined
       ? {}
       : { articleTemplateId: input.sourcePayload.articleTemplateId }),
+    ...(input.sourcePayload.brandAgentProfile === undefined
+      ? {}
+      : { brandAgentProfile: { ...input.sourcePayload.brandAgentProfile } }),
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",

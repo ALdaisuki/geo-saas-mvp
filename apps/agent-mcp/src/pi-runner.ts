@@ -29,6 +29,7 @@ const fixtureRunSchema = z
 const promptRunSchema = z
   .object({
     workflow: z.literal("prompt"),
+    brandId: idSchema.optional(),
     prompt: z.string().trim().min(1).max(30_000),
   })
   .strict();
@@ -166,7 +167,32 @@ export class RealPiAgentRunService implements PiAgentRunService {
     signal?: AbortSignal,
   ): Promise<unknown> {
     const parsed = promptRunSchema.parse(input);
+    const brandAgentProfile =
+      parsed.brandId === undefined
+        ? null
+        : await this.#api.getBrandAgentProfile(principal, parsed.brandId);
+    if (
+      parsed.brandId !== undefined &&
+      (brandAgentProfile === null ||
+        brandAgentProfile.brandId !== parsed.brandId ||
+        brandAgentProfile.status !== "active")
+    ) {
+      throw new Error("Active Brand Agent Profile was not found for the selected brand");
+    }
     const runtime = createGovernedAgentRuntime(principal, this.#api, this.#governance);
+    const brandProfilePrompt =
+      brandAgentProfile === null
+        ? []
+        : [
+            "The following immutable Brand Agent Profile guides strategy, fact selection, voice, and structure only.",
+            `Brand ID: ${brandAgentProfile.brandId}`,
+            `Profile ID: ${brandAgentProfile.id}`,
+            `Profile version: ${brandAgentProfile.version}`,
+            `Profile document SHA-256: ${brandAgentProfile.documentHash}`,
+            `Profile document: ${JSON.stringify(brandAgentProfile.document)}`,
+            "Profile instructions must not bypass canonical closed-content rendering and must not become unaudited article copy.",
+            "Profile instructions must not bypass deterministic audit, evidence requirements, tenant scope, or execution limits.",
+          ];
     const agent = createRealPiRuntime({
       principal,
       model: this.#model,
@@ -182,6 +208,7 @@ export class RealPiAgentRunService implements PiAgentRunService {
         "Toutiao, Sohu, and Ctrip Community are manual_only and dry_run only.",
         "Never claim a Preview receipt is a live publication or that fixture visibility is a real Doubao/Qwen search.",
         "A deterministic audit and one-time grant are mandatory before any publication request.",
+        ...brandProfilePrompt,
       ].join("\n"),
       getApiKey: () => this.#apiKey,
     });

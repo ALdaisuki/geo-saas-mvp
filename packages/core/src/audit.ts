@@ -2,6 +2,8 @@ import type {
   AuditArtifact,
   AuditFinding,
   AuditStatus,
+  BrandAgentProfileDocument,
+  BrandAgentProfileReference,
   EditorialProfile,
   MediaAspectRatio,
   MediaProviderMode,
@@ -10,7 +12,7 @@ import type {
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
-import { mediaReferenceSchema } from "@geo/contracts";
+import { brandAgentProfileDocumentSchema, mediaReferenceSchema } from "@geo/contracts";
 
 import { sha256Canonical, sha256Text } from "./canonical.js";
 import { assertCompiledAuditPolicySource } from "./audit-policy-provenance.js";
@@ -48,6 +50,10 @@ export interface BrandSnapshot {
   readonly canonicalName: string;
   readonly displayName: string;
   readonly aliases: readonly string[];
+  readonly agentProfile?: Readonly<{
+    reference: BrandAgentProfileReference;
+    document: BrandAgentProfileDocument;
+  }>;
 }
 
 export interface PlatformAuditLimits {
@@ -1064,6 +1070,30 @@ function validateBrandSnapshot(snapshot: BrandSnapshot): void {
     "AUDIT_BRAND_SNAPSHOT_INVALID",
     "Brand aliases must be unique, non-blank, and canonical",
   );
+  if (snapshot.agentProfile !== undefined) {
+    assertUuid(snapshot.agentProfile.reference.id, "brandSnapshot.agentProfile.reference.id");
+    assertSha256(
+      snapshot.agentProfile.reference.documentHash,
+      "brandSnapshot.agentProfile.reference.documentHash",
+    );
+    invariant(
+      Number.isSafeInteger(snapshot.agentProfile.reference.version) &&
+        snapshot.agentProfile.reference.version > 0,
+      "AUDIT_BRAND_SNAPSHOT_INVALID",
+      "Brand Agent Profile version must be a positive safe integer",
+    );
+    invariant(
+      brandAgentProfileDocumentSchema.safeParse(snapshot.agentProfile.document).success,
+      "AUDIT_BRAND_SNAPSHOT_INVALID",
+      "Brand Agent Profile document is invalid",
+    );
+    invariant(
+      sha256Canonical(snapshot.agentProfile.document) ===
+        snapshot.agentProfile.reference.documentHash,
+      "AUDIT_BRAND_SNAPSHOT_INVALID",
+      "Brand Agent Profile document does not match its immutable hash",
+    );
+  }
 }
 
 function validateMediaPolicy(
@@ -1540,6 +1570,22 @@ export function evaluatePublicationVariant(
   validateBrandSnapshot(input.brandSnapshot);
   assertUuid(input.variantId, "variantId");
   validatePayload(input.payload);
+  const payloadProfile = input.payload.brandAgentProfile;
+  const snapshotProfile = input.brandSnapshot.agentProfile?.reference;
+  invariant(
+    (payloadProfile === undefined) === (snapshotProfile === undefined),
+    "AUDIT_CONTEXT_MISMATCH",
+    "Brand Agent Profile reference is missing from the payload or brand snapshot",
+  );
+  if (payloadProfile !== undefined && snapshotProfile !== undefined) {
+    invariant(
+      payloadProfile.id === snapshotProfile.id &&
+        payloadProfile.version === snapshotProfile.version &&
+        payloadProfile.documentHash === snapshotProfile.documentHash,
+      "AUDIT_CONTEXT_MISMATCH",
+      "Brand Agent Profile snapshot does not match the immutable payload reference",
+    );
+  }
   const limits = validatePolicy(input.policy, input.platform);
   const mediaRendition = validateMediaPolicy(input.policy.media, input.platform);
   const now = parseInstant(input.createdAt, "createdAt");

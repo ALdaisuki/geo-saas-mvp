@@ -26,6 +26,10 @@ const validEnvironment = {
 const composeSource = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
 const rootPackageSource = await readFile(new URL("../../../package.json", import.meta.url), "utf8");
 const dbPackageSource = await readFile(new URL("../package.json", import.meta.url), "utf8");
+const provisioningSource = await readFile(
+  new URL("../src/provisioning.ts", import.meta.url),
+  "utf8",
+);
 const operatorRunbookSource = await readFile(
   new URL("../../../docs/ops/operator-provisioning.md", import.meta.url),
   "utf8",
@@ -177,6 +181,8 @@ describe("tenant provisioning environment contract", () => {
       policyBundleId: "10000000-0000-4000-8000-000000000004",
       querySetId: "10000000-0000-4000-8000-000000000005",
       querySetVersionId: "10000000-0000-4000-8000-000000000006",
+      brandAgentProfileId: "10000000-0000-4000-8000-000000000007",
+      brandAgentProfileHash: "f".repeat(64),
       wasCreated: true,
     });
     expect(output).toEqual({
@@ -187,12 +193,23 @@ describe("tenant provisioning environment contract", () => {
       policyBundleId: "10000000-0000-4000-8000-000000000004",
       querySetId: "10000000-0000-4000-8000-000000000005",
       querySetVersionId: "10000000-0000-4000-8000-000000000006",
+      brandAgentProfileId: "10000000-0000-4000-8000-000000000007",
+      brandAgentProfileHash: "f".repeat(64),
       wasCreated: true,
       workerTenantActorsJsonFragment: {
         "10000000-0000-4000-8000-000000000001": "10000000-0000-4000-8000-000000000003",
       },
     });
     expect(JSON.stringify(output)).not.toContain("secret");
+  });
+
+  it("creates and receipts an industry-neutral default Brand Agent Profile", () => {
+    expect(provisioningSource).toContain("defaultBrandAgentProfileDocument");
+    expect(provisioningSource).toContain("insert into geo.brand_agent_profiles");
+    expect(provisioningSource).toContain("brand_agent_profile_id");
+    expect(provisioningSource).toContain("brand_agent_profile_hash");
+    expect(provisioningSource).toContain("Existing provisioned Brand Agent Profile differs");
+    expect(provisioningSource).not.toContain("defaultTravelBrandAgentProfile");
   });
 
   it("exposes only an explicit one-shot Compose profile and documents the two-step flow", () => {

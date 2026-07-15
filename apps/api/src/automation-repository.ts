@@ -6,6 +6,8 @@ import type {
   Platform,
 } from "@geo/contracts";
 
+import type { RequestContext } from "./repository.js";
+
 export interface AutomationBatchView {
   readonly id: string;
   readonly campaignId: string;
@@ -175,43 +177,40 @@ export interface AutomationBatchCancellationResult {
 
 export interface AutomationRepository {
   createAutomationBatch(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: CreateAutomationBatchInput,
   ): Promise<{ readonly batch: AutomationBatchView; readonly wasCreated: boolean }>;
   listAutomationBatches(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: AutomationBatchListInput,
   ): Promise<readonly AutomationBatchView[]>;
-  getAutomationRun(
-    context: import("./repository.js").RequestContext,
-    runId: string,
-  ): Promise<AutomationRunView | null>;
+  getAutomationRun(context: RequestContext, runId: string): Promise<AutomationRunView | null>;
   listAutomationRuns(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: AutomationRunListInput,
   ): Promise<readonly AutomationRunView[]>;
   claimAutomationRuns(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: ClaimAutomationRunsInput,
   ): Promise<readonly AutomationRunLease[]>;
   heartbeatAutomationRun(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: HeartbeatAutomationRunInput,
   ): Promise<AutomationLeaseMutationResult>;
   checkpointAutomationDraft(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: CheckpointAutomationDraftInput,
   ): Promise<AutomationLeaseMutationResult>;
   checkpointAutomationTarget(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: CheckpointAutomationTargetInput,
   ): Promise<AutomationLeaseMutationResult>;
   reconcileAutomationRun(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     input: ReconcileAutomationRunInput,
   ): Promise<AutomationRunView>;
   cancelAutomationBatch(
-    context: import("./repository.js").RequestContext,
+    context: RequestContext,
     batchId: string,
     reason: string,
   ): Promise<AutomationBatchCancellationResult>;

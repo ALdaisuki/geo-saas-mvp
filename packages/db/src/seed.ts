@@ -3,6 +3,7 @@ import { travelQuerySetPromptsV1, travelQuerySetV1 } from "@geo/visibility";
 import { sql, type Kysely } from "kysely";
 
 import { withTenantTransaction, type TenantTransaction } from "./context.js";
+import { defaultBrandAgentProfileDocument } from "./brand-agent-profile.js";
 import type { Database } from "./types.js";
 
 export const SEED_IDS = {
@@ -12,6 +13,7 @@ export const SEED_IDS = {
     workerPrincipal: "10000000-0000-4000-8000-000000000102",
     membership: "10000000-0000-4000-8000-000000000201",
     brand: "10000000-0000-4000-8000-000000000301",
+    brandAgentProfile: "10000000-0000-4000-8000-000000000302",
     hotline: "10000000-0000-4000-8000-000000000401",
     wechat3411: "10000000-0000-4000-8000-000000000402",
     wechat6431: "10000000-0000-4000-8000-000000000403",
@@ -32,6 +34,7 @@ export const SEED_IDS = {
     workerPrincipal: "20000000-0000-4000-8000-000000000102",
     membership: "20000000-0000-4000-8000-000000000201",
     brand: "20000000-0000-4000-8000-000000000301",
+    brandAgentProfile: "20000000-0000-4000-8000-000000000302",
     contact: "20000000-0000-4000-8000-000000000401",
     policy: "20000000-0000-4000-8000-000000000501",
     automation: "20000000-0000-4000-8000-000000000601",
@@ -117,6 +120,9 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
   const travelPackVersion = travelQuerySetV1.version;
   const travelPromptsJson = JSON.stringify(travelPrompts);
   const travelPromptsHash = hashJson(travelPrompts);
+  const brandAgentProfileDocument = defaultBrandAgentProfileDocument();
+  const brandAgentProfileDocumentJson = JSON.stringify(brandAgentProfileDocument);
+  const brandAgentProfileDocumentHash = hashJson(brandAgentProfileDocument);
 
   await withTenantTransaction(
     database,
@@ -145,6 +151,17 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
         insert into geo.brands (tenant_id, id, canonical_name, display_name, aliases, description, industry, is_primary)
         values (${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.brand}, 'Zhongtong International Travel Agency', '中通国际旅行社', '["中通国旅"]'::jsonb, '首个旅行行业 GEO 租户', 'travel', true)
         on conflict (id) do update set display_name = excluded.display_name, aliases = excluded.aliases, is_primary = true
+      `.execute(transaction);
+
+      await sql`
+        insert into geo.brand_agent_profiles (
+          tenant_id, id, brand_id, version, status, document, document_hash,
+          created_by_actor_id, effective_at
+        ) values (
+          ${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.brandAgentProfile},
+          ${SEED_IDS.zhongtong.brand}, 1, 'active', ${brandAgentProfileDocumentJson}::jsonb,
+          ${brandAgentProfileDocumentHash}, ${SEED_IDS.zhongtong.actor}, ${SEEDED_AT}
+        ) on conflict (id) do nothing
       `.execute(transaction);
 
       const competitors = [
@@ -281,6 +298,17 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
         insert into geo.brands (tenant_id, id, canonical_name, display_name, aliases, industry, is_primary)
         values (${SEED_IDS.synthetic.tenant}, ${SEED_IDS.synthetic.brand}, 'Synthetic Isolation Travel', '隔离测试旅行社', '[]'::jsonb, 'travel', true)
         on conflict (id) do update set is_primary = true
+      `.execute(transaction);
+
+      await sql`
+        insert into geo.brand_agent_profiles (
+          tenant_id, id, brand_id, version, status, document, document_hash,
+          created_by_actor_id, effective_at
+        ) values (
+          ${SEED_IDS.synthetic.tenant}, ${SEED_IDS.synthetic.brandAgentProfile},
+          ${SEED_IDS.synthetic.brand}, 1, 'active', ${brandAgentProfileDocumentJson}::jsonb,
+          ${brandAgentProfileDocumentHash}, ${SEED_IDS.synthetic.actor}, ${SEEDED_AT}
+        ) on conflict (id) do nothing
       `.execute(transaction);
 
       await sql`

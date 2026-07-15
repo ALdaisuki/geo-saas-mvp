@@ -6,7 +6,7 @@
 
 The bearer credential is mapped to an API email/password/tenant login. Seed users cannot satisfy this login. Each tool then checks the principal capability, input `tenantId`, and referenced resource scope through the API. Tool schemas are a static allowlist; arbitrary names and dynamically discovered tools are denied.
 
-Pi Agent v0.73.1 does not contain built-in MCP support. `agent-mcp` embeds a restricted Pi runner next to the GEO MCP server and an optional background batch Producer in the same process. The runner uses a static allowlist of ten GEO tools and three narrow Plastic Promise wrappers. GEO tools pass deterministic principal, capability, tenant, and API resource-scope authorization. Governance wrappers still require the authenticated tenant and capability; `context_supply` is additionally forced to `project:geo-saas:tenant:<tenantId>` with `project_policy=strict` and project-only retrieval, so it cannot use the model's arguments to select another tenant memory scope. Both the API and `agent-mcp` connect to the external Plastic Promise endpoint during startup.
+Pi Agent v0.73.1 does not contain built-in MCP support. `agent-mcp` embeds a restricted Pi runner next to the GEO MCP server and an optional background batch Producer in the same process. The runner uses a static allowlist of eleven GEO tools and three narrow Plastic Promise wrappers. GEO tools pass deterministic principal, capability, tenant, and API resource-scope authorization. Governance wrappers still require the authenticated tenant and capability; `context_supply` is additionally forced to `project:geo-saas:tenant:<tenantId>` with `project_policy=strict` and project-only retrieval, so it cannot use the model's arguments to select another tenant memory scope. Both the API and `agent-mcp` connect to the external Plastic Promise endpoint during startup.
 
 ## Tool inventory
 
@@ -14,6 +14,7 @@ Pi Agent v0.73.1 does not contain built-in MCP support. `agent-mcp` embeds a res
 | ------------------------------ | -------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | `geo_tenant_context`           | `tenant:read`        | `tenantId`                                                                           | Read tenant, contacts, accounts and capability reports                          |
 | `geo_template_catalog`         | `content:read`       | `tenantId`                                                                           | Read the versioned 20-plus governed article strategy catalog                    |
+| `geo_brand_profile`            | `content:read`       | `tenantId`, `brandId`                                                                | Read the active immutable Brand Agent Profile for one scoped brand              |
 | `geo_fact_lookup`              | `content:read`       | `tenantId`, `brandId`, `query`, optional `limit`                                     | Read tenant facts and evidence                                                  |
 | `geo_draft_proposal`           | `content:write`      | tenant/brand/campaign, brief, optional catalog `articleTemplateId` and `fixtureMode` | Create a canonical API content item/version proposal                            |
 | `geo_variant_preview`          | `content:write`      | tenant, content version, account, platform                                           | Create an immutable account/platform variant                                    |
@@ -26,6 +27,8 @@ Pi Agent v0.73.1 does not contain built-in MCP support. `agent-mcp` embeds a res
 `geo_publication_request` cannot create its own grant. The audit must pass, the actor must be eligible, the in-process pending grant must still be present/unexpired, and Plastic Promise must return a passing pre-check plus an `allow` defense decision. An `allow` value is not sufficient by itself: the defense result must name exactly `geo_publication_request`, classify it as `high` or `critical` risk, require trust of at least `0.60`, and include `external_publish` in `manifest.side_effects`; the manifest name must match the tool. Missing or inconsistent classification returns `defense_semantics_invalid` and fails closed. Restarting agent-MCP clears its pending map. Requesting `unattended` in the schema does not make it allowed: governance, account capability, database grant logic, automation control and connector policy still apply.
 
 `geo_template_catalog` returns the same `geo.article-templates.v1` catalog exposed to the live web application. `geo_draft_proposal.articleTemplateId` must name an item in that shared catalog. A selected template determines the governed editorial profile and is persisted in the canonical payload and its hash; an unknown ID is rejected before content is written. Omitting the ID preserves brief-based profile selection for backward-compatible automation.
+
+`geo_brand_profile` returns only the selected tenant-scoped brand's active `geo.brand-agent-profile.v1` document together with immutable ID, version and SHA-256. A real Pi prompt may include an optional `brandId`; when present, `agent-mcp` loads and validates the active Profile before invoking the provider and injects the exact structured document plus reference into the system prompt. Missing, retired, cross-brand or mismatched Profiles fail before model execution. The Profile may guide strategy, voice and structure, but it is not a fact/evidence source and cannot relax closed-content rendering, deterministic audit, grants or connector capability.
 
 `geo_draft_proposal` does not accept model-authored title, summary, body, tags, contacts, or claim text. It loads the active strict `geo.audit-policy.v1` bundle, current verified facts, and active tenant contacts, then sends a canonical closed-reference content version to the API. The `brief` is orchestration context only; it is not copied into publishable text. `fixtureMode=true` labels the deterministic proposal path and is not a replacement free-text payload.
 
@@ -57,6 +60,7 @@ Real Pi mode is selected only when `AGENT_PROVIDER` names a provider known to Pi
 ```json
 {
   "workflow": "prompt",
+  "brandId": "10000000-0000-4000-8000-000000000301",
   "prompt": "Create and audit a tenant-scoped article using only verified facts."
 }
 ```

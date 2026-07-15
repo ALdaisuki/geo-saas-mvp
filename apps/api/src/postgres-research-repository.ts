@@ -6,7 +6,6 @@ import { sql, type Kysely } from "kysely";
 import {
   ResearchRepositoryConflictError,
   ResearchRepositoryNotFoundError,
-  type CreateResearchSourcePolicyInput,
   type PersistPageCaptureInput,
   type PersistResearchCaptureFailureInput,
   type PersistSitemapDiscoveryInput,
@@ -391,7 +390,7 @@ export function createPostgresResearchRepository(
           for share
         `.execute(transaction);
         const existingEvidence = existing.rows[0];
-        let evidenceSourceId = input.evidenceSourceId;
+        let evidenceSourceId: string;
         let evidenceReused = false;
         if (existingEvidence === undefined) {
           const metadata = evidenceMetadata(input.sourcePolicyId, sourceVersion, input);

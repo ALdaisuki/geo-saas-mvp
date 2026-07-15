@@ -131,6 +131,7 @@ function harness(initialRun: AutomationRunView): Harness {
       version: "geo.article-templates.v1" as const,
       items: [],
     }),
+    getBrandAgentProfile: async () => null,
     lookupFacts: async () => ({}),
     proposeDraft: async () => ({}),
     previewVariant: async () => ({}),

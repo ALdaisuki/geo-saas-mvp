@@ -129,17 +129,35 @@ describe("platform publication variant rendering", () => {
     const source = renderEditorialSourcePayload({
       editorialProfile: "comparison",
       articleTemplateId: "comparison-matrix",
+      brandAgentProfile: {
+        id: "00000000-0000-4000-8000-000000000099",
+        version: 2,
+        documentHash: "f".repeat(64),
+      },
       policy: policy(),
       factSnapshot: snapshot,
       contacts,
     });
 
     expect(source.articleTemplateId).toBe("comparison-matrix");
+    expect(source.brandAgentProfile).toEqual({
+      id: "00000000-0000-4000-8000-000000000099",
+      version: 2,
+      documentHash: "f".repeat(64),
+    });
     expect(Object.isFrozen(source)).toBe(true);
   });
 
   it("carries the selected article template into every platform variant", () => {
-    const source = { ...sourcePayload(), articleTemplateId: "step-by-step-guide" };
+    const source = {
+      ...sourcePayload(),
+      articleTemplateId: "step-by-step-guide",
+      brandAgentProfile: {
+        id: "00000000-0000-4000-8000-000000000099",
+        version: 2,
+        documentHash: "f".repeat(64),
+      },
+    };
     const variant = renderPlatformPublicationVariant({
       sourcePayload: source,
       platform: "toutiao",
@@ -149,6 +167,7 @@ describe("platform publication variant rendering", () => {
     });
 
     expect(variant.articleTemplateId).toBe("step-by-step-guide");
+    expect(variant.brandAgentProfile).toEqual(source.brandAgentProfile);
   });
 
   it("renders fifteen distinct profile/platform payloads without changing facts or contacts", () => {

@@ -894,6 +894,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0013_research_capture_governance",
       "0014_media_production_governance",
       "0015_tenant_member_identity_reader",
+      "0016_brand_agent_profiles",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -984,6 +985,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "40000000-0000-4000-8000-000000000010",
       "40000000-0000-4000-8000-000000000011",
       "40000000-0000-4000-8000-000000000012",
+      "40000000-0000-4000-8000-000000000013",
     ];
     const concurrentIds = [...provisionedIds];
     const idGenerator = () => {
@@ -1011,12 +1013,23 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           policyBundleId: "40000000-0000-4000-8000-000000000010",
           querySetId: "40000000-0000-4000-8000-000000000011",
           querySetVersionId: "40000000-0000-4000-8000-000000000012",
+          brandAgentProfileId: "40000000-0000-4000-8000-000000000013",
+          brandAgentProfileHash: "626950dce6dd7d84574044e8d78497ea90de0cb8a543044200e111493d93777c",
         });
       }
 
       const tenantId = results[0]?.tenantId;
+      const brandId = results[0]?.brandId;
       const workerId = results[0]?.workerServicePrincipalId;
-      if (tenantId === undefined || workerId === undefined) {
+      const brandAgentProfileId = results[0]?.brandAgentProfileId;
+      const brandAgentProfileHash = results[0]?.brandAgentProfileHash;
+      if (
+        tenantId === undefined ||
+        brandId === undefined ||
+        workerId === undefined ||
+        brandAgentProfileId === undefined ||
+        brandAgentProfileHash === undefined
+      ) {
         throw new Error("Provisioning result is incomplete");
       }
       const persisted = await adminClient.query<{
@@ -1030,6 +1043,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         active_policies: string;
         active_query_sets: string;
         query_set_versions: string;
+        active_brand_agent_profiles: string;
+        receipt_profile_links: string;
         receipts: string;
       }>(
         `select
@@ -1058,9 +1073,24 @@ describe("real PostgreSQL tenant and publication invariants", () => {
                on query_set.tenant_id = version.tenant_id and query_set.id = version.query_set_id
              where version.tenant_id = $2 and query_set.status = 'active'
                and version.version = query_set.current_version) as query_set_versions,
+           (select count(*)::text from geo.brand_agent_profiles
+             where tenant_id = $2 and brand_id = $5 and id = $6
+               and version = 1 and status = 'active' and document_hash = $7) as active_brand_agent_profiles,
+           (select count(*)::text from geo.tenant_provisioning_receipts
+             where tenant_id = $2 and idempotency_key = $3
+               and brand_agent_profile_id = $6
+               and brand_agent_profile_hash = $7) as receipt_profile_links,
            (select count(*)::text from geo.tenant_provisioning_receipts
              where tenant_id = $2 and idempotency_key = $3) as receipts`,
-        [input.tenantSlug, tenantId, input.idempotencyKey, input.industry],
+        [
+          input.tenantSlug,
+          tenantId,
+          input.idempotencyKey,
+          input.industry,
+          brandId,
+          brandAgentProfileId,
+          brandAgentProfileHash,
+        ],
       );
       expect(persisted.rows[0]).toEqual({
         tenants: "1",
@@ -1073,6 +1103,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         active_policies: "1",
         active_query_sets: "1",
         query_set_versions: "1",
+        active_brand_agent_profiles: "1",
+        receipt_profile_links: "1",
         receipts: "1",
       });
 
@@ -1127,6 +1159,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         "50000000-0000-4000-8000-000000000008",
         "50000000-0000-4000-8000-000000000009",
         "50000000-0000-4000-8000-000000000010",
+        "50000000-0000-4000-8000-000000000011",
       ];
       await expect(
         provisionTenant(database, rollbackInput, {
@@ -1137,14 +1170,20 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           },
         }),
       ).rejects.toMatchObject({ code: "23505" });
-      const rollbackState = await adminClient.query<{ tenants: string; receipts: string }>(
+      const rollbackState = await adminClient.query<{
+        tenants: string;
+        profiles: string;
+        receipts: string;
+      }>(
         `select
            (select count(*)::text from geo.tenants where slug = $1) as tenants,
+           (select count(*)::text from geo.brand_agent_profiles
+             where tenant_id in (select id from geo.tenants where slug = $1)) as profiles,
            (select count(*)::text from geo.tenant_provisioning_receipts
              where idempotency_key = $2) as receipts`,
         [rollbackInput.tenantSlug, rollbackInput.idempotencyKey],
       );
-      expect(rollbackState.rows[0]).toEqual({ tenants: "0", receipts: "0" });
+      expect(rollbackState.rows[0]).toEqual({ tenants: "0", profiles: "0", receipts: "0" });
     } finally {
       await database.destroy();
     }

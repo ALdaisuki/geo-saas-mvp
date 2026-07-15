@@ -7,6 +7,7 @@ import {
   automationRunStageSchema,
   automationRunStateSchema,
   automationRunTargetStateSchema,
+  brandAgentProfileSchema,
   capabilitySchema,
   executionLevelSchema,
   idSchema,
@@ -19,6 +20,7 @@ import {
   type ArticleTemplateCatalog,
   type AutomationRunStage,
   type AutomationRunTargetState,
+  type BrandAgentProfile,
   type TenantContact,
 } from "@geo/contracts";
 import {
@@ -579,13 +581,14 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
   }
 
   async getTenantContext(principal: Readonly<ActorContext>): Promise<unknown> {
-    const [tenant, contacts, accounts, capabilities] = await Promise.all([
+    const [tenant, contacts, accounts, capabilities, brandAgentProfiles] = await Promise.all([
       this.#request(principal, "/api/tenant"),
       this.#request(principal, "/api/contacts"),
       this.#request(principal, "/api/channel-accounts"),
       this.#request(principal, "/api/capabilities"),
+      this.#request(principal, "/api/brand-agent-profiles"),
     ]);
-    return { tenant, contacts, accounts, capabilities };
+    return { tenant, contacts, accounts, capabilities, brandAgentProfiles };
   }
 
   async getArticleTemplateCatalog(
@@ -594,6 +597,26 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     return articleTemplateCatalogSchema.parse(
       await this.#request(principal, "/api/article-templates"),
     );
+  }
+
+  async getBrandAgentProfile(
+    principal: Readonly<ActorContext>,
+    brandId: string,
+  ): Promise<Readonly<BrandAgentProfile> | null> {
+    try {
+      return brandAgentProfileSchema.parse(
+        await this.#request(principal, `/api/brands/${encodeURIComponent(brandId)}/agent-profile`),
+      );
+    } catch (error) {
+      if (
+        error instanceof GeoApiRequestError &&
+        error.code === "BRAND_AGENT_PROFILE_NOT_FOUND" &&
+        error.status === 404
+      ) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async lookupFacts(
@@ -621,15 +644,17 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     if (input.articleTemplateId !== undefined && template === null) {
       throw new GeoApiRequestError("ARTICLE_TEMPLATE_UNKNOWN", 400);
     }
-    const [factsResult, contactsResult, policiesResult, automationResult] = await Promise.all([
-      this.#request(
-        principal,
-        `/api/facts?${new URLSearchParams({ brandId: input.brandId, limit: "20" }).toString()}`,
-      ),
-      this.#request(principal, "/api/contacts"),
-      this.#request(principal, "/api/policies"),
-      this.#request(principal, "/api/automation"),
-    ]);
+    const [factsResult, contactsResult, policiesResult, automationResult, brandAgentProfile] =
+      await Promise.all([
+        this.#request(
+          principal,
+          `/api/facts?${new URLSearchParams({ brandId: input.brandId, limit: "20" }).toString()}`,
+        ),
+        this.#request(principal, "/api/contacts"),
+        this.#request(principal, "/api/policies"),
+        this.#request(principal, "/api/automation"),
+        this.getBrandAgentProfile(principal, input.brandId),
+      ]);
     const facts = z.object({ items: z.array(factSchema) }).parse(factsResult).items;
     const contacts = z.object({ items: z.array(contactSchema) }).parse(contactsResult).items;
     const policyBundles = z
@@ -703,6 +728,15 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     const payload = renderEditorialSourcePayload({
       editorialProfile,
       ...(template === null ? {} : { articleTemplateId: template.id }),
+      ...(brandAgentProfile === null
+        ? {}
+        : {
+            brandAgentProfile: {
+              id: brandAgentProfile.id,
+              version: brandAgentProfile.version,
+              documentHash: brandAgentProfile.documentHash,
+            },
+          }),
       policy,
       factSnapshot,
       contacts: currentContacts as readonly TenantContact[],
@@ -728,6 +762,15 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       version: content.latestVersion,
       providerMode: input.fixtureMode === true ? "fixture" : "agent_proposal",
       ...(template === null ? {} : { articleTemplateId: template.id }),
+      ...(brandAgentProfile === null
+        ? {}
+        : {
+            brandAgentProfile: {
+              id: brandAgentProfile.id,
+              version: brandAgentProfile.version,
+              documentHash: brandAgentProfile.documentHash,
+            },
+          }),
     };
   }
 
@@ -1123,6 +1166,9 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       case "geo_tenant_context":
       case "geo_template_catalog":
         return true;
+      case "geo_brand_profile":
+        add("brand", "brandId");
+        break;
       case "geo_fact_lookup":
         add("brand", "brandId");
         break;

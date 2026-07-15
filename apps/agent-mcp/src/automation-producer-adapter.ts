@@ -354,10 +354,7 @@ export class GeoAutomationProducerAdapter {
     return binding;
   }
 
-  async #serializeLeaseMutation<T>(
-    binding: LeaseBinding,
-    operation: () => Promise<T>,
-  ): Promise<T> {
+  async #serializeLeaseMutation<T>(binding: LeaseBinding, operation: () => Promise<T>): Promise<T> {
     const previous = binding.mutationTail;
     let release: (() => void) | undefined;
     binding.mutationTail = new Promise<void>((resolvePromise) => {

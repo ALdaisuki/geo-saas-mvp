@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
-import { type GeoApi, GeoApiError, type SessionSnapshot } from "./api.js";
+import { type BrandAgentProfile, type GeoApi, GeoApiError, type SessionSnapshot } from "./api.js";
 import { App } from "./app.js";
 
 afterEach(cleanup);
@@ -34,6 +34,29 @@ const session: SessionSnapshot = {
 };
 
 function liveApi(): GeoApi {
+  const brandId = "10000000-0000-4000-8000-000000000301";
+  let brandAgentProfiles: BrandAgentProfile[] = [
+    {
+      id: "10000000-0000-4000-8000-000000000302",
+      brandId,
+      version: 1,
+      status: "active",
+      document: {
+        schemaVersion: "geo.brand-agent-profile.v1",
+        voice: "克制、清晰、证据优先；先回答问题，再解释依据与边界",
+        audiences: ["正在评估出境旅行服务并需要核验信息的潜在客户"],
+        objectives: ["帮助读者理解已验证服务事实、适用范围与咨询下一步"],
+        requiredPoints: ["区分已验证事实、适用条件和仍需确认的信息"],
+        forbiddenClaims: ["无证据的保证、排名、独家资质、实时优惠或结果承诺"],
+        callToAction: "请通过 4001133986 或官方微信核验具体服务范围与条件。",
+        agentInstructions: "只使用当前租户的事实与证据；闭合正文后再审计，不得绕过发布边界。",
+      },
+      documentHash: "6".repeat(64),
+      effectiveAt: "2026-07-14T08:00:00.000Z",
+      retiredAt: null,
+      createdAt: "2026-07-14T08:00:00.000Z",
+    },
+  ];
   let automation = {
     control: {
       mode: "shadow",
@@ -204,7 +227,7 @@ function liveApi(): GeoApi {
     },
     getBrands: async () => [
       {
-        id: "10000000-0000-4000-8000-000000000301",
+        id: brandId,
         canonicalName: "Zhongtong International Travel Agency",
         displayName: "中通国际旅行社",
         aliases: [],
@@ -216,6 +239,25 @@ function liveApi(): GeoApi {
         updatedAt: "2026-07-14T08:00:00.000Z",
       },
     ],
+    getBrandAgentProfiles: async () => brandAgentProfiles,
+    createBrandAgentProfile: async (requestedBrandId, input) => {
+      if (requestedBrandId !== brandId) throw new Error("brand is outside the fixture tenant");
+      const currentVersion = brandAgentProfiles[0]?.version ?? 0;
+      const nextVersion = currentVersion + 1;
+      const nextProfile: BrandAgentProfile = {
+        id: `10000000-0000-4000-8000-${String(302 + nextVersion - 1).padStart(12, "0")}`,
+        brandId,
+        version: nextVersion,
+        status: "active",
+        document: input.document,
+        documentHash: (nextVersion % 16).toString(16).repeat(64),
+        effectiveAt: `2026-07-14T08:0${nextVersion}:00.000Z`,
+        retiredAt: null,
+        createdAt: `2026-07-14T08:0${nextVersion}:00.000Z`,
+      };
+      brandAgentProfiles = [nextProfile];
+      return nextProfile;
+    },
     getMembers: async () => [
       {
         id: "10000000-0000-4000-8000-000000000102",
@@ -595,6 +637,71 @@ describe("GEO operator console", () => {
     expect(screen.getAllByText("中通国际旅行社").length).toBeGreaterThan(0);
     expect(screen.getAllByText("travel-v1").length).toBeGreaterThan(0);
     expect(screen.getByText("Domestic AI discovery")).toBeInTheDocument();
+  });
+
+  it("loads and saves a versioned Brand Agent Profile through the live API", async () => {
+    const api = liveApi();
+    let submitted: Parameters<GeoApi["createBrandAgentProfile"]> | null = null;
+    const save = api.createBrandAgentProfile.bind(api);
+    api.createBrandAgentProfile = async (...parameters) => {
+      submitted = parameters;
+      return save(...parameters);
+    };
+
+    renderApp({ path: "/customers", api });
+
+    const voice = await screen.findByLabelText("品牌语气");
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Profile 当前版本")).getByText("v1")).toBeInTheDocument(),
+    );
+    expect(voice).toHaveValue("克制、清晰、证据优先；先回答问题，再解释依据与边界");
+
+    fireEvent.change(voice, { target: { value: "直接回答，证据优先，明确适用边界" } });
+    fireEvent.change(screen.getByLabelText("Profile 版本变更原因"), {
+      target: { value: "收紧品牌表达边界" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存新版本" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Profile 当前版本")).getByText("v2")).toBeInTheDocument(),
+    );
+    expect(submitted).not.toBeNull();
+    expect(submitted?.[0]).toBe("10000000-0000-4000-8000-000000000301");
+    expect(submitted?.[1]).toMatchObject({
+      reason: "收紧品牌表达边界",
+      document: { voice: "直接回答，证据优先，明确适用边界" },
+    });
+  });
+
+  it("keeps Brand Agent Profile read-only without tenant:manage", async () => {
+    const api = liveApi();
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: session.actor.capabilities.filter((item) => item !== "tenant:manage"),
+      },
+    });
+
+    renderApp({ path: "/customers", api });
+
+    expect(await screen.findByLabelText("品牌语气")).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "保存新版本" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存新版本" })).toHaveAttribute(
+      "title",
+      "需要 tenant:manage 权限",
+    );
+  });
+
+  it("marks the demo Brand Agent Profile as non-persistent", () => {
+    renderApp({ path: "/customers", demo: true });
+
+    expect(screen.getByText("演示样例 · 未写入 API")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存新版本" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存新版本" })).toHaveAttribute(
+      "title",
+      "演示样例不写入 API",
+    );
   });
 
   it("wires tenant governance actions to the live API and refreshes server readback", async () => {

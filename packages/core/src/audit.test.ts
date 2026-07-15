@@ -31,6 +31,7 @@ const wechatOneId = "00000000-0000-4000-8000-000000000006";
 const wechatTwoId = "00000000-0000-4000-8000-000000000007";
 const sourceId = "00000000-0000-4000-8000-000000000008";
 const factId = "00000000-0000-4000-8000-000000000009";
+const profileId = "00000000-0000-4000-8000-000000000011";
 
 const createdAt = "2026-07-13T12:00:00.000Z";
 
@@ -276,6 +277,7 @@ function mediaReference(overrides: Partial<MediaReference> = {}): MediaReference
 function run(
   payloadOverride: PublicationVariantPayload = payload(),
   overrides: {
+    brandSnapshot?: BrandSnapshot;
     contacts?: readonly TenantContact[];
     factSnapshot?: FactSnapshot;
     platform?: Platform;
@@ -286,7 +288,7 @@ function run(
   return auditPublicationVariant({
     artifactId,
     tenantId,
-    brandSnapshot,
+    brandSnapshot: overrides.brandSnapshot ?? brandSnapshot,
     variantId,
     channelAccountId,
     platform: overrides.platform ?? "toutiao",
@@ -317,6 +319,37 @@ describe("publication variant audit", () => {
     expect(artifact.expiresAt).toBe("2026-07-13T12:15:00.000Z");
     expect(Object.isFrozen(artifact)).toBe(true);
     expect(Object.isFrozen(artifact.findings)).toBe(true);
+  });
+
+  it("requires the payload to bind the exact immutable Brand Agent Profile snapshot", () => {
+    const document = {
+      schemaVersion: "geo.brand-agent-profile.v1" as const,
+      voice: "Clear and evidence first",
+      audiences: ["Service buyers"],
+      objectives: ["Explain verified service boundaries"],
+      requiredPoints: ["State validity limits"],
+      forbiddenClaims: ["Guaranteed outcome"],
+      callToAction: "Confirm the current scope through an approved contact.",
+      agentInstructions: "Select only strategies supported by current facts.",
+    };
+    const reference = {
+      id: profileId,
+      version: 2,
+      documentHash: sha256Canonical(document),
+    };
+    const snapshot = { ...brandSnapshot, agentProfile: { reference, document } };
+
+    expect(run(payload({ brandAgentProfile: reference }), { brandSnapshot: snapshot }).status).toBe(
+      "passed",
+    );
+    expect(() =>
+      run(payload({ brandAgentProfile: { ...reference, version: 3 } }), {
+        brandSnapshot: snapshot,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "AUDIT_CONTEXT_MISMATCH" }));
+    expect(() => run(payload({ brandAgentProfile: reference }))).toThrowError(
+      expect.objectContaining({ code: "AUDIT_CONTEXT_MISMATCH" }),
+    );
   });
 
   it("passes exact fact-bound media and binds it into the audit artifact", () => {

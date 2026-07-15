@@ -10,7 +10,7 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import type {
   ChannelAccount,
@@ -349,9 +349,7 @@ export function TenantGovernance(props: TenantGovernanceProps) {
                     type="button"
                     aria-label={`激活 ${policy.version}`}
                     disabled={!canManageTenant}
-                    onClick={() =>
-                      setIntent({ type: "policy", policy, targetStatus: "active" })
-                    }
+                    onClick={() => setIntent({ type: "policy", policy, targetStatus: "active" })}
                   >
                     <ShieldCheck size={16} /> 激活
                   </button>
@@ -362,9 +360,7 @@ export function TenantGovernance(props: TenantGovernanceProps) {
                     type="button"
                     aria-label={`退休 ${policy.version}`}
                     disabled={!canManageTenant}
-                    onClick={() =>
-                      setIntent({ type: "policy", policy, targetStatus: "retired" })
-                    }
+                    onClick={() => setIntent({ type: "policy", policy, targetStatus: "retired" })}
                   >
                     <Ban size={16} /> 退休
                   </button>
@@ -699,10 +695,16 @@ export function TenantGovernance(props: TenantGovernanceProps) {
           onClose={() => setIntent(null)}
           onSubmit={(input) =>
             perform(() => {
-              const { platform: _platform, reason, ...changes } = input;
               return props.onUpdateChannelAccount(intent.account.id, {
-                ...changes,
-                reason: reason ?? "平台账号元数据更新",
+                displayName: input.displayName,
+                capability: input.capability,
+                supportedExecutionLevels: input.supportedExecutionLevels,
+                credentialRef: input.credentialRef,
+                evidenceType: input.evidenceType,
+                evidenceRefs: input.evidenceRefs,
+                status: input.status,
+                lastVerifiedAt: input.lastVerifiedAt,
+                reason: input.reason ?? "平台账号元数据更新",
               });
             }, "平台账号已更新").then((ok) => {
               if (ok) setIntent(null);
@@ -859,11 +861,20 @@ function ChannelAccountDialog({
         </label>
         <label>
           账号名称
-          <input name="displayName" defaultValue={account?.displayName ?? ""} required maxLength={200} />
+          <input
+            name="displayName"
+            defaultValue={account?.displayName ?? ""}
+            required
+            maxLength={200}
+          />
         </label>
         <label>
           Connector 能力
-          <select name="capability" value={capability} onChange={(event) => setCapability(event.target.value)}>
+          <select
+            name="capability"
+            value={capability}
+            onChange={(event) => setCapability(event.target.value)}
+          >
             <option value="manual_only">Manual only</option>
             <option value="disabled">Disabled</option>
             <option value="browser_assisted">Browser assisted</option>

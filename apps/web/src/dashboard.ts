@@ -4,6 +4,7 @@ import {
   type AutomationSnapshot,
   type AuditArtifact,
   type Brand,
+  type BrandAgentProfile,
   type Campaign,
   type ChannelAccount,
   type ClaimFact,
@@ -42,6 +43,7 @@ export interface LiveDashboard {
   readonly contacts: ApiResource<readonly TenantContact[]>;
   readonly channelAccounts: ApiResource<readonly ChannelAccount[]>;
   readonly brands: ApiResource<readonly Brand[]>;
+  readonly brandAgentProfiles: ApiResource<readonly BrandAgentProfile[]>;
   readonly members: ApiResource<readonly TenantMember[]>;
   readonly policies: ApiResource<readonly PolicyBundle[]>;
   readonly querySets: ApiResource<readonly QuerySet[]>;
@@ -70,6 +72,7 @@ export function createLoadingDashboard(): LiveDashboard {
     contacts: loading("GET /api/contacts", []),
     channelAccounts: loading("GET /api/channel-accounts", []),
     brands: loading("GET /api/brands", []),
+    brandAgentProfiles: loading("GET /api/brand-agent-profiles", []),
     members: loading("GET /api/members", []),
     policies: loading("GET /api/policies", []),
     querySets: loading("GET /api/query-sets", []),
@@ -132,6 +135,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     api.getAutomation(),
     api.getServicePrincipals(),
     api.getArticleTemplates(),
+    api.getBrandAgentProfiles(),
   ] as const);
 
   return {
@@ -154,6 +158,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     automation: settled("GET /api/automation", results[16], null),
     servicePrincipals: settled("GET /api/service-principals", results[17], []),
     articleTemplates: settled("GET /api/article-templates", results[18], null),
+    brandAgentProfiles: settled("GET /api/brand-agent-profiles", results[19], []),
     loadedAt: new Date().toISOString(),
   };
 }

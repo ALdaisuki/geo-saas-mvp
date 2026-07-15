@@ -1,5 +1,6 @@
 import type {
   AuditArtifact,
+  BrandAgentProfileDocument,
   Capability,
   ConnectorCapability,
   EvidenceType,
@@ -107,6 +108,27 @@ export interface CreateBrandInput {
   readonly industry: string;
   readonly websiteUrl: string | null;
   readonly isPrimary: boolean;
+}
+
+export interface BrandAgentProfileView {
+  readonly id: string;
+  readonly brandId: string;
+  readonly version: number;
+  readonly status: "active" | "retired";
+  readonly document: BrandAgentProfileDocument;
+  readonly documentHash: string;
+  readonly effectiveAt: string;
+  readonly retiredAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface CreateBrandAgentProfileInput {
+  readonly id: string;
+  readonly brandId: string;
+  readonly document: BrandAgentProfileDocument;
+  readonly documentHash: string;
+  readonly effectiveAt: string;
+  readonly reason: string;
 }
 
 export interface TenantMemberView {
@@ -872,6 +894,15 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
   getTenant(context: RequestContext): Promise<TenantView>;
   listBrands(context: RequestContext): Promise<readonly BrandView[]>;
   createBrand(context: RequestContext, input: CreateBrandInput): Promise<BrandView>;
+  listBrandAgentProfiles(context: RequestContext): Promise<readonly BrandAgentProfileView[]>;
+  getBrandAgentProfile(
+    context: RequestContext,
+    brandId: string,
+  ): Promise<BrandAgentProfileView | null>;
+  createBrandAgentProfile(
+    context: RequestContext,
+    input: CreateBrandAgentProfileInput,
+  ): Promise<BrandAgentProfileView>;
   listMembers(context: RequestContext): Promise<readonly TenantMemberView[]>;
   createMember(context: RequestContext, input: CreateTenantMemberInput): Promise<TenantMemberView>;
   updateMember(context: RequestContext, input: UpdateTenantMemberInput): Promise<TenantMemberView>;

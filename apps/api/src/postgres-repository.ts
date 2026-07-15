@@ -1,5 +1,6 @@
 import {
   auditArtifactSchema,
+  brandAgentProfileDocumentSchema,
   capabilitySchema,
   hallucinationFindingSchema,
   mediaReferenceSchema,
@@ -23,6 +24,7 @@ import {
   type AutomationStatusView,
   type AuditLogView,
   type AuditContextRecord,
+  type BrandAgentProfileView,
   type BrandView,
   type CampaignStatus,
   type CampaignView,
@@ -95,6 +97,32 @@ function toIso(value: Date | string): string {
 
 function toNullableIso(value: Date | string | null): string | null {
   return value === null ? null : toIso(value);
+}
+
+interface BrandAgentProfileRow {
+  readonly id: string;
+  readonly brand_id: string;
+  readonly version: number;
+  readonly status: BrandAgentProfileView["status"];
+  readonly document: unknown;
+  readonly document_hash: string;
+  readonly effective_at: Date;
+  readonly retired_at: Date | null;
+  readonly created_at: Date;
+}
+
+function brandAgentProfileView(row: BrandAgentProfileRow): BrandAgentProfileView {
+  return {
+    id: row.id,
+    brandId: row.brand_id,
+    version: row.version,
+    status: row.status,
+    document: brandAgentProfileDocumentSchema.parse(row.document),
+    documentHash: row.document_hash,
+    effectiveAt: toIso(row.effective_at),
+    retiredAt: toNullableIso(row.retired_at),
+    createdAt: toIso(row.created_at),
+  };
 }
 
 interface MediaGenerationJobRow {
@@ -934,6 +962,101 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             throw new RepositoryConflictError("Brand already exists");
           throw error;
         }
+      });
+    },
+
+    async listBrandAgentProfiles(
+      context: RequestContext,
+    ): Promise<readonly BrandAgentProfileView[]> {
+      return tenant(context, async (transaction) => {
+        const result = await sql<BrandAgentProfileRow>`
+          select id, brand_id, version, status, document, document_hash,
+                 effective_at, retired_at, created_at
+          from geo.brand_agent_profiles
+          where status = 'active'
+          order by brand_id, version desc
+        `.execute(transaction);
+        return result.rows.map(brandAgentProfileView);
+      });
+    },
+
+    async getBrandAgentProfile(
+      context: RequestContext,
+      brandId: string,
+    ): Promise<BrandAgentProfileView | null> {
+      return tenant(context, async (transaction) => {
+        const result = await sql<BrandAgentProfileRow>`
+          select id, brand_id, version, status, document, document_hash,
+                 effective_at, retired_at, created_at
+          from geo.brand_agent_profiles
+          where brand_id = ${brandId}::uuid and status = 'active'
+          order by version desc
+          limit 1
+        `.execute(transaction);
+        const row = result.rows[0];
+        return row === undefined ? null : brandAgentProfileView(row);
+      });
+    },
+
+    async createBrandAgentProfile(context, input): Promise<BrandAgentProfileView> {
+      return tenant(context, async (transaction) => {
+        await sql`
+          select pg_advisory_xact_lock(
+            hashtextextended(${`${context.tenantId}:${input.brandId}:brand-agent-profile`}, 0)
+          )
+        `.execute(transaction);
+        const brand = await sql<{ exists: boolean }>`
+          select exists(
+            select 1 from geo.brands where id = ${input.brandId}::uuid
+          ) as exists
+        `.execute(transaction);
+        if (brand.rows[0]?.exists !== true) {
+          throw new RepositoryNotFoundError("Brand was not found");
+        }
+        const versionResult = await sql<{ next_version: number }>`
+          select coalesce(max(version), 0)::integer + 1 as next_version
+          from geo.brand_agent_profiles
+          where brand_id = ${input.brandId}::uuid
+        `.execute(transaction);
+        const version = versionResult.rows[0]?.next_version ?? 1;
+        await sql`
+          update geo.brand_agent_profiles
+          set status = 'retired', retired_at = ${input.effectiveAt}
+          where brand_id = ${input.brandId}::uuid and status = 'active'
+        `.execute(transaction);
+        const inserted = await sql<BrandAgentProfileRow>`
+          insert into geo.brand_agent_profiles (
+            tenant_id, id, brand_id, version, status, document, document_hash,
+            created_by_actor_id, effective_at
+          ) values (
+            ${context.tenantId}::uuid, ${input.id}::uuid, ${input.brandId}::uuid,
+            ${version}, 'active', ${jsonText(input.document)}::jsonb, ${input.documentHash},
+            ${context.actorId}::uuid, ${input.effectiveAt}
+          )
+          returning id, brand_id, version, status, document, document_hash,
+                    effective_at, retired_at, created_at
+        `.execute(transaction);
+        const row = inserted.rows[0];
+        if (row === undefined) {
+          throw new RepositoryConflictError("Brand Agent Profile was not created");
+        }
+        await sql`
+          insert into geo.audit_log (
+            tenant_id, actor_id, action, resource_type, resource_id,
+            request_id, after_hash, details
+          ) values (
+            ${context.tenantId}::uuid, ${context.actorId}::uuid,
+            'brand_agent_profile.activated', 'brand_agent_profile', ${row.id}::uuid,
+            ${context.requestId}, ${input.documentHash},
+            ${jsonText({
+              brandId: input.brandId,
+              version,
+              reason: input.reason,
+              schemaVersion: input.document.schemaVersion,
+            })}::jsonb
+          )
+        `.execute(transaction);
+        return brandAgentProfileView(row);
       });
     },
 
@@ -2341,6 +2464,49 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           return null;
         }
         const auditPayload = publicationVariantPayloadSchema.parse(variantRow.payload);
+        let agentProfile: AuditContextRecord["brandSnapshot"]["agentProfile"];
+        if (auditPayload.brandAgentProfile !== undefined) {
+          const profileReference = auditPayload.brandAgentProfile;
+          const profileResult = await sql<{
+            tenant_id: string;
+            brand_id: string;
+            version: number;
+            document: unknown;
+            document_hash: string;
+          }>`
+            select profile.tenant_id, profile.brand_id, profile.version,
+                   profile.document, profile.document_hash
+            from geo.brand_agent_profiles as profile
+            where profile.tenant_id = ${context.tenantId}
+              and profile.id = ${profileReference.id}
+              and profile.version = ${profileReference.version}
+          `.execute(transaction);
+          const profileRow = profileResult.rows[0];
+          if (profileRow === undefined) {
+            throw new RepositoryConflictError(
+              "Referenced Brand Agent Profile version was not found",
+            );
+          }
+          if (
+            profileRow.tenant_id !== context.tenantId ||
+            profileRow.brand_id !== variantRow.brand_id
+          ) {
+            throw new RepositoryConflictError(
+              "Referenced Brand Agent Profile belongs to another tenant or brand",
+            );
+          }
+          const profileDocument = brandAgentProfileDocumentSchema.parse(profileRow.document);
+          if (
+            profileRow.version !== profileReference.version ||
+            profileRow.document_hash !== profileReference.documentHash ||
+            sha256Canonical(profileDocument) !== profileReference.documentHash
+          ) {
+            throw new RepositoryConflictError(
+              "Referenced Brand Agent Profile does not match its immutable payload hash",
+            );
+          }
+          agentProfile = { reference: profileReference, document: profileDocument };
+        }
         await assertStoredMediaReferences(
           transaction,
           variantRow.content_version_id,
@@ -2449,6 +2615,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             canonicalName: variantRow.canonical_name,
             displayName: variantRow.display_name,
             aliases: stringArray(variantRow.aliases),
+            ...(agentProfile === undefined ? {} : { agentProfile }),
           },
           variant: {
             id: variantRow.id,

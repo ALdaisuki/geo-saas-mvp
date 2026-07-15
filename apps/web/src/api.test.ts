@@ -31,6 +31,115 @@ afterEach(() => {
 });
 
 describe("HttpGeoApi", () => {
+  it("reads and writes strictly parsed Brand Agent Profile versions", async () => {
+    const brandId = "10000000-0000-4000-8000-000000000301";
+    const document = {
+      schemaVersion: "geo.brand-agent-profile.v1" as const,
+      voice: "直接回答，证据优先",
+      audiences: ["需要核验旅行服务的客户"],
+      objectives: ["解释已验证事实与下一步"],
+      requiredPoints: ["事实有效期"],
+      forbiddenClaims: ["无证据保证"],
+      callToAction: "通过官方渠道核验。",
+      agentInstructions: "只使用当前租户证据。",
+    };
+    const profile = {
+      id: "10000000-0000-4000-8000-000000000302",
+      brandId,
+      version: 1,
+      status: "active",
+      document,
+      documentHash: "6".repeat(64),
+      effectiveAt: "2026-07-14T08:00:00.000Z",
+      retiredAt: null,
+      createdAt: "2026-07-14T08:00:00.000Z",
+    };
+    const calls: { input: string; init: RequestInit | undefined }[] = [];
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({ items: [profile] }),
+      jsonResponse({ ...profile, version: 2, documentHash: "7".repeat(64) }),
+    ];
+    const api = new HttpGeoApi("", async (input, init) => {
+      calls.push({ input: String(input), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await api.login({
+      email: "owner@example.test",
+      password: "correct-password",
+      tenantSlug: "zhongtong-international-travel",
+    });
+    await expect(api.getBrandAgentProfiles()).resolves.toEqual([profile]);
+    await expect(
+      api.createBrandAgentProfile(brandId, { document, reason: "收紧品牌表达边界" }),
+    ).resolves.toMatchObject({ version: 2, documentHash: "7".repeat(64) });
+
+    expect(calls.map((call) => call.input)).toEqual([
+      "/api/auth/login",
+      "/api/brand-agent-profiles",
+      `/api/brands/${brandId}/agent-profile`,
+    ]);
+    expect(calls[2]?.init?.method).toBe("POST");
+    expect(new Headers(calls[2]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({
+      document,
+      reason: "收紧品牌表达边界",
+    });
+  });
+
+  it("rejects malformed Brand Agent Profile GET and POST responses", async () => {
+    const malformed = {
+      id: "10000000-0000-4000-8000-000000000302",
+      brandId: "10000000-0000-4000-8000-000000000301",
+      version: 0,
+      status: "active",
+      document: {
+        schemaVersion: "geo.brand-agent-profile.v2",
+        voice: "invalid",
+        audiences: [],
+        objectives: [],
+        requiredPoints: [],
+        forbiddenClaims: [],
+        callToAction: "invalid",
+        agentInstructions: "invalid",
+      },
+      documentHash: "not-a-hash",
+      effectiveAt: "2026-07-14T08:00:00.000Z",
+      retiredAt: null,
+      createdAt: "2026-07-14T08:00:00.000Z",
+    };
+    const getApi = new HttpGeoApi("", async () => jsonResponse({ items: [malformed] }));
+    await expect(getApi.getBrandAgentProfiles()).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+    });
+
+    const responses = [jsonResponse(loginBody), jsonResponse(malformed)];
+    const postApi = new HttpGeoApi("", async () => {
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+    await postApi.login({ email: "owner@example.test", password: "correct-password" });
+    await expect(
+      postApi.createBrandAgentProfile(malformed.brandId, {
+        document: {
+          schemaVersion: "geo.brand-agent-profile.v1",
+          voice: "valid",
+          audiences: ["客户"],
+          objectives: ["核验"],
+          requiredPoints: [],
+          forbiddenClaims: [],
+          callToAction: "核验。",
+          agentInstructions: "使用证据。",
+        },
+        reason: "test parser",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+  });
+
   it("accepts only the versioned, unique 20-plus article template catalog", async () => {
     const requests: string[] = [];
     const api = new HttpGeoApi("", async (input) => {

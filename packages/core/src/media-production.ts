@@ -307,7 +307,6 @@ function compareText(left: string, right: string): number {
 
 export function mediaSnapshotHash(media: readonly MediaReference[]): string {
   const mediaIds = new Set<string>();
-  const bindings = new Set<string>();
   for (const item of media) {
     invariant(
       !mediaIds.has(item.id),
@@ -316,14 +315,6 @@ export function mediaSnapshotHash(media: readonly MediaReference[]): string {
       { mediaId: item.id },
     );
     mediaIds.add(item.id);
-    const binding = `${item.platform}:${item.role}`;
-    invariant(
-      !bindings.has(binding),
-      "MEDIA_SNAPSHOT_DUPLICATE_BINDING",
-      "Media snapshot contains a duplicate platform-role binding",
-      { platform: item.platform, role: item.role },
-    );
-    bindings.add(binding);
   }
   const roleOrder: Readonly<Record<MediaRole, number>> = { cover: 0, inline: 1 };
   const sorted = [...media].sort(

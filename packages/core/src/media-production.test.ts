@@ -264,14 +264,15 @@ describe("media snapshot hashing", () => {
     expect(mediaSnapshotHash(items)).toBe(mediaSnapshotHash([...items].reverse()));
   });
 
-  it("fails closed on duplicate IDs and duplicate platform-role bindings in either order", () => {
+  it("orders repeated platform-role bindings by ID and rejects duplicate IDs in either order", () => {
     const first = media(6, "toutiao", "cover");
     const duplicateBinding = media(7, "toutiao", "cover");
     const duplicateId = media(6, "sohu", "inline");
 
+    expect(mediaSnapshotHash([first, duplicateBinding])).toBe(
+      mediaSnapshotHash([duplicateBinding, first]),
+    );
     for (const values of [
-      [first, duplicateBinding],
-      [duplicateBinding, first],
       [first, duplicateId],
       [duplicateId, first],
     ]) {

@@ -794,7 +794,6 @@ export const publicationVariantPayloadSchema = z
   })
   .superRefine((value, context) => {
     const mediaIds = new Set<string>();
-    const bindings = new Set<string>();
     value.media.forEach((media, index) => {
       if (mediaIds.has(media.id)) {
         context.addIssue({
@@ -804,16 +803,6 @@ export const publicationVariantPayloadSchema = z
         });
       }
       mediaIds.add(media.id);
-
-      const binding = `${media.platform}:${media.role}`;
-      if (bindings.has(binding)) {
-        context.addIssue({
-          code: "custom",
-          path: ["media", index, "role"],
-          message: "Media platform-role bindings must be unique within a publication payload",
-        });
-      }
-      bindings.add(binding);
     });
   });
 export type PublicationVariantPayload = z.infer<typeof publicationVariantPayloadSchema>;

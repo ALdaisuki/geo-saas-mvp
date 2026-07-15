@@ -355,7 +355,7 @@ describe("strict media contracts", () => {
     ).toBe(false);
   });
 
-  it("rejects duplicate media IDs and platform-role bindings in either input order", () => {
+  it("allows repeated platform-role bindings but rejects duplicate media IDs in either order", () => {
     const first = mediaReferenceSchema.parse(mediaReference(generated));
     const duplicateBinding = {
       ...first,
@@ -379,6 +379,10 @@ describe("strict media contracts", () => {
     for (const values of [
       [first, duplicateBinding],
       [duplicateBinding, first],
+    ]) {
+      expect(publicationVariantPayloadSchema.safeParse(payload(values)).success).toBe(true);
+    }
+    for (const values of [
       [first, duplicateId],
       [duplicateId, first],
     ]) {

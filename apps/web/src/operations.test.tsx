@@ -221,6 +221,28 @@ const contact: TenantContact = {
   validUntil: null,
 };
 
+const governedSourceProfile = {
+  titleTemplateId: "generic.title.verified-service",
+  summaryTemplateId: "generic.summary.verified-sources",
+  bodyTemplateIds: {
+    opening: "generic.body.heading.verified",
+    details: "generic.body.guidance.verified",
+    action: "generic.body.heading.contact",
+    closing: "generic.body.guidance.contact",
+  },
+  bodyOrder: [
+    "profile_opening",
+    "profile_details",
+    "claims",
+    "profile_action",
+    "contacts",
+    "profile_closing",
+  ],
+  claimPresentation: "bullet",
+  contactPresentation: "paragraph",
+  tagTemplateIds: ["generic.tag.verified"],
+} as const;
+
 const policy: PolicyBundle = {
   id: "10000000-0000-4000-8000-000000000501",
   version: "travel-v1",
@@ -239,6 +261,10 @@ const policy: PolicyBundle = {
         "generic.body.guidance.contact": "咨询时请以最新书面材料为准。",
       },
       tag: { "generic.tag.verified": "服务核验" },
+    },
+    editorialProfiles: {
+      guide: { source: governedSourceProfile },
+      comparison: { source: governedSourceProfile },
     },
   },
   effectiveAt: "2026-07-13T00:00:00.000Z",
@@ -586,6 +612,8 @@ describe("operations workspace governance", () => {
       topicKey: "japan-verified-service",
       idempotencyKey: expect.any(String),
       payload: {
+        editorialProfile: "guide",
+        articleTemplateId: "step-by-step-guide",
         titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
         summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
         claims: [
@@ -608,6 +636,29 @@ describe("operations workspace governance", () => {
       { type: "template", templateId: "generic.body.guidance.contact" },
     ]);
     expect(input?.payload.bodyMarkdown).toContain("24小时热线: 4001133986");
+  });
+
+  it("submits the exact customer-selected template and governed profile", async () => {
+    const createContent = vi.fn<GeoApi["createContent"]>(async () => content);
+    renderWorkspace(["content:write"], articleApi({ createContent }));
+
+    fireEvent.click(screen.getByRole("button", { name: "新建文章 + v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "辅助决策" }));
+    fireEvent.click(screen.getByRole("option", { name: /方案对比矩阵/u }));
+    fireEvent.change(screen.getByRole("textbox", { name: "主题键" }), {
+      target: { value: "japan-plan-comparison" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "生成规范文章 v1" }));
+
+    await waitFor(() => expect(createContent).toHaveBeenCalledTimes(1));
+    expect(createContent.mock.calls[0]?.[0]).toMatchObject({
+      contentType: "comparison",
+      topicKey: "japan-plan-comparison",
+      payload: {
+        editorialProfile: "comparison",
+        articleTemplateId: "comparison-matrix",
+      },
+    });
   });
 
   it("does not offer or accept ordinary free text as platform readback evidence", async () => {

@@ -228,6 +228,9 @@ export type CanonicalBodyBlock =
     };
 
 export interface PublicationPayload {
+  readonly editorialProfile?:
+    "guide" | "question_answer" | "comparison" | "risk_avoidance" | "local_service";
+  readonly articleTemplateId?: string;
   readonly title: string;
   readonly summary: string;
   readonly bodyMarkdown: string;
@@ -791,10 +794,7 @@ export interface GeoApi {
   createMember(input: CreateMemberInput): Promise<TenantMember>;
   updateMember(memberId: string, input: UpdateMemberInput): Promise<TenantMember>;
   getPolicies(): Promise<readonly PolicyBundle[]>;
-  transitionPolicy(
-    policyId: string,
-    input: PolicyTransitionInput,
-  ): Promise<PolicyTransitionResult>;
+  transitionPolicy(policyId: string, input: PolicyTransitionInput): Promise<PolicyTransitionResult>;
   getServicePrincipals(): Promise<readonly ServicePrincipal[]>;
   createAutomationServicePrincipal(input: { readonly name: string }): Promise<ServicePrincipal>;
   setServicePrincipalStatus(
@@ -1221,6 +1221,8 @@ function parsePublicationPayload(value: unknown): PublicationPayload {
   if (!Array.isArray(item.media)) throw protocolError("media must be an array");
   if (!Array.isArray(item.claims)) throw protocolError("claims must be an array");
   const canonicalUrl = optionalString(item, "canonicalUrl");
+  const editorialProfile = optionalString(item, "editorialProfile");
+  const articleTemplateId = optionalString(item, "articleTemplateId");
   const titleBlocks = item.titleBlocks;
   const summaryBlocks = item.summaryBlocks;
   const bodyBlocks = item.bodyBlocks;
@@ -1241,6 +1243,18 @@ function parsePublicationPayload(value: unknown): PublicationPayload {
     throw protocolError("tagTemplateIds must be a string array when present");
   }
   return {
+    ...(editorialProfile === null
+      ? {}
+      : {
+          editorialProfile: stringEnumValue(item, "editorialProfile", [
+            "guide",
+            "question_answer",
+            "comparison",
+            "risk_avoidance",
+            "local_service",
+          ] as const),
+        }),
+    ...(articleTemplateId === null ? {} : { articleTemplateId }),
     title: stringValue(item, "title"),
     summary: stringValue(item, "summary"),
     bodyMarkdown: stringValue(item, "bodyMarkdown"),
@@ -1977,11 +1991,7 @@ export class HttpGeoApi implements GeoApi {
 
   async createContact(input: CreateContactInput): Promise<TenantContact> {
     return parseContact(
-      await this.request(
-        "/api/contacts",
-        { method: "POST", body: JSON.stringify(input) },
-        true,
-      ),
+      await this.request("/api/contacts", { method: "POST", body: JSON.stringify(input) }, true),
     );
   }
 

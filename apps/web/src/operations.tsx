@@ -24,6 +24,7 @@ import {
   type AuditArtifact,
   type AuditResult,
   type Brand,
+  type CanonicalBodyBlock,
   type Campaign,
   type ChannelAccount,
   type ClaimFact,
@@ -43,6 +44,13 @@ import {
   type PolicyBundle,
   type TenantContact,
 } from "./api.js";
+import { ArticleTemplateCatalog } from "./article-template-catalog.js";
+import {
+  ARTICLE_TEMPLATES,
+  DEFAULT_ARTICLE_TEMPLATE_ID,
+  articleTemplateById,
+  type GovernedEditorialProfile,
+} from "./article-templates.js";
 
 type WriteState = "idle" | "working" | "done" | "error";
 
@@ -111,7 +119,101 @@ function canonicalDraftPayload(
   policy: PolicyBundle,
   fact: ClaimFact,
   contacts: readonly TenantContact[],
+  editorialProfile: GovernedEditorialProfile,
+  articleTemplateId: string,
 ): PublicationPayload | null {
+  const profile = record(record(policy.document.editorialProfiles)?.[editorialProfile]);
+  const source = record(profile?.source);
+  if (source !== null) {
+    const titleTemplateId = source.titleTemplateId;
+    const summaryTemplateId = source.summaryTemplateId;
+    const bodyTemplateIds = record(source.bodyTemplateIds);
+    const bodyOrder = source.bodyOrder;
+    const claimPresentation = source.claimPresentation;
+    const contactPresentation = source.contactPresentation;
+    const tagTemplateIds = source.tagTemplateIds;
+    const validBodySlots = new Set([
+      "profile_opening",
+      "claims",
+      "profile_details",
+      "profile_action",
+      "contacts",
+      "profile_closing",
+    ]);
+    if (
+      typeof titleTemplateId !== "string" ||
+      typeof summaryTemplateId !== "string" ||
+      bodyTemplateIds === null ||
+      typeof bodyTemplateIds.opening !== "string" ||
+      typeof bodyTemplateIds.details !== "string" ||
+      typeof bodyTemplateIds.action !== "string" ||
+      typeof bodyTemplateIds.closing !== "string" ||
+      !Array.isArray(bodyOrder) ||
+      bodyOrder.length !== validBodySlots.size ||
+      !bodyOrder.every((slot) => typeof slot === "string" && validBodySlots.has(slot)) ||
+      new Set(bodyOrder).size !== validBodySlots.size ||
+      (claimPresentation !== "paragraph" && claimPresentation !== "bullet") ||
+      (contactPresentation !== "paragraph" && contactPresentation !== "bullet") ||
+      !Array.isArray(tagTemplateIds) ||
+      tagTemplateIds.length === 0 ||
+      !tagTemplateIds.every((templateId) => typeof templateId === "string")
+    ) {
+      return null;
+    }
+    const title = policyTemplate(policy, "title", titleTemplateId);
+    const summary = policyTemplate(policy, "summary", summaryTemplateId);
+    const tags = tagTemplateIds.map((templateId) => policyTemplate(policy, "tag", templateId));
+    const slots: Readonly<Record<string, readonly CanonicalBodyBlock[]>> = {
+      profile_opening: [{ type: "template", templateId: bodyTemplateIds.opening }],
+      claims: [{ type: "claim", claimId: fact.id, presentation: claimPresentation }],
+      profile_details: [{ type: "template", templateId: bodyTemplateIds.details }],
+      profile_action: [{ type: "template", templateId: bodyTemplateIds.action }],
+      contacts: contacts.map((contact) => ({
+        type: "contact" as const,
+        contactId: contact.id,
+        presentation: contactPresentation,
+      })),
+      profile_closing: [{ type: "template", templateId: bodyTemplateIds.closing }],
+    };
+    const bodyBlocks = bodyOrder.flatMap((slot) => slots[String(slot)] ?? []);
+    const renderedBody = bodyBlocks.map((block) => {
+      if (block.type === "template") return policyTemplate(policy, "body", block.templateId);
+      if (block.type === "claim") {
+        return block.presentation === "bullet"
+          ? `- ${fact.claim.replaceAll("\n", "\n  ")}`
+          : fact.claim;
+      }
+      const contact = contacts.find((item) => item.id === block.contactId);
+      if (contact === undefined) return null;
+      const value = `${contact.label}: ${contact.value}`;
+      return block.presentation === "bullet" ? `- ${value}` : value;
+    });
+    if (title === null || summary === null || tags.some((tag) => tag === null)) return null;
+    if (renderedBody.some((block) => block === null)) return null;
+    return {
+      editorialProfile,
+      articleTemplateId,
+      title,
+      summary,
+      bodyMarkdown: renderedBody.join("\n\n"),
+      titleBlocks: [{ type: "template", templateId: titleTemplateId }],
+      summaryBlocks: [{ type: "template", templateId: summaryTemplateId }],
+      bodyBlocks,
+      tagTemplateIds,
+      media: [],
+      claims: [
+        {
+          id: fact.id,
+          text: fact.claim,
+          evidenceSourceIds: fact.evidenceSourceIds,
+          validUntil: fact.validUntil,
+        },
+      ],
+      contactIds: contacts.map((contact) => contact.id),
+      tags: tags as readonly string[],
+    };
+  }
+  if (editorialProfile !== "guide") return null;
   const title = policyTemplate(policy, "title", CANONICAL_DRAFT_TEMPLATES.title);
   const summary = policyTemplate(policy, "summary", CANONICAL_DRAFT_TEMPLATES.summary);
   const verifiedHeading = policyTemplate(policy, "body", CANONICAL_DRAFT_TEMPLATES.verifiedHeading);
@@ -144,6 +246,8 @@ function canonicalDraftPayload(
     contactGuidance,
   ].join("\n\n");
   return {
+    editorialProfile,
+    articleTemplateId,
     title,
     summary,
     bodyMarkdown,
@@ -568,6 +672,7 @@ function ArticleComposer({
   onCreated: (content: ContentItem, payload: PublicationPayload) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState(DEFAULT_ARTICLE_TEMPLATE_ID);
   const [state, setState] = useState<WriteState>("idle");
   const [error, setError] = useState<string | null>(null);
   const now = Date.now();
@@ -585,6 +690,7 @@ function ArticleComposer({
       (contact.validUntil === null || Date.parse(contact.validUntil) > now),
   );
   const activePolicy = selectActivePolicy(policies);
+  const selectedTemplate = articleTemplateById(selectedTemplateId) ?? ARTICLE_TEMPLATES[0];
   const enabled =
     canWrite &&
     activePolicy !== null &&
@@ -609,16 +715,26 @@ function ArticleComposer({
       return;
     }
     const topicKey = String(form.get("topicKey") ?? "").trim();
-    const payload = canonicalDraftPayload(activePolicy, fact, currentContacts);
+    if (selectedTemplate === undefined) {
+      setError("文章模板目录为空");
+      return;
+    }
+    const payload = canonicalDraftPayload(
+      activePolicy,
+      fact,
+      currentContacts,
+      selectedTemplate.editorialProfile,
+      selectedTemplate.id,
+    );
     if (payload === null) {
-      setError("The active policy is missing the canonical draft templates");
+      setError("当前策略缺少所选模板对应的规范内容结构");
       return;
     }
     const input: CreateContentInput = {
       campaignId: campaign.id,
       brandId: campaign.brandId,
       title: payload.title,
-      contentType: String(form.get("contentType")),
+      contentType: selectedTemplate.editorialProfile,
       topicKey,
       idempotencyKey: crypto.randomUUID(),
       payload,
@@ -672,6 +788,10 @@ function ArticleComposer({
           <X size={16} />
         </button>
       </div>
+      <ArticleTemplateCatalog
+        selectedTemplateId={selectedTemplateId}
+        onSelect={(template) => setSelectedTemplateId(template.id)}
+      />
       <div className="ops-form-grid">
         <label>
           Campaign
@@ -700,15 +820,8 @@ function ArticleComposer({
           </select>
         </label>
         <label>
-          内容类型
-          <select name="contentType" defaultValue="guide">
-            <option value="question_answer">问答</option>
-            <option value="guide">攻略</option>
-            <option value="evidence">证据说明</option>
-            <option value="local_service">本地服务</option>
-            <option value="comparison">对比</option>
-            <option value="risk_avoidance">风险提示</option>
-          </select>
+          治理画像
+          <output>{selectedTemplate?.editorialProfile.replaceAll("_", " ") ?? "—"}</output>
         </label>
         <label>
           主题键

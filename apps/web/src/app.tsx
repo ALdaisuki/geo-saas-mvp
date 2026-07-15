@@ -58,6 +58,8 @@ import {
   type TenantView,
   type VisibilityProviderSummary,
 } from "./api.js";
+import { ArticleTemplateCatalog } from "./article-template-catalog.js";
+import { DEFAULT_ARTICLE_TEMPLATE_ID } from "./article-templates.js";
 import { AutomationOperations } from "./automation-operations.js";
 import {
   createLoadingDashboard,
@@ -1376,6 +1378,7 @@ function ContentView({
   dashboard: LiveDashboard;
 }) {
   const [view, setView] = useState<"all" | "blocked" | "ready">("all");
+  const [selectedTemplateId, setSelectedTemplateId] = useState(DEFAULT_ARTICLE_TEMPLATE_ID);
   if (mode === "live") {
     const resources = [
       dashboard.brands,
@@ -1425,6 +1428,11 @@ function ContentView({
   });
   return (
     <div className="view-stack">
+      <ArticleTemplateCatalog
+        selectedTemplateId={selectedTemplateId}
+        actionLabel="选为默认模板"
+        onSelect={(template) => setSelectedTemplateId(template.id)}
+      />
       <div className="toolbar-row">
         <div className="segmented-control" aria-label="内容筛选">
           <button className={view === "all" ? "active" : ""} onClick={() => setView("all")}>

@@ -176,6 +176,7 @@ describe("publication contracts", () => {
   it("parses canonical content references without accepting free text blocks", () => {
     const payload = publicationVariantPayloadSchema.parse({
       editorialProfile: "guide",
+      articleTemplateId: "step-by-step-guide",
       title: "当前服务信息",
       summary: "以下内容来自当前有效的事实与联系方式。",
       bodyMarkdown: "## 当前可核验信息\n\n当前服务以已核验材料为准。",
@@ -195,9 +196,22 @@ describe("publication contracts", () => {
 
     expect(payload.bodyBlocks).toHaveLength(3);
     expect(payload.editorialProfile).toBe("guide");
+    expect(payload.articleTemplateId).toBe("step-by-step-guide");
     expect(payload.titleBlocks).toEqual([
       { type: "template", templateId: "generic.title.current-service" },
     ]);
+  });
+
+  it("rejects article template identifiers that cannot be safely attributed", () => {
+    const result = publicationVariantPayloadSchema.safeParse({
+      editorialProfile: "guide",
+      articleTemplateId: "../../../other-tenant",
+      title: "Title",
+      summary: "Summary",
+      bodyMarkdown: "Body",
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("models only the five governed editorial profiles", () => {

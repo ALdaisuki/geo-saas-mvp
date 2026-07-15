@@ -779,6 +779,13 @@ export type CanonicalBodyBlock = z.infer<typeof canonicalBodyBlockSchema>;
 export const publicationVariantPayloadSchema = z
   .object({
     editorialProfile: editorialProfileSchema.optional(),
+    articleTemplateId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z0-9][a-z0-9-]*$/u)
+      .optional(),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(500),
     bodyMarkdown: z.string().trim().min(1).max(100_000),

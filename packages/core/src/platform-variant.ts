@@ -199,6 +199,9 @@ export function renderPlatformPublicationVariant(
   );
   const candidate: PublicationVariantPayload = {
     editorialProfile,
+    ...(input.sourcePayload.articleTemplateId === undefined
+      ? {}
+      : { articleTemplateId: input.sourcePayload.articleTemplateId }),
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",

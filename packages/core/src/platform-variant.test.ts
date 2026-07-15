@@ -125,6 +125,19 @@ function mediaReference(platform: Platform, suffix: number, role: "cover" | "inl
 }
 
 describe("platform publication variant rendering", () => {
+  it("carries the selected article template into every platform variant", () => {
+    const source = { ...sourcePayload(), articleTemplateId: "step-by-step-guide" };
+    const variant = renderPlatformPublicationVariant({
+      sourcePayload: source,
+      platform: "toutiao",
+      policy: policy(),
+      factSnapshot: snapshot,
+      contacts,
+    });
+
+    expect(variant.articleTemplateId).toBe("step-by-step-guide");
+  });
+
   it("renders fifteen distinct profile/platform payloads without changing facts or contacts", () => {
     const auditPolicy = policy();
     const platforms: readonly Platform[] = ["toutiao", "sohu", "ctrip_community"];

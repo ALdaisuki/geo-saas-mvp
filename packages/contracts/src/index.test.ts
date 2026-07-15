@@ -15,6 +15,7 @@ import {
   editorialProfileSchema,
   memberCreateRequestSchema,
   memberUpdateRequestSchema,
+  mediaReferenceSchema,
   policyTransitionRequestSchema,
   publicationReceiptSchema,
   publicationVariantPayloadSchema,
@@ -24,6 +25,55 @@ import {
 
 const id = "00000000-0000-4000-8000-000000000001";
 const hash = "a".repeat(64);
+
+const visualBrief = {
+  schemaVersion: "geo.visual-brief.v1",
+  editorialProfile: "guide",
+  platform: "toutiao",
+  role: "cover",
+  aspectRatio: "16:9",
+  factIds: [id],
+  prompt: "仅依据已核验服务事实生成写实封面。",
+  negativePrompt: "文字、水印、二维码、电话号码、微信号、价格、证件、夸张承诺、虚构人物背书",
+  altText: "已核验服务信息封面",
+  caption: "画面仅表达已核验服务信息。",
+} as const;
+
+function mediaReference(provenance: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id,
+    sha256: hash,
+    mimeType: "image/png",
+    byteLength: 128,
+    width: 1600,
+    height: 900,
+    platform: "toutiao",
+    role: "cover",
+    altText: visualBrief.altText,
+    caption: visualBrief.caption,
+    factIds: [...visualBrief.factIds],
+    visualBrief,
+    visualBriefHash: "b".repeat(64),
+    rights: {
+      basis: "generated_terms",
+      licenseName: "Fixture image generation terms",
+      licenseUrl: "https://example.com/terms",
+      verifiedAt: "2026-07-15T12:00:00.000Z",
+    },
+    provenance,
+    inspection: {
+      assetSha256: hash,
+      status: "passed",
+      evaluator: "fixture-inspector",
+      evaluatorMode: "fixture",
+      evaluatorVersion: "1.0.0",
+      responseSha256: "c".repeat(64),
+      inspectedAt: "2026-07-15T12:01:00.000Z",
+      ocrText: "",
+      labels: ["travel", "office"],
+    },
+  };
+}
 
 describe("publication contracts", () => {
   it("keeps dry-run evidence visibly separate from a confirmed live publication", () => {
@@ -163,6 +213,140 @@ describe("publication contracts", () => {
       expect(canonicalBodyBlockSchema.safeParse(block).success).toBe(false);
       expect(canonicalInlineBlockSchema.safeParse(block).success).toBe(false);
     }
+  });
+});
+
+describe("strict media contracts", () => {
+  const generated = {
+    kind: "generated",
+    jobId: id,
+    attemptId: "00000000-0000-4000-8000-000000000002",
+    provider: "fixture-image-provider",
+    providerMode: "fixture",
+    model: "fixture-v1",
+    promptHash: "85393464534779ec721ef24661c50fac75629b3b12fda445b54ddbafcb847091",
+    parametersHash: "d".repeat(64),
+    generatedAt: "2026-07-15T12:00:30.000Z",
+  } as const;
+
+  it("accepts generated, licensed-stock, and tenant-owned provenance", () => {
+    expect(mediaReferenceSchema.parse(mediaReference(generated)).provenance.kind).toBe("generated");
+
+    const licensed = mediaReferenceSchema.parse({
+      ...mediaReference({
+        kind: "licensed_stock",
+        evidenceSourceId: id,
+        sourceUrl: "https://stock.example.com/assets/42",
+      }),
+      rights: {
+        basis: "commercial_license",
+        licenseName: "Commercial stock license",
+        licenseUrl: "https://stock.example.com/license",
+        attribution: "Example Stock",
+        verifiedAt: "2026-07-15T12:00:00.000Z",
+      },
+    });
+    expect(licensed.provenance.kind).toBe("licensed_stock");
+
+    const tenantOwned = mediaReferenceSchema.parse({
+      ...mediaReference({
+        kind: "tenant_owned",
+        evidenceSourceId: id,
+        ownershipAssertion: "The tenant created and owns this photograph.",
+      }),
+      rights: {
+        basis: "tenant_owned",
+        licenseName: "Tenant ownership assertion",
+        verifiedAt: "2026-07-15T12:00:00.000Z",
+      },
+    });
+    expect(tenantOwned.provenance.kind).toBe("tenant_owned");
+  });
+
+  it("preserves legacy empty media arrays", () => {
+    expect(
+      publicationVariantPayloadSchema.parse({
+        title: "Legacy title",
+        summary: "Legacy summary",
+        bodyMarkdown: "Legacy body",
+        media: [],
+      }).media,
+    ).toEqual([]);
+  });
+
+  it("rejects unknown keys and duplicate ordered fact IDs", () => {
+    expect(
+      mediaReferenceSchema.safeParse({ ...mediaReference(generated), unknown: true }).success,
+    ).toBe(false);
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference(generated),
+        rights: {
+          ...(mediaReference(generated).rights as Record<string, unknown>),
+          unknown: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference(generated),
+        factIds: [id, id],
+        visualBrief: { ...visualBrief, factIds: [id, id] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects non-HTTPS rights and stock source URLs", () => {
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference(generated),
+        rights: {
+          ...(mediaReference(generated).rights as Record<string, unknown>),
+          licenseUrl: "http://example.com/terms",
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference({
+          kind: "licensed_stock",
+          evidenceSourceId: id,
+          sourceUrl: "http://stock.example.com/assets/42",
+        }),
+        rights: {
+          basis: "editorial_license",
+          licenseName: "Editorial stock license",
+          verifiedAt: "2026-07-15T12:00:00.000Z",
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    ["byteLength", 0],
+    ["width", 0],
+    ["height", -1],
+  ])("rejects non-positive %s", (field, value) => {
+    expect(
+      mediaReferenceSchema.safeParse({ ...mediaReference(generated), [field]: value }).success,
+    ).toBe(false);
+  });
+
+  it("rejects prompt provenance and inspection asset mismatches", () => {
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference({ ...generated, promptHash: hash }),
+      }).success,
+    ).toBe(false);
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference(generated),
+        inspection: {
+          ...(mediaReference(generated).inspection as Record<string, unknown>),
+          assetSha256: "e".repeat(64),
+        },
+      }).success,
+    ).toBe(false);
   });
 });
 

@@ -6,5 +6,6 @@ export * from "./editorial-profile.js";
 export * from "./circuit-breaker.js";
 export * from "./errors.js";
 export * from "./grant.js";
+export * from "./media-production.js";
 export * from "./platform-variant.js";
 export * from "./publication-state.js";

@@ -365,7 +365,7 @@ describe("MediaProductionService", () => {
           status: "passed",
           evaluator: "fixture-inspector",
           evaluatorMode: "fixture",
-          evaluatorVersion: "fixture-inspector-v1",
+          evaluatorVersion: "1.0.0",
           responseSha256: "e".repeat(64),
           inspectedAt: "2026-07-15T05:00:00.000Z",
           ocrText: "",

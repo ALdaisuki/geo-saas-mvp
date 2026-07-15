@@ -1797,13 +1797,14 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         `.execute(transaction);
         const row = result.rows[0];
         if (row === undefined) return null;
+        const payload = publicationVariantPayloadSchema.parse(row.payload);
         return {
           id: row.id,
           contentItemId: row.content_item_id,
           version: row.version,
           summary: row.summary,
           bodyMarkdown: row.body_markdown,
-          payload: publicationVariantPayloadSchema.parse(row.payload),
+          payload,
           payloadHash: row.payload_hash,
           frozenAt: toNullableIso(row.frozen_at),
         };
@@ -2769,6 +2770,18 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         `.execute(transaction);
         const row = result.rows[0];
         if (row === undefined) return null;
+        const payload = publicationVariantPayloadSchema.parse(row.payload);
+        const mediaAssets: MediaAssetView[] = [];
+        for (const reference of payload.media) {
+          const assets = await readMediaAssets(transaction, { assetId: reference.id });
+          const asset = assets[0];
+          if (
+            asset !== undefined &&
+            sha256Canonical(asset.reference) === sha256Canonical(reference)
+          ) {
+            mediaAssets.push(asset);
+          }
+        }
         return {
           artifact: auditArtifactSchema.parse({
             id: row.id,
@@ -2788,7 +2801,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             createdAt: toIso(row.created_at),
             expiresAt: toIso(row.expires_at),
           }),
-          payload: publicationVariantPayloadSchema.parse(row.payload),
+          payload,
           account: {
             id: row.account_id,
             platform: row.account_platform,
@@ -2797,6 +2810,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
               row.supported_execution_levels as ChannelAccountView["supportedExecutionLevels"],
             status: row.account_status,
           },
+          mediaAssets,
         };
       });
     },

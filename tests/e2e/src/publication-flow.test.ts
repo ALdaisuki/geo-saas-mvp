@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { PlasticPromiseGovernanceClient } from "@geo/agent";
 import {
   AutomationProducer,
@@ -10,12 +15,19 @@ import {
   listenGeoMcpHttpServer,
   parseMcpPrincipalCredentials,
 } from "@geo/agent-mcp";
-import { buildApp, createPostgresApiRepository, type PasswordService } from "@geo/api";
-import { createDefaultConnectorRegistry } from "@geo/connectors";
+import {
+  buildApp,
+  createPostgresApiRepository,
+  MediaProductionService,
+  type MediaAssetView,
+  type PasswordService,
+} from "@geo/api";
+import { createDefaultConnectorRegistry, type ManualPublicationPackage } from "@geo/connectors";
 import type { Platform, PublicationVariantPayload, TenantContact } from "@geo/contracts";
 import {
   buildBaselineAuditPolicyDocument,
   compileAuditPolicy,
+  renderEditorialSourcePayload,
   renderCanonicalContent,
   sha256Canonical,
 } from "@geo/core";
@@ -26,6 +38,7 @@ import {
   seedDatabase,
   SEED_IDS,
 } from "@geo/db";
+import { ContentAddressedMediaStore, FixtureImageGenerationProvider } from "@geo/media";
 import { travelQuerySetPromptsV1 } from "@geo/visibility";
 import { OutboxWorker, PostgresDispatcherStore, PostgresTenantJobStore } from "@geo/worker";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
@@ -50,6 +63,8 @@ let database: ReturnType<typeof createDatabase>;
 let adminClient: Client;
 let app: Awaited<ReturnType<typeof buildApp>>;
 let apiBaseUrl: string;
+let mediaObjectRoot: string;
+let mediaObjectStore: ContentAddressedMediaStore;
 
 function cookieHeader(headers: Readonly<Record<string, unknown>>): string {
   const value = headers["set-cookie"];
@@ -235,6 +250,13 @@ beforeAll(async () => {
     runtimeDatabase: database,
     identityDatabase: database,
   });
+  mediaObjectRoot = await mkdtemp(join(tmpdir(), "geo-e2e-media-"));
+  mediaObjectStore = new ContentAddressedMediaStore(mediaObjectRoot);
+  const mediaProduction = new MediaProductionService({
+    repository,
+    provider: new FixtureImageGenerationProvider(),
+    objectStore: mediaObjectStore,
+  });
   app = await buildApp({
     repository,
     sessionSecret: "geo-e2e-session-secret-with-more-than-32-bytes",
@@ -249,6 +271,8 @@ beforeAll(async () => {
         evidence: { fixture: true },
       }),
     },
+    mediaProduction,
+    mediaObjectStore,
   });
   apiBaseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
 }, 120_000);
@@ -258,6 +282,9 @@ afterAll(async () => {
   await adminClient?.end();
   await database?.destroy();
   await embedded?.close();
+  if (mediaObjectRoot !== undefined) {
+    await rm(mediaObjectRoot, { recursive: true, force: true });
+  }
 }, 120_000);
 
 describe("governed multi-tenant publication flow", () => {
@@ -452,7 +479,73 @@ describe("governed multi-tenant publication flow", () => {
     });
     expect(correctedVersion.statusCode).toBe(201);
     expect(correctedVersion.json()).toMatchObject({ latestVersion: 2 });
-    const correctedVersionId = correctedVersion.json<{ latestVersionId: string }>().latestVersionId;
+
+    const articleClaim = correctedPayload.claims[0];
+    if (articleClaim === undefined) throw new Error("Expected a verified article claim");
+    const contactsResponse = await app.inject({
+      method: "GET",
+      url: "/api/contacts",
+      headers: { cookie: authenticated.cookie },
+    });
+    expect(contactsResponse.statusCode).toBe(200);
+    const contactsById = new Map(
+      contactsResponse
+        .json<{ items: TenantContact[] }>()
+        .items.map((contact) => [contact.id, contact]),
+    );
+    const articleContacts = correctedPayload.contactIds.map((contactId) => {
+      const contact = contactsById.get(contactId);
+      if (contact === undefined) throw new Error(`Expected governed contact ${contactId}`);
+      return contact;
+    });
+    const articlePolicyDocument = buildBaselineAuditPolicyDocument({
+      rulesVersion: "travel-v1",
+      industry: "travel",
+    });
+    const articlePolicy = compileAuditPolicy({
+      version: articlePolicyDocument.rulesVersion,
+      policyHash: sha256Canonical(articlePolicyDocument),
+      document: articlePolicyDocument,
+    });
+    const articlePayload = renderEditorialSourcePayload({
+      editorialProfile: "guide",
+      policy: articlePolicy,
+      factSnapshot: {
+        tenantId: SEED_IDS.zhongtong.tenant,
+        capturedAt,
+        facts: [
+          {
+            id: articleClaim.id,
+            brandId: SEED_IDS.zhongtong.brand,
+            text: articleClaim.text,
+            evidenceSourceIds: articleClaim.evidenceSourceIds,
+            validFrom: capturedAt,
+            validUntil: articleClaim.validUntil,
+          },
+        ],
+        sources: [],
+      },
+      contacts: articleContacts,
+    });
+    const articleContentResponse = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers: writeHeaders,
+      payload: {
+        campaignId: campaign.id,
+        brandId: SEED_IDS.zhongtong.brand,
+        title: articlePayload.title,
+        contentType: "guide",
+        topicKey: "governed-media-export-e2e",
+        idempotencyKey: "e2e-governed-media-article-v1",
+        payload: articlePayload,
+      },
+    });
+    expect(articleContentResponse.statusCode).toBe(201);
+    const articleContent = articleContentResponse.json<{
+      id: string;
+      latestVersionId: string;
+    }>();
 
     const accountByPlatform: Readonly<Record<Platform, string>> = {
       toutiao: SEED_IDS.zhongtong.toutiao,
@@ -465,15 +558,15 @@ describe("governed multi-tenant publication flow", () => {
     ) => {
       const versionResponse = await app.inject({
         method: "POST",
-        url: `/api/content/${content.id}/versions`,
+        url: `/api/content/${articleContent.id}/versions`,
         headers: writeHeaders,
-        payload: { payload: correctedPayload },
+        payload: { payload: articlePayload },
       });
       expect(versionResponse.statusCode).toBe(201);
       const versionId = versionResponse.json<{ latestVersionId: string }>().latestVersionId;
       const variantResponse = await app.inject({
         method: "POST",
-        url: `/api/content/${content.id}/variants`,
+        url: `/api/content/${articleContent.id}/variants`,
         headers: writeHeaders,
         payload: {
           contentVersionId: versionId,
@@ -519,10 +612,10 @@ describe("governed multi-tenant publication flow", () => {
     for (const platform of ["toutiao", "sohu", "ctrip_community"] as const) {
       const variantResponse = await app.inject({
         method: "POST",
-        url: `/api/content/${content.id}/variants`,
+        url: `/api/content/${articleContent.id}/variants`,
         headers: writeHeaders,
         payload: {
-          contentVersionId: correctedVersionId,
+          contentVersionId: articleContent.latestVersionId,
           channelAccountId: accountByPlatform[platform],
         },
       });
@@ -535,10 +628,10 @@ describe("governed multi-tenant publication flow", () => {
       platformVariants.push({ platform, ...variant });
       const variantReplay = await app.inject({
         method: "POST",
-        url: `/api/content/${content.id}/variants`,
+        url: `/api/content/${articleContent.id}/variants`,
         headers: writeHeaders,
         payload: {
-          contentVersionId: correctedVersionId,
+          contentVersionId: articleContent.latestVersionId,
           channelAccountId: accountByPlatform[platform],
         },
       });
@@ -634,8 +727,8 @@ describe("governed multi-tenant publication flow", () => {
       new Set(platformVariants.map((variant) => JSON.stringify(variant.payload.tags))).size,
     ).toBe(3);
     for (const variant of platformVariants) {
-      expect(variant.payload.claims).toEqual(correctedPayload.claims);
-      expect(variant.payload.contactIds).toEqual(correctedPayload.contactIds);
+      expect(variant.payload.claims).toEqual(articlePayload.claims);
+      expect(variant.payload.contactIds).toEqual(articlePayload.contactIds);
     }
 
     const revokedFlow = await createAuthorizedToutiaoVariant("revoked");
@@ -952,6 +1045,199 @@ describe("governed multi-tenant publication flow", () => {
       ),
     );
 
+    const mediaArticlePayload = renderEditorialSourcePayload({
+      editorialProfile: "local_service",
+      policy: articlePolicy,
+      factSnapshot: {
+        tenantId: SEED_IDS.zhongtong.tenant,
+        capturedAt,
+        facts: [
+          {
+            id: articleClaim.id,
+            brandId: SEED_IDS.zhongtong.brand,
+            text: articleClaim.text,
+            evidenceSourceIds: articleClaim.evidenceSourceIds,
+            validFrom: capturedAt,
+            validUntil: articleClaim.validUntil,
+          },
+        ],
+        sources: [],
+      },
+      contacts: articleContacts,
+    });
+    const mediaArticleContentResponse = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers: writeHeaders,
+      payload: {
+        campaignId: campaign.id,
+        brandId: SEED_IDS.zhongtong.brand,
+        title: mediaArticlePayload.title,
+        contentType: "local_service",
+        topicKey: "governed-media-export-e2e",
+        idempotencyKey: "e2e-governed-media-local-service-v1",
+        payload: mediaArticlePayload,
+      },
+    });
+    expect(mediaArticleContentResponse.statusCode).toBe(201);
+    const mediaArticleContent = mediaArticleContentResponse.json<{
+      id: string;
+      latestVersionId: string;
+    }>();
+    const mediaProductionResponse = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${mediaArticleContent.latestVersionId}/media-jobs`,
+      headers: writeHeaders,
+      payload: {
+        platform: "toutiao",
+        role: "cover",
+        claimIds: [articleClaim.id],
+        idempotencyKey: "e2e-governed-media-cover-v1",
+      },
+    });
+    expect(mediaProductionResponse.statusCode).toBe(201);
+    const produced = mediaProductionResponse.json<{
+      capability: {
+        providerId: string;
+        providerMode: string;
+        model: string;
+        networkUsed: boolean;
+      };
+      job: { id: string; state: string; assetId: string | null };
+      asset: MediaAssetView;
+      wasCreated: boolean;
+    }>();
+    expect(produced).toMatchObject({
+      capability: {
+        providerId: "fixture",
+        providerMode: "fixture",
+        model: "fixture-png-v1",
+        networkUsed: false,
+      },
+      job: { state: "succeeded", assetId: produced.asset.id },
+      wasCreated: true,
+    });
+    expect(produced.asset.reference.inspection.ocrText).toBe("");
+    const storedMediaBytes = await mediaObjectStore.get({
+      tenantId: SEED_IDS.zhongtong.tenant,
+      storageKey: produced.asset.storageKey,
+    });
+    expect(createHash("sha256").update(storedMediaBytes).digest("hex")).toBe(
+      produced.asset.reference.sha256,
+    );
+
+    const mediaVariantResponse = await app.inject({
+      method: "POST",
+      url: `/api/content/${mediaArticleContent.id}/variants`,
+      headers: writeHeaders,
+      payload: {
+        contentVersionId: produced.asset.contentVersionId,
+        channelAccountId: SEED_IDS.zhongtong.toutiao,
+      },
+    });
+    expect(mediaVariantResponse.statusCode).toBe(201);
+    const mediaVariant = mediaVariantResponse.json<{
+      id: string;
+      payload: PublicationVariantPayload;
+      payloadHash: string;
+    }>();
+    expect(mediaVariant.payload.media).toEqual([produced.asset.reference]);
+
+    const mediaAuditResponse = await app.inject({
+      method: "POST",
+      url: `/api/variants/${mediaVariant.id}/audits`,
+      headers: writeHeaders,
+      payload: { idempotencyKey: "e2e-governed-media-audit-v1" },
+    });
+    expect(mediaAuditResponse.statusCode).toBe(201);
+    const mediaAudit = mediaAuditResponse.json<{
+      artifact: { id: string; status: string; findings: unknown[] };
+      publicationAuthorization: { grantId: string; token: string };
+    }>();
+    expect(mediaAudit.artifact.status, JSON.stringify(mediaAudit.artifact.findings)).toBe("passed");
+    expect(mediaAudit.publicationAuthorization).toBeTruthy();
+
+    const manualPackageResponse = await app.inject({
+      method: "POST",
+      url: `/api/audits/${mediaAudit.artifact.id}/manual-publication-package`,
+      headers: writeHeaders,
+    });
+    expect(manualPackageResponse.statusCode).toBe(200);
+    const manualPackage = manualPackageResponse.json<ManualPublicationPackage>();
+    expect(manualPackage).toMatchObject({
+      auditArtifactId: mediaAudit.artifact.id,
+      payloadHash: mediaVariant.payloadHash,
+      publicationStatus: "not_published",
+      confirmed: false,
+      attachments: [
+        {
+          mediaAssetId: produced.asset.id,
+          sha256: produced.asset.reference.sha256,
+          mimeType: "image/png",
+          byteLength: storedMediaBytes.byteLength,
+        },
+      ],
+    });
+    expect(manualPackage.files["article.md"]).toContain(mediaVariant.payload.bodyMarkdown);
+    const mediaManifest = JSON.parse(manualPackage.files["media-manifest.json"] ?? "{}") as {
+      entries?: Array<Record<string, unknown>>;
+    };
+    expect(mediaManifest.entries).toEqual([
+      expect.objectContaining({
+        fileName: manualPackage.attachments[0]?.fileName,
+        mediaAssetId: produced.asset.id,
+        sha256: produced.asset.reference.sha256,
+        byteLength: storedMediaBytes.byteLength,
+        platform: "toutiao",
+        role: "cover",
+        factIds: [articleClaim.id],
+        visualBriefHash: produced.asset.reference.visualBriefHash,
+      }),
+    ]);
+    const attachmentBytes = Buffer.from(manualPackage.attachments[0]?.base64 ?? "", "base64");
+    expect(attachmentBytes.equals(Buffer.from(storedMediaBytes))).toBe(true);
+    expect(createHash("sha256").update(attachmentBytes).digest("hex")).toBe(
+      produced.asset.reference.sha256,
+    );
+
+    const mediaPublicationResponse = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: writeHeaders,
+      payload: {
+        grantId: mediaAudit.publicationAuthorization.grantId,
+        token: mediaAudit.publicationAuthorization.token,
+        idempotencyKey: "e2e-governed-media-publication-v1",
+        executionLevel: "dry_run",
+      },
+    });
+    expect(mediaPublicationResponse.statusCode).toBe(202);
+    const mediaPublicationJobId = mediaPublicationResponse.json<{ publicationJobId: string }>()
+      .publicationJobId;
+    expect(await worker.runOnce()).toMatchObject({ claimed: 1, completed: 1, acknowledged: 1 });
+    const mediaReceiptsResponse = await app.inject({
+      method: "GET",
+      url: "/api/receipts",
+      headers: { cookie: authenticated.cookie },
+    });
+    const mediaReceipt = mediaReceiptsResponse
+      .json<{
+        items: Array<{
+          jobId: string;
+          confirmed: boolean;
+          externalUrl: string | null;
+          publishedAt: string | null;
+        }>;
+      }>()
+      .items.find((receipt) => receipt.jobId === mediaPublicationJobId);
+    expect(mediaReceipt).toEqual(
+      expect.objectContaining({
+        confirmed: false,
+        externalUrl: null,
+        publishedAt: null,
+      }),
+    );
+
     for (const provider of ["doubao", "qwen"] as const) {
       const visibilityPayload = {
         querySetVersionId: SEED_IDS.zhongtong.querySetVersion,
@@ -1166,7 +1452,11 @@ describe("governed multi-tenant publication flow", () => {
     );
     expect(evidenceModes.rows).toEqual(
       expect.arrayContaining([
-        { observation_method: "fixture", evidence_type: "fixture", count: "32" },
+        {
+          observation_method: "fixture",
+          evidence_type: "fixture",
+          count: String(travelQuerySetPromptsV1.length * 2 * 2),
+        },
         { observation_method: "manual", evidence_type: "manual_import", count: "1" },
       ]),
     );
@@ -2122,12 +2412,12 @@ describe("governed multi-tenant publication flow", () => {
       url: "/api/receipts",
       headers: { cookie: authenticated.cookie },
     });
-    expect(receiptsAfterMcp.json<{ items: unknown[] }>().items).toHaveLength(7);
+    expect(receiptsAfterMcp.json<{ items: unknown[] }>().items).toHaveLength(8);
 
     const outbox = await adminClient.query<{ count: string }>(
       "select count(*)::text as count from geo.outbox_events where published_at is not null",
     );
-    expect(outbox.rows[0]?.count).toBe("7");
+    expect(outbox.rows[0]?.count).toBe("8");
 
     const isolated = await login("operator@isolation.example", "isolation-password");
     const isolatedReplay = await app.inject({

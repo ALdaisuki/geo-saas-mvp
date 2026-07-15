@@ -117,7 +117,20 @@ export interface ConnectorEvidence {
 export interface ManualPackageInput {
   renderedDraft: RenderedDraft;
   auditArtifact: Readonly<AuditArtifact>;
+  mediaAttachments: readonly ManualPackageMediaAttachmentInput[];
   exportedAt: string;
+}
+
+export interface ManualPackageMediaAttachmentInput {
+  mediaAssetId: string;
+  mimeType: string;
+  sha256: string;
+  byteLength: number;
+  base64: string;
+}
+
+export interface ManualPackageMediaAttachment extends ManualPackageMediaAttachmentInput {
+  fileName: string;
 }
 
 export interface ManualPublicationPackage {
@@ -132,11 +145,14 @@ export interface ManualPublicationPackage {
   payloadHash: string;
   auditHash: string;
   previewHash: string;
+  mediaManifestHash: string;
+  mediaCount: number;
   requiresManualAction: true;
   publicationStatus: "not_published";
   confirmed: false;
   exportedAt: string;
   files: Readonly<Record<string, string>>;
+  attachments: readonly ManualPackageMediaAttachment[];
   packageHash: string;
 }
 

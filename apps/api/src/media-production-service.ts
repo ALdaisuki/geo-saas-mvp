@@ -360,7 +360,7 @@ export class MediaProductionService implements MediaProductionController {
         status: "passed" as const,
         evaluator: "fixture-inspector",
         evaluatorMode: "fixture" as const,
-        evaluatorVersion: "fixture-inspector-v1",
+        evaluatorVersion: "1.0.0",
         responseSha256: sha256Canonical({
           schemaVersion: "geo.fixture-inspection.v1",
           assetSha256: outputSha256,

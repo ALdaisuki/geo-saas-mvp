@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Platform, PublicationReceipt, PublicationVariantPayload } from "@geo/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -33,6 +35,71 @@ const payload: PublicationVariantPayload = {
 };
 
 const platforms: readonly Platform[] = ["toutiao", "sohu", "ctrip_community"];
+
+const mediaBytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+const mediaSha256 = createHash("sha256").update(mediaBytes).digest("hex");
+const visualBrief = {
+  schemaVersion: "geo.visual-brief.v1" as const,
+  editorialProfile: "guide" as const,
+  platform: "sohu" as const,
+  role: "cover" as const,
+  aspectRatio: "16:9" as const,
+  factIds: [jobId],
+  prompt: "Verified travel service illustration without text",
+  negativePrompt: "text, phone, QR code, watermark",
+  altText: "Verified travel service illustration",
+  caption: "Illustration bound to a verified service fact",
+};
+const mediaReference = {
+  id: attemptId,
+  sha256: mediaSha256,
+  mimeType: "image/png" as const,
+  byteLength: mediaBytes.byteLength,
+  width: 1280,
+  height: 720,
+  platform: "sohu" as const,
+  role: "cover" as const,
+  altText: visualBrief.altText,
+  caption: visualBrief.caption,
+  factIds: visualBrief.factIds,
+  visualBrief,
+  visualBriefHash: stableSha256(visualBrief),
+  rights: {
+    basis: "generated_terms" as const,
+    licenseName: "Fixture generation terms",
+    verifiedAt: checkedAt,
+  },
+  provenance: {
+    kind: "generated" as const,
+    jobId,
+    attemptId: receiptId,
+    provider: "fixture",
+    providerMode: "fixture" as const,
+    model: "fixture-png-v1",
+    promptHash: createHash("sha256").update(visualBrief.prompt).digest("hex"),
+    parametersHash: "c".repeat(64),
+    generatedAt: checkedAt,
+  },
+  inspection: {
+    assetSha256: mediaSha256,
+    status: "passed" as const,
+    evaluator: "fixture-inspector",
+    evaluatorMode: "fixture" as const,
+    evaluatorVersion: "fixture-inspector-v1",
+    responseSha256: "d".repeat(64),
+    inspectedAt: checkedAt,
+    ocrText: "",
+    labels: ["fixture"],
+  },
+};
+const mediaPayload: PublicationVariantPayload = { ...payload, media: [mediaReference] };
+const mediaAttachment = {
+  mediaAssetId: mediaReference.id,
+  mimeType: mediaReference.mimeType,
+  sha256: mediaReference.sha256,
+  byteLength: mediaReference.byteLength,
+  base64: Buffer.from(mediaBytes).toString("base64"),
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -221,6 +288,7 @@ describe("manual package and receipt truthfulness", () => {
     const input = {
       renderedDraft,
       auditArtifact: artifact,
+      mediaAttachments: [],
       exportedAt: checkedAt,
     };
     const first = await exportManualPackage(dryRunConnector, input);
@@ -242,6 +310,115 @@ describe("manual package and receipt truthfulness", () => {
     expect(first.files["NOT_PUBLISHED.txt"]).toMatch(/manual action is required/iu);
     expect(first.files["article.md"]).toContain(payload.title);
     expect(first.files["instructions.txt"]).toContain("最终发布");
+  });
+
+  it("binds one exact-byte attachment and media manifest entry to every payload reference", async () => {
+    const connector = createDefaultConnectorRegistry().get("sohu") as DryRunConnector;
+    const renderedDraft = await connector.renderDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "dry_run",
+      payload: mediaPayload,
+    });
+    const artifact = {
+      id: receiptId,
+      tenantId,
+      variantId,
+      channelAccountId,
+      platform: "sohu" as const,
+      payloadHash: stableSha256(renderedDraft.payload),
+      factSnapshotHash: "c".repeat(64),
+      brandSnapshotHash: "e".repeat(64),
+      mediaSnapshotHash: "f".repeat(64),
+      policyHash: "d".repeat(64),
+      policyVersion: "travel-v1",
+      auditHash,
+      status: "passed" as const,
+      findings: [],
+      createdAt: "2026-07-13T11:00:00.000Z",
+      expiresAt: "2026-07-13T13:00:00.000Z",
+    };
+
+    const result = await exportManualPackage(connector, {
+      renderedDraft,
+      auditArtifact: artifact,
+      mediaAttachments: [mediaAttachment],
+      exportedAt: checkedAt,
+    });
+
+    expect(result.attachments).toEqual([
+      expect.objectContaining({
+        fileName: expect.stringMatching(/^media\/01-cover-.*\.png$/u),
+        mediaAssetId: mediaReference.id,
+        sha256: mediaSha256,
+        byteLength: mediaBytes.byteLength,
+        base64: mediaAttachment.base64,
+      }),
+    ]);
+    const manifest = JSON.parse(result.files["media-manifest.json"] ?? "null") as {
+      payloadHash: string;
+      entries: Array<Record<string, unknown>>;
+    };
+    expect(manifest.payloadHash).toBe(stableSha256(renderedDraft.payload));
+    expect(manifest.entries).toEqual([
+      expect.objectContaining({
+        mediaAssetId: mediaReference.id,
+        sha256: mediaSha256,
+        mimeType: "image/png",
+        byteLength: mediaBytes.byteLength,
+      }),
+    ]);
+    const bytes = Buffer.from(result.attachments[0]?.base64 ?? "", "base64");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(mediaSha256);
+  });
+
+  it.each([
+    ["missing", []],
+    ["extra", [mediaAttachment, { ...mediaAttachment, mediaAssetId: receiptId }]],
+    [
+      "tampered",
+      [
+        {
+          ...mediaAttachment,
+          base64: Buffer.from(Uint8Array.from([...mediaBytes, 5])).toString("base64"),
+        },
+      ],
+    ],
+  ] as const)("rejects %s media attachment bytes", async (_label, mediaAttachments) => {
+    const connector = createDefaultConnectorRegistry().get("sohu") as DryRunConnector;
+    const renderedDraft = await connector.renderDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "dry_run",
+      payload: mediaPayload,
+    });
+    await expect(
+      exportManualPackage(connector, {
+        renderedDraft,
+        auditArtifact: {
+          id: receiptId,
+          tenantId,
+          variantId,
+          channelAccountId,
+          platform: "sohu",
+          payloadHash: stableSha256(renderedDraft.payload),
+          factSnapshotHash: "c".repeat(64),
+          brandSnapshotHash: "e".repeat(64),
+          mediaSnapshotHash: "f".repeat(64),
+          policyHash: "d".repeat(64),
+          policyVersion: "travel-v1",
+          auditHash,
+          status: "passed",
+          findings: [],
+          createdAt: "2026-07-13T11:00:00.000Z",
+          expiresAt: "2026-07-13T13:00:00.000Z",
+        },
+        mediaAttachments,
+        exportedAt: checkedAt,
+      }),
+    ).rejects.toThrow(/attachment/iu);
   });
 
   it("rejects failed, expired, or scope-mismatched audit artifacts", async () => {
@@ -276,6 +453,7 @@ describe("manual package and receipt truthfulness", () => {
       exportManualPackage(connector, {
         renderedDraft,
         auditArtifact: { ...artifact, status: "failed" },
+        mediaAttachments: [],
         exportedAt: checkedAt,
       }),
     ).rejects.toThrow(/passed audit/iu);
@@ -283,6 +461,7 @@ describe("manual package and receipt truthfulness", () => {
       exportManualPackage(connector, {
         renderedDraft,
         auditArtifact: { ...artifact, expiresAt: "2026-07-13T11:30:00.000Z" },
+        mediaAttachments: [],
         exportedAt: checkedAt,
       }),
     ).rejects.toThrow(/expired/iu);
@@ -290,6 +469,7 @@ describe("manual package and receipt truthfulness", () => {
       exportManualPackage(connector, {
         renderedDraft,
         auditArtifact: { ...artifact, tenantId: "00000000-0000-4000-8000-000000000099" },
+        mediaAttachments: [],
         exportedAt: checkedAt,
       }),
     ).rejects.toThrow(/scope/iu);

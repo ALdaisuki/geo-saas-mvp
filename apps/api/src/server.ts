@@ -33,12 +33,13 @@ const plasticPromise = await connectPlasticPromiseStreamableHttp({
     : { authorizationHeader: env.PLASTIC_PROMISE_MCP_AUTHORIZATION }),
 });
 const repository = createPostgresApiRepository({ runtimeDatabase, identityDatabase });
+const mediaObjectStore = new ContentAddressedMediaStore(env.GEO_MEDIA_OBJECT_ROOT);
 const mediaProduction =
   env.GEO_MEDIA_PROVIDER === "fixture"
     ? new MediaProductionService({
         repository,
         provider: new FixtureImageGenerationProvider(),
-        objectStore: new ContentAddressedMediaStore(env.GEO_MEDIA_OBJECT_ROOT),
+        objectStore: mediaObjectStore,
       })
     : undefined;
 
@@ -49,6 +50,7 @@ const app = await buildApp({
   allowedOrigins: [env.APP_ORIGIN],
   logger: true,
   publicationGovernanceGate: new PlasticPromisePublicationGate(plasticPromise),
+  mediaObjectStore,
   ...(mediaProduction === undefined ? {} : { mediaProduction }),
 });
 

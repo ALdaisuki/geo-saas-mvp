@@ -1309,6 +1309,7 @@ class FakeRepository implements ApiRepository {
         supportedExecutionLevels: account.supportedExecutionLevels,
         status: account.status,
       },
+      mediaAssets: [],
     };
   }
 

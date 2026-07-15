@@ -40,6 +40,7 @@ import {
   type VisibilityIntent,
   type VisibilityQuery,
 } from "@geo/visibility";
+import type { MediaObjectStore } from "@geo/media";
 import { argon2id, hash as argon2Hash, verify as argon2Verify } from "argon2";
 import Fastify, {
   type FastifyInstance,
@@ -145,6 +146,7 @@ export interface BuildAppOptions {
   readonly allowedOrigins?: readonly string[];
   readonly publicationGovernanceGate: PublicationGovernanceGate;
   readonly mediaProduction?: MediaProductionController;
+  readonly mediaObjectStore?: Pick<MediaObjectStore, "get">;
 }
 
 class ApiError extends Error {
@@ -1899,6 +1901,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           context: requestContext(request),
           auditArtifactId: parseIdParams(request.params, "artifactId"),
           exportedAt: now().toISOString(),
+          ...(options.mediaObjectStore === undefined
+            ? {}
+            : { mediaObjectStore: options.mediaObjectStore }),
         });
       } catch (error) {
         if (error instanceof ManualPublicationPackageExportError) {

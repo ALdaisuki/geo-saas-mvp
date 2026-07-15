@@ -6,6 +6,8 @@
 
 `assisted` / `unattended` 发布请求会在治理评估、消耗 grant、创建 job 或写入 outbox 之前被确定性拒绝。当前“排期”和“回执”均指 Dry-run 预演链，不代表外部平台已接收内容。passed 且未过期的审计可导出独立人工发布包；该包固定标记 `requiresManualAction=true`、`publicationStatus=not_published`，不会触发外部发送。
 
+图片生产默认由 `GEO_MEDIA_PROVIDER=disabled` 关闭；唯一可启用的 `fixture` provider 只生成确定性 PNG，用于验证 VisualBrief、事实绑定、OCR/版权/来源审计、内容寻址存储和 successor 内容版本，不是可投放的生产图片，也不访问网络。带图的人工发布包会附带 `media-manifest.json` 和逐字节校验的 base64 附件；真实生图 provider 仍未实现，`live` 配置会在启动时被拒绝。
+
 Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可显式启用的后台自动化 Producer。Producer 按租户身份轮询持久化批次，使用租约、心跳和断点恢复执行“生成 -> 确定性审计 -> Dry-run 预演 -> 回执回读”；一个租户身份失败不会阻塞其他租户。默认 `AGENT_PROVIDER=fixture` 使用确定性的 `FixturePiAgentRunService`；只有 Pi 已登记相应 provider/model 且由 secret 注入 `AGENT_API_KEY` 时，才启动 `RealPiAgentRunService`。真实 Pi 只改变模型编排方式，仍受静态 GEO/治理工具白名单、租户权限和确定性发布门禁约束，不会凭空获得头条/搜狐/携程发文 API 或豆包/千问真实搜索 API。
 
 ## 当前能力边界
@@ -16,9 +18,10 @@ Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可
 | 租户会话与切换              | 登录后列出成员租户并重签租户会话                   | 一个会话可跨租户访问                           |
 | Kill Switch、撤权与排队取消 | 租户急停、grant revoke、queued/retry cancel 已实现 | 自动撤权、取消已租约作业或停止已发出的外部请求 |
 | 发布前审计与一次性 grant    | 已实现确定性路径                                   | 模型可自行批准发布                             |
+| 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链             | 已接入真实生图 API 或图片可直接生产投放        |
 | 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt              | 已发文、公开 API 或无人值守投放                |
 | 豆包/千问可见性             | fixture + manual import                            | 已调用真实产品搜索或可等同 Google              |
-| GEO MCP                     | 7 个静态白名单工具                                 | 任意 MCP 工具访问或 Pi 内建 MCP                |
+| GEO MCP                     | 9 个静态白名单工具                                 | 任意 MCP 工具访问或 Pi 内建 MCP                |
 | Pi Agent 与批次 Producer    | `agent-mcp` 内置；多租户租约恢复，固定 Dry-run     | 已向外部平台实发或绕过发布前审计               |
 | Operator 登录               | 显式一次性 bootstrap CLI                           | `db:seed` 后可直接登录或存在共享默认密码       |
 

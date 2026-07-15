@@ -16,6 +16,7 @@
     "@geo/contracts": "workspace:*",
     "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
+    "@geo/media": "workspace:*",
     "@geo/visibility": "workspace:*",
     "@geo/worker": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",

@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+
 import {
   createDefaultConnectorRegistry,
   DryRunConnector,
   exportManualPackage,
+  type ManualPackageMediaAttachmentInput,
   type ManualPublicationPackage,
 } from "@geo/connectors";
 import {
@@ -11,8 +14,10 @@ import {
   type ExecutionLevel,
   type Platform,
   type PublicationVariantPayload,
+  type MediaReference,
 } from "@geo/contracts";
 import { sha256Canonical } from "@geo/core";
+import type { MediaObjectStore } from "@geo/media";
 
 export interface ManualPublicationPackageRequestContext {
   readonly tenantId: string;
@@ -30,6 +35,10 @@ export interface ManualPublicationPackageSource {
     readonly supportedExecutionLevels: readonly ExecutionLevel[];
     readonly status: string;
   };
+  readonly mediaAssets: readonly {
+    readonly storageKey: string;
+    readonly reference: MediaReference;
+  }[];
 }
 
 export interface RecordManualPublicationPackageExportInput {
@@ -75,10 +84,15 @@ export interface CreateManualPublicationPackageExportInput {
   readonly context: ManualPublicationPackageRequestContext;
   readonly auditArtifactId: string;
   readonly exportedAt: string;
+  readonly mediaObjectStore?: Pick<MediaObjectStore, "get">;
 }
 
 function invalidSource(message: string): never {
   throw new ManualPublicationPackageExportError(422, "MANUAL_PACKAGE_SOURCE_INVALID", message);
+}
+
+function sha256Bytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export async function createManualPublicationPackageExport(
@@ -129,6 +143,44 @@ export async function createManualPublicationPackageExport(
   ) {
     return invalidSource("Channel account scope does not match the passed audit");
   }
+
+  const assetsById = new Map(source.mediaAssets.map((asset) => [asset.reference.id, asset]));
+  if (assetsById.size !== source.mediaAssets.length || assetsById.size !== payload.media.length) {
+    return invalidSource("Manual package source does not contain exactly the audited media assets");
+  }
+  if (payload.media.length > 0 && input.mediaObjectStore === undefined) {
+    return invalidSource("Manual package media object storage is unavailable");
+  }
+  const mediaAttachments: ManualPackageMediaAttachmentInput[] = [];
+  for (const reference of payload.media) {
+    const asset = assetsById.get(reference.id);
+    if (
+      asset === undefined ||
+      sha256Canonical(asset.reference) !== sha256Canonical(reference) ||
+      input.mediaObjectStore === undefined
+    ) {
+      return invalidSource("Manual package media asset does not match the audited payload");
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await input.mediaObjectStore.get({
+        tenantId: input.context.tenantId,
+        storageKey: asset.storageKey,
+      });
+    } catch {
+      return invalidSource("Manual package media bytes could not be loaded or verified");
+    }
+    if (bytes.byteLength !== reference.byteLength || sha256Bytes(bytes) !== reference.sha256) {
+      return invalidSource("Manual package media bytes could not be loaded or verified");
+    }
+    mediaAttachments.push({
+      mediaAssetId: reference.id,
+      mimeType: reference.mimeType,
+      sha256: reference.sha256,
+      byteLength: reference.byteLength,
+      base64: Buffer.from(bytes).toString("base64"),
+    });
+  }
   if (
     source.account.status !== "active" ||
     source.account.capability !== "manual_only" ||
@@ -165,6 +217,7 @@ export async function createManualPublicationPackageExport(
   const result = await exportManualPackage(connector, {
     renderedDraft,
     auditArtifact: source.artifact,
+    mediaAttachments,
     exportedAt: input.exportedAt,
   });
   await input.repository.recordManualPublicationPackageExport(input.context, {

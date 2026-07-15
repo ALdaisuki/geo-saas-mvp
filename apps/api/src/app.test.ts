@@ -8,7 +8,7 @@ import type {
 import {
   buildBaselineAuditPolicyDocument,
   compileAuditPolicy,
-  renderCanonicalContent,
+  renderEditorialSourcePayload,
   sha256Canonical,
   sha256Text,
   type FactSnapshot,
@@ -132,56 +132,12 @@ const articleFactSnapshot: FactSnapshot = {
   ],
 };
 
-const articlePayloadInput: PublicationVariantPayload = {
-  title: "placeholder",
-  summary: "placeholder",
-  bodyMarkdown: "placeholder",
-  titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
-  summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
-  bodyBlocks: [
-    { type: "template", templateId: "generic.body.heading.verified" },
-    { type: "template", templateId: "generic.body.guidance.verified" },
-    { type: "claim", claimId: ids.fact, presentation: "paragraph" },
-    { type: "template", templateId: "generic.body.heading.contact" },
-    { type: "contact", contactId: ids.phone, presentation: "paragraph" },
-    { type: "contact", contactId: ids.wechatOne, presentation: "paragraph" },
-    { type: "contact", contactId: ids.wechatTwo, presentation: "paragraph" },
-    { type: "template", templateId: "generic.body.guidance.contact" },
-  ],
-  tagTemplateIds: ["generic.tag.verified"],
-  media: [],
-  claims: [
-    {
-      id: ids.fact,
-      text: "The signed itinerary is the final service boundary",
-      evidenceSourceIds: [ids.source],
-      validUntil: "2026-08-01T00:00:00.000Z",
-    },
-  ],
-  contactIds: [ids.phone, ids.wechatOne, ids.wechatTwo],
-  tags: [],
-};
-const renderedArticlePayload = renderCanonicalContent({
-  payload: articlePayloadInput,
+const articlePayload: PublicationVariantPayload = renderEditorialSourcePayload({
+  editorialProfile: "guide",
   policy: travelPolicy,
   factSnapshot: articleFactSnapshot,
   contacts,
 });
-if (
-  renderedArticlePayload.title === null ||
-  renderedArticlePayload.summary === null ||
-  renderedArticlePayload.bodyMarkdown === null ||
-  renderedArticlePayload.tags === null
-) {
-  throw new Error("Canonical API fixture did not render");
-}
-const articlePayload: PublicationVariantPayload = {
-  ...articlePayloadInput,
-  title: renderedArticlePayload.title,
-  summary: renderedArticlePayload.summary,
-  bodyMarkdown: renderedArticlePayload.bodyMarkdown,
-  tags: [...renderedArticlePayload.tags],
-};
 
 function identity(role: TenantRole): LoginIdentity {
   return {
@@ -2115,6 +2071,81 @@ describe("Fastify API security and vertical publication flow", () => {
     );
   });
 
+  it("requires content type and declared editorial profile to agree", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    const baseRequest = {
+      campaignId: ids.content,
+      brandId: ids.brand,
+      title: articlePayload.title,
+      topicKey: "profile-consistency",
+      payload: articlePayload,
+    };
+
+    const mismatch = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: {
+        ...baseRequest,
+        contentType: "comparison",
+        idempotencyKey: "profile-mismatch",
+      },
+    });
+    const conflictingEvidence = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: {
+        ...baseRequest,
+        contentType: "evidence",
+        idempotencyKey: "profile-evidence-conflict",
+      },
+    });
+    const legacyGuide = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: {
+        ...baseRequest,
+        contentType: "guide",
+        idempotencyKey: "profile-missing",
+        payload: { ...articlePayload, editorialProfile: undefined },
+      },
+    });
+    const explicitEvidence = await app.inject({
+      method: "POST",
+      url: "/api/content",
+      headers,
+      payload: {
+        ...baseRequest,
+        contentType: "evidence",
+        idempotencyKey: "explicit-evidence",
+        payload: {
+          title: "Evidence record",
+          summary: "Explicit legacy evidence content",
+          bodyMarkdown: "Evidence content retained without an editorial profile.",
+          media: [],
+          claims: [],
+          contactIds: [],
+          tags: [],
+        },
+      },
+    });
+
+    expect(mismatch.statusCode).toBe(400);
+    expect(conflictingEvidence.statusCode).toBe(400);
+    expect(legacyGuide.statusCode).toBe(400);
+    expect(explicitEvidence.statusCode).toBe(201);
+    expect(repository.contentInputs).toHaveLength(1);
+    expect(repository.contentInputs[0]?.contentType).toBe("evidence");
+  });
+
   it("renders the final platform variant on the server and rejects client payload injection", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -2144,7 +2175,8 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(created.statusCode).toBe(201);
     expect(repository.variantInputs).toHaveLength(1);
     expect(repository.variantInputs[0]?.payload).toMatchObject({
-      titleBlocks: [{ type: "template", templateId: "toutiao.title.evidence-first" }],
+      editorialProfile: "guide",
+      titleBlocks: [{ type: "template", templateId: "toutiao.guide.title" }],
       claims: articlePayload.claims,
       contactIds: articlePayload.contactIds,
       media: [],

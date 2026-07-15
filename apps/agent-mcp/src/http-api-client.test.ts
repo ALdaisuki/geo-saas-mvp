@@ -1,5 +1,11 @@
 import type { ActorContext } from "@geo/contracts";
-import { buildBaselineAuditPolicyDocument, sha256Canonical } from "@geo/core";
+import {
+  buildBaselineAuditPolicyDocument,
+  compileAuditPolicy,
+  renderEditorialSourcePayload,
+  renderPlatformPublicationVariant,
+  sha256Canonical,
+} from "@geo/core";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -198,7 +204,8 @@ describe("GEO API session and destination policy", () => {
     });
     expect(contentRequest.topicKey).not.toBe(`agent:${ids.campaign}`);
     expect(payload).toMatchObject({
-      titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+      editorialProfile: "risk_avoidance",
+      titleBlocks: [{ type: "template", templateId: "editorial.risk_avoidance.title" }],
       claims: [{ id: ids.fact, text: "最终服务范围以签约前确认材料为准" }],
       contactIds: [ids.contact],
       media: [],
@@ -228,55 +235,30 @@ describe("GEO API session and destination policy", () => {
       rulesVersion: "travel-v1",
       industry: "travel",
     });
-    const sourcePayload = {
-      title: document.contentTemplates.title["generic.title.verified-service"],
-      summary: document.contentTemplates.summary["generic.summary.verified-sources"],
-      bodyMarkdown: [
-        document.contentTemplates.body["generic.body.heading.verified"],
-        document.contentTemplates.body["generic.body.guidance.verified"],
-        document.contentTemplates.body["generic.body.heading.contact"],
-        document.contentTemplates.body["generic.body.guidance.contact"],
-      ].join("\n\n"),
-      titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
-      summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
-      bodyBlocks: [
-        { type: "template", templateId: "generic.body.heading.verified" },
-        { type: "template", templateId: "generic.body.guidance.verified" },
-        { type: "template", templateId: "generic.body.heading.contact" },
-        { type: "template", templateId: "generic.body.guidance.contact" },
-      ],
-      tagTemplateIds: ["generic.tag.verified"],
-      media: [],
-      claims: [],
-      contactIds: [],
-      tags: [document.contentTemplates.tag["generic.tag.verified"]],
+    const policy = compileAuditPolicy({
+      version: document.rulesVersion,
+      policyHash: sha256Canonical(document),
+      document,
+    });
+    const factSnapshot = {
+      tenantId: ids.tenant,
+      capturedAt: "2026-07-14T00:00:00.000Z",
+      facts: [],
+      sources: [],
     };
-    const serverRenderedPayload = {
-      title: document.contentTemplates.title["toutiao.title.evidence-first"],
-      summary: document.contentTemplates.summary["toutiao.summary.evidence-first"],
-      bodyMarkdown: [
-        document.contentTemplates.body["toutiao.body.opening"],
-        document.contentTemplates.body["toutiao.body.scope"],
-        document.contentTemplates.body["toutiao.body.contact"],
-        document.contentTemplates.body["toutiao.body.disclosure"],
-      ].join("\n\n"),
-      titleBlocks: [{ type: "template", templateId: "toutiao.title.evidence-first" }],
-      summaryBlocks: [{ type: "template", templateId: "toutiao.summary.evidence-first" }],
-      bodyBlocks: [
-        { type: "template", templateId: "toutiao.body.opening" },
-        { type: "template", templateId: "toutiao.body.scope" },
-        { type: "template", templateId: "toutiao.body.contact" },
-        { type: "template", templateId: "toutiao.body.disclosure" },
-      ],
-      tagTemplateIds: ["toutiao.tag.evidence", "toutiao.tag.scope"],
-      media: [],
-      claims: [],
-      contactIds: [],
-      tags: [
-        document.contentTemplates.tag["toutiao.tag.evidence"],
-        document.contentTemplates.tag["toutiao.tag.scope"],
-      ],
-    };
+    const sourcePayload = renderEditorialSourcePayload({
+      editorialProfile: "guide",
+      policy,
+      factSnapshot,
+      contacts: [],
+    });
+    const serverRenderedPayload = renderPlatformPublicationVariant({
+      sourcePayload,
+      platform: "toutiao",
+      policy,
+      factSnapshot,
+      contacts: [],
+    });
     let publicationBody: unknown;
     let publicationRequestCount = 0;
     let auditRequestCount = 0;
@@ -408,7 +390,7 @@ describe("GEO API session and destination policy", () => {
       id: ids.variant,
       variantId: ids.variant,
       payload: {
-        titleBlocks: [{ type: "template", templateId: "toutiao.title.evidence-first" }],
+        titleBlocks: [{ type: "template", templateId: "toutiao.guide.title" }],
       },
     });
     expect(variantBody).toEqual({

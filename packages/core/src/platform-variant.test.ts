@@ -1,10 +1,15 @@
-import type { PublicationVariantPayload, TenantContact } from "@geo/contracts";
+import type {
+  EditorialProfile,
+  Platform,
+  PublicationVariantPayload,
+  TenantContact,
+} from "@geo/contracts";
 import { describe, expect, it } from "vitest";
 
-import type { FactSnapshot } from "./audit.js";
+import { DEFAULT_AUDIT_POLICY, type FactSnapshot } from "./audit.js";
 import { buildBaselineAuditPolicyDocument, compileAuditPolicy } from "./audit-policy-document.js";
 import { sha256Canonical } from "./canonical.js";
-import { renderCanonicalContent } from "./content-renderer.js";
+import { EDITORIAL_PROFILES, renderEditorialSourcePayload } from "./editorial-profile.js";
 import { CoreInvariantError } from "./errors.js";
 import { renderPlatformPublicationVariant } from "./platform-variant.js";
 
@@ -55,82 +60,63 @@ function policy() {
   });
 }
 
-function sourcePayload(): PublicationVariantPayload {
-  const auditPolicy = policy();
-  const candidate: PublicationVariantPayload = {
-    title: "placeholder",
-    summary: "placeholder",
-    bodyMarkdown: "placeholder",
-    titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
-    summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
-    bodyBlocks: [
-      { type: "template", templateId: "generic.body.heading.verified" },
-      { type: "template", templateId: "generic.body.guidance.verified" },
-      { type: "claim", claimId: factId, presentation: "bullet" },
-      { type: "template", templateId: "generic.body.heading.contact" },
-      { type: "contact", contactId, presentation: "paragraph" },
-      { type: "template", templateId: "generic.body.guidance.contact" },
-    ],
-    tagTemplateIds: ["generic.tag.verified"],
-    media: [],
-    claims: [
-      {
-        id: factId,
-        text: snapshot.facts[0]?.text ?? "",
-        evidenceSourceIds: [sourceId],
-        validUntil: null,
-      },
-    ],
-    contactIds: [contactId],
-    tags: [],
-  };
-  const rendered = renderCanonicalContent({
-    payload: candidate,
-    policy: auditPolicy,
+function sourcePayload(profile: EditorialProfile = "guide"): PublicationVariantPayload {
+  return renderEditorialSourcePayload({
+    editorialProfile: profile,
+    policy: policy(),
     factSnapshot: snapshot,
     contacts,
   });
-  if (
-    rendered.title === null ||
-    rendered.summary === null ||
-    rendered.bodyMarkdown === null ||
-    rendered.tags === null
-  ) {
-    throw new Error("Source fixture did not render");
-  }
-  return {
-    ...candidate,
-    title: rendered.title,
-    summary: rendered.summary,
-    bodyMarkdown: rendered.bodyMarkdown,
-    tags: [...rendered.tags],
-  };
 }
 
 describe("platform publication variant rendering", () => {
-  it("renders three distinct platform payloads without changing facts or contacts", () => {
-    const source = sourcePayload();
+  it("renders fifteen distinct profile/platform payloads without changing facts or contacts", () => {
     const auditPolicy = policy();
-    const variants = ["toutiao", "sohu", "ctrip_community"].map((platform) =>
-      renderPlatformPublicationVariant({
-        sourcePayload: source,
-        platform: platform as "toutiao" | "sohu" | "ctrip_community",
-        policy: auditPolicy,
-        factSnapshot: snapshot,
-        contacts,
-      }),
-    );
+    const platforms: readonly Platform[] = ["toutiao", "sohu", "ctrip_community"];
+    const matrix = EDITORIAL_PROFILES.flatMap((profile) => {
+      const source = sourcePayload(profile);
+      expect(Object.isFrozen(source)).toBe(true);
+      expect(Object.isFrozen(source.titleBlocks)).toBe(true);
+      expect(Object.isFrozen(source.summaryBlocks)).toBe(true);
+      expect(Object.isFrozen(source.bodyBlocks)).toBe(true);
+      expect(Object.isFrozen(source.claims)).toBe(true);
+      expect(Object.isFrozen(source.claims[0])).toBe(true);
+      expect(Object.isFrozen(source.contactIds)).toBe(true);
+      expect(Object.isFrozen(source.tags)).toBe(true);
 
-    expect(new Set(variants.map((variant) => sha256Canonical(variant))).size).toBe(3);
-    expect(new Set(variants.map((variant) => variant.title)).size).toBe(3);
-    expect(new Set(variants.map((variant) => variant.bodyMarkdown)).size).toBe(3);
-    expect(new Set(variants.map((variant) => variant.tags.join("|"))).size).toBe(3);
-    for (const variant of variants) {
+      return platforms.map((platform) => ({
+        source,
+        variant: renderPlatformPublicationVariant({
+          sourcePayload: source,
+          platform,
+          policy: auditPolicy,
+          factSnapshot: snapshot,
+          contacts,
+        }),
+      }));
+    });
+    const variants = matrix.map(({ variant }) => variant);
+
+    expect(variants).toHaveLength(15);
+    expect(new Set(variants.map((variant) => sha256Canonical(variant))).size).toBe(15);
+    expect(new Set(variants.map((variant) => variant.title)).size).toBe(15);
+    expect(new Set(variants.map((variant) => variant.summary)).size).toBe(15);
+    expect(new Set(variants.map((variant) => sha256Canonical(variant.bodyBlocks))).size).toBe(15);
+    expect(new Set(variants.map((variant) => variant.tags.join("|"))).size).toBe(15);
+    expect(DEFAULT_AUDIT_POLICY.duplicateThreshold).toBe(0.86);
+
+    for (const { source, variant } of matrix) {
       expect(variant.claims).toEqual(source.claims);
       expect(variant.contactIds).toEqual(source.contactIds);
       expect(variant.media).toEqual([]);
       expect(Object.isFrozen(variant)).toBe(true);
+      expect(Object.isFrozen(variant.titleBlocks)).toBe(true);
+      expect(Object.isFrozen(variant.summaryBlocks)).toBe(true);
       expect(Object.isFrozen(variant.bodyBlocks)).toBe(true);
+      expect(Object.isFrozen(variant.claims)).toBe(true);
+      expect(Object.isFrozen(variant.claims[0])).toBe(true);
+      expect(Object.isFrozen(variant.contactIds)).toBe(true);
+      expect(Object.isFrozen(variant.tags)).toBe(true);
     }
   });
 
@@ -176,7 +162,7 @@ describe("platform publication variant rendering", () => {
         ...document.contentTemplates,
         title: Object.fromEntries(
           Object.entries(document.contentTemplates.title).filter(
-            ([templateId]) => templateId !== "toutiao.title.evidence-first",
+            ([templateId]) => templateId !== "toutiao.guide.title",
           ),
         ),
       },

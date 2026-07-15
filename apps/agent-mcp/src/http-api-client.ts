@@ -16,13 +16,13 @@ import {
   type ActorContext,
   type AutomationRunStage,
   type AutomationRunTargetState,
-  type PublicationVariantPayload,
   type TenantContact,
 } from "@geo/contracts";
 import {
   compileAuditPolicy,
+  editorialProfileForBrief,
   geoAuditPolicyDocumentSchema,
-  renderCanonicalContent,
+  renderEditorialSourcePayload,
   type FactSnapshot,
 } from "@geo/core";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -250,24 +250,6 @@ function factRelevance(brief: ReadonlySet<string>, fact: z.infer<typeof factSche
     if (term.length > 1 && factTerms.has(term)) matches += 1;
   }
   return matches;
-}
-
-function contentTypeForBrief(
-  brief: string,
-): "question_answer" | "guide" | "local_service" | "comparison" | "risk_avoidance" {
-  if (/risk|avoid|warning|避坑|注意|风险|保证|资质|真假|投诉|骗局/iu.test(brief)) {
-    return "risk_avoidance";
-  }
-  if (/contact|phone|wechat|电话|微信|联系|客服|热线|地址/iu.test(brief)) {
-    return "local_service";
-  }
-  if (/compare|comparison|versus|\bvs\b|对比|比较|哪家|推荐|选择/iu.test(brief)) {
-    return "comparison";
-  }
-  if (/\?|？|what|how|whether|什么|如何|怎么|是否|吗/iu.test(brief)) {
-    return "question_answer";
-  }
-  return "guide";
 }
 
 function safeTokenEqual(left: string, right: string): boolean {
@@ -644,37 +626,6 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     if (selectedFacts.length === 0) {
       throw new GeoApiRequestError("NO_RELEVANT_VERIFIED_FACTS", 422);
     }
-    const claims = selectedFacts.map((fact) => ({
-      id: fact.id,
-      text: fact.claim,
-      evidenceSourceIds: fact.evidenceSourceIds,
-      validUntil: fact.validUntil,
-    }));
-    const canonicalInput: PublicationVariantPayload = {
-      title: "placeholder",
-      summary: "placeholder",
-      bodyMarkdown: "placeholder",
-      titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
-      summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
-      bodyBlocks: [
-        { type: "template", templateId: "generic.body.heading.verified" },
-        { type: "template", templateId: "generic.body.guidance.verified" },
-        ...selectedFacts.map(
-          (fact) => ({ type: "claim", claimId: fact.id, presentation: "bullet" }) as const,
-        ),
-        { type: "template", templateId: "generic.body.heading.contact" },
-        ...currentContacts.map(
-          (contact) =>
-            ({ type: "contact", contactId: contact.id, presentation: "paragraph" }) as const,
-        ),
-        { type: "template", templateId: "generic.body.guidance.contact" },
-      ],
-      tagTemplateIds: ["generic.tag.verified"],
-      media: [],
-      claims,
-      contactIds: currentContacts.map((contact) => contact.id),
-      tags: [],
-    };
     const factSnapshot: FactSnapshot = {
       tenantId: principal.tenantId,
       capturedAt: new Date(now).toISOString(),
@@ -688,35 +639,20 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       })),
       sources: [],
     };
-    const rendered = renderCanonicalContent({
-      payload: canonicalInput,
+    const editorialProfile = editorialProfileForBrief(input.brief);
+    const payload = renderEditorialSourcePayload({
+      editorialProfile,
       policy,
       factSnapshot,
       contacts: currentContacts as readonly TenantContact[],
     });
-    if (
-      rendered.issues.length > 0 ||
-      rendered.title === null ||
-      rendered.summary === null ||
-      rendered.bodyMarkdown === null ||
-      rendered.tags === null
-    ) {
-      throw new GeoApiRequestError("CANONICAL_CONTENT_RENDER_FAILED", 422);
-    }
-    const payload: PublicationVariantPayload = {
-      ...canonicalInput,
-      title: rendered.title,
-      summary: rendered.summary,
-      bodyMarkdown: rendered.bodyMarkdown,
-      tags: [...rendered.tags],
-    };
     const result = await this.#request(principal, "/api/content", {
       method: "POST",
       body: {
         campaignId: input.campaignId,
         brandId: input.brandId,
         title: payload.title,
-        contentType: contentTypeForBrief(input.brief),
+        contentType: editorialProfile,
         topicKey,
         idempotencyKey: input.idempotencyKey,
         payload,

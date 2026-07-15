@@ -317,22 +317,43 @@ const resourceScopeSchema = z.object({
 
 const idempotencyKeySchema = z.string().trim().min(1).max(200);
 
-const contentSchema = z.object({
-  campaignId: idSchema,
-  brandId: idSchema,
-  title: z.string().trim().min(1).max(200),
-  contentType: z.enum([
-    "question_answer",
-    "guide",
-    "evidence",
-    "local_service",
-    "comparison",
-    "risk_avoidance",
-  ]),
-  topicKey: z.string().trim().min(1).max(200),
-  idempotencyKey: idempotencyKeySchema,
-  payload: publicationVariantPayloadSchema,
-});
+const contentSchema = z
+  .object({
+    campaignId: idSchema,
+    brandId: idSchema,
+    title: z.string().trim().min(1).max(200),
+    contentType: z.enum([
+      "question_answer",
+      "guide",
+      "evidence",
+      "local_service",
+      "comparison",
+      "risk_avoidance",
+    ]),
+    topicKey: z.string().trim().min(1).max(200),
+    idempotencyKey: idempotencyKeySchema,
+    payload: publicationVariantPayloadSchema,
+  })
+  .superRefine((content, context) => {
+    const editorialProfile = content.payload.editorialProfile;
+    if (content.contentType === "evidence") {
+      if (editorialProfile !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["payload", "editorialProfile"],
+          message: "Evidence content cannot declare a conflicting editorial profile",
+        });
+      }
+      return;
+    }
+    if (editorialProfile !== content.contentType) {
+      context.addIssue({
+        code: "custom",
+        path: ["payload", "editorialProfile"],
+        message: "Editorial profile must match content type",
+      });
+    }
+  });
 
 const contentVersionSchema = z.object({
   payload: publicationVariantPayloadSchema,

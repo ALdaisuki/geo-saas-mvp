@@ -1,5 +1,10 @@
 import { automationProducerCapabilities, capabilitiesForRole } from "@geo/authz";
-import { capabilitySchema, tenantContactSchema, type Capability, type TenantContact } from "@geo/contracts";
+import {
+  capabilitySchema,
+  tenantContactSchema,
+  type Capability,
+  type TenantContact,
+} from "@geo/contracts";
 import { compileAuditPolicy, geoAuditPolicyDocumentSchema, sha256Canonical } from "@geo/core";
 import { withTenantTransaction, type Database, type TenantTransaction } from "@geo/db";
 import { sql, type Kysely } from "kysely";
@@ -7,6 +12,7 @@ import { sql, type Kysely } from "kysely";
 import {
   RepositoryConflictError,
   RepositoryNotFoundError,
+  type ApiRepository,
   type ChannelAccountView,
   type PolicyBundleView,
   type RequestContext,
@@ -153,7 +159,10 @@ function assertAccountEvidence(input: {
   readonly lastVerifiedAt: string | null;
 }): void {
   validateEffectiveChannelAccount(input);
-  if (input.status === "active" && (input.lastVerifiedAt === null || input.evidenceRefs.length === 0)) {
+  if (
+    input.status === "active" &&
+    (input.lastVerifiedAt === null || input.evidenceRefs.length === 0)
+  ) {
     throw new RepositoryConflictError(
       "An active channel account requires capability evidence and a verification timestamp",
     );
@@ -255,7 +264,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
   return {
     async createContact(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["createContact"]>[1],
+      input: Parameters<ApiRepository["createContact"]>[1],
     ): Promise<TenantContact> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         try {
@@ -316,7 +325,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async expireContact(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["expireContact"]>[1],
+      input: Parameters<ApiRepository["expireContact"]>[1],
     ): Promise<TenantContact> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const currentResult = await sql<{
@@ -354,7 +363,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           returning id, tenant_id, type, label, value, is_primary, valid_from, valid_until
         `.execute(transaction);
         const row = result.rows[0];
-        if (row === undefined) throw new RepositoryConflictError("Contact was concurrently changed");
+        if (row === undefined)
+          throw new RepositoryConflictError("Contact was concurrently changed");
         const contact = tenantContactSchema.parse({
           id: row.id,
           tenantId: row.tenant_id,
@@ -379,7 +389,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async createMember(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["createMember"]>[1],
+      input: Parameters<ApiRepository["createMember"]>[1],
     ): Promise<TenantMemberView> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const actorResult = await sql<{ role: TenantMemberView["role"] }>`
@@ -387,7 +397,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           where user_id = ${context.actorId} and status = 'active' limit 1
         `.execute(transaction);
         const actorRole = actorResult.rows[0]?.role;
-        if (actorRole === undefined) throw new RepositoryConflictError("Managing member is inactive");
+        if (actorRole === undefined)
+          throw new RepositoryConflictError("Managing member is inactive");
         try {
           assertMemberManagementAllowed(actorRole, null, input.role);
         } catch (error) {
@@ -428,7 +439,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async updateMember(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["updateMember"]>[1],
+      input: Parameters<ApiRepository["updateMember"]>[1],
     ): Promise<TenantMemberView> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const actorResult = await sql<{ role: TenantMemberView["role"] }>`
@@ -436,15 +447,14 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           where user_id = ${context.actorId} and status = 'active' limit 1
         `.execute(transaction);
         const actorRole = actorResult.rows[0]?.role;
-        if (actorRole === undefined) throw new RepositoryConflictError("Managing member is inactive");
+        if (actorRole === undefined)
+          throw new RepositoryConflictError("Managing member is inactive");
         const currentResult = await sql<MemberRow>`
-          select membership.id, membership.user_id, users.email, users.display_name,
-                 membership.role, membership.capabilities, membership.status,
-                 membership.created_at
-          from geo.tenant_memberships as membership
-          join geo.users as users on users.id = membership.user_id
-          where membership.id = ${input.membershipId}
-          for update of membership
+          select membership_id as id, member_user_id as user_id,
+                 member_email as email, member_display_name as display_name,
+                 member_role as role, member_capabilities as capabilities,
+                 member_status as status, member_created_at as created_at
+          from geo.get_tenant_member_identity(${input.membershipId})
         `.execute(transaction);
         const currentRow = currentResult.rows[0];
         if (currentRow === undefined) throw new RepositoryNotFoundError("Member was not found");
@@ -472,24 +482,31 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
             order by id for update
           `.execute(transaction);
           if (owners.rows.length <= 1) {
-            throw new RepositoryConflictError("The last active owner cannot be demoted or suspended");
+            throw new RepositoryConflictError(
+              "The last active owner cannot be demoted or suspended",
+            );
           }
         }
 
+        const updated = await sql<{ id: string }>`
+          update geo.tenant_memberships
+          set role = ${nextRole}, capabilities = ${jsonText(capabilitiesForRole(nextRole))}::jsonb,
+              status = ${nextStatus}
+          where id = ${input.membershipId}
+          returning id
+        `.execute(transaction);
+        if (updated.rows[0] === undefined) {
+          throw new RepositoryConflictError("Member was concurrently changed");
+        }
         const result = await sql<MemberRow>`
-          with updated as (
-            update geo.tenant_memberships
-            set role = ${nextRole}, capabilities = ${jsonText(capabilitiesForRole(nextRole))}::jsonb,
-                status = ${nextStatus}
-            where id = ${input.membershipId}
-            returning id, user_id, role, capabilities, status, created_at
-          )
-          select updated.id, updated.user_id, users.email, users.display_name,
-                 updated.role, updated.capabilities, updated.status, updated.created_at
-          from updated join geo.users as users on users.id = updated.user_id
+          select membership_id as id, member_user_id as user_id,
+                 member_email as email, member_display_name as display_name,
+                 member_role as role, member_capabilities as capabilities,
+                 member_status as status, member_created_at as created_at
+          from geo.get_tenant_member_identity(${input.membershipId})
         `.execute(transaction);
         const row = result.rows[0];
-        if (row === undefined) throw new RepositoryConflictError("Member was concurrently changed");
+        if (row === undefined) throw new RepositoryConflictError("Member update was not readable");
         const member = memberView(row);
         await insertAudit(transaction, context, {
           action: "tenant_member.changed",
@@ -511,7 +528,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async transitionPolicyBundle(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["transitionPolicyBundle"]>[1],
+      input: Parameters<ApiRepository["transitionPolicyBundle"]>[1],
     ) {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const currentResult = await sql<PolicyRow>`
@@ -519,7 +536,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           from geo.policy_bundles where id = ${input.policyBundleId} for update
         `.execute(transaction);
         const currentRow = currentResult.rows[0];
-        if (currentRow === undefined) throw new RepositoryNotFoundError("Policy bundle was not found");
+        if (currentRow === undefined)
+          throw new RepositoryNotFoundError("Policy bundle was not found");
         const before = policyView(currentRow);
         let shouldChange: boolean;
         try {
@@ -530,7 +548,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           }
           throw error;
         }
-        if (!shouldChange) return { policy: before, previousStatus: before.status, wasChanged: false };
+        if (!shouldChange)
+          return { policy: before, previousStatus: before.status, wasChanged: false };
 
         let replacedPolicyIds: string[] = [];
         if (input.targetStatus === "active") {
@@ -551,7 +570,9 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
             });
           } catch (error) {
             throw new RepositoryConflictError(
-              error instanceof Error ? `Policy cannot be activated: ${error.message}` : "Policy is invalid",
+              error instanceof Error
+                ? `Policy cannot be activated: ${error.message}`
+                : "Policy is invalid",
             );
           }
           const retired = await sql<{ id: string }>`
@@ -565,13 +586,22 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
         const result = await sql<PolicyRow>`
           update geo.policy_bundles
           set status = ${input.targetStatus},
-              effective_at = case when ${input.targetStatus} = 'active' then ${input.changedAt} else effective_at end,
-              retired_at = case when ${input.targetStatus} = 'retired' then ${input.changedAt} else null end
+              effective_at = case
+                when ${input.targetStatus}::text = 'active'
+                then ${input.changedAt}::timestamptz
+                else effective_at
+              end,
+              retired_at = case
+                when ${input.targetStatus}::text = 'retired'
+                then ${input.changedAt}::timestamptz
+                else null::timestamptz
+              end
           where id = ${input.policyBundleId}
           returning id, version, status, policy_hash, document, effective_at, retired_at, created_at
         `.execute(transaction);
         const row = result.rows[0];
-        if (row === undefined) throw new RepositoryConflictError("Policy bundle was concurrently changed");
+        if (row === undefined)
+          throw new RepositoryConflictError("Policy bundle was concurrently changed");
         const policy = policyView(row);
         await insertAudit(transaction, context, {
           action: `policy_bundle.${input.targetStatus}`,
@@ -592,7 +622,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async createChannelAccount(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["createChannelAccount"]>[1],
+      input: Parameters<ApiRepository["createChannelAccount"]>[1],
     ): Promise<ChannelAccountView> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         assertAccountEvidence(input);
@@ -613,7 +643,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
                       status, last_verified_at
           `.execute(transaction);
           const row = result.rows[0];
-          if (row === undefined) throw new RepositoryConflictError("Channel account was not created");
+          if (row === undefined)
+            throw new RepositoryConflictError("Channel account was not created");
           const account = accountView(row);
           await insertAudit(transaction, context, {
             action: "channel_account.created",
@@ -641,7 +672,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async updateChannelAccount(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["updateChannelAccount"]>[1],
+      input: Parameters<ApiRepository["updateChannelAccount"]>[1],
     ): Promise<ChannelAccountView> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const currentResult = await sql<AccountRow>`
@@ -651,7 +682,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           from geo.channel_accounts where id = ${input.channelAccountId} for update
         `.execute(transaction);
         const current = currentResult.rows[0];
-        if (current === undefined) throw new RepositoryNotFoundError("Channel account was not found");
+        if (current === undefined)
+          throw new RepositoryNotFoundError("Channel account was not found");
         const before = accountView(current);
         const effective = {
           displayName: input.displayName ?? current.display_name,
@@ -685,7 +717,8 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
                       status, last_verified_at
           `.execute(transaction);
           const row = result.rows[0];
-          if (row === undefined) throw new RepositoryConflictError("Channel account was concurrently changed");
+          if (row === undefined)
+            throw new RepositoryConflictError("Channel account was concurrently changed");
           const account = accountView(row);
           await insertAudit(transaction, context, {
             action: "channel_account.changed",
@@ -724,9 +757,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async createAutomationServicePrincipal(
       context: RequestContext,
-      input: Parameters<
-        import("./repository.js").ApiRepository["createAutomationServicePrincipal"]
-      >[1],
+      input: Parameters<ApiRepository["createAutomationServicePrincipal"]>[1],
     ): Promise<ServicePrincipalView> {
       return tenant(runtimeDatabase, context, async (transaction) => {
         try {
@@ -771,7 +802,7 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
 
     async setServicePrincipalStatus(
       context: RequestContext,
-      input: Parameters<import("./repository.js").ApiRepository["setServicePrincipalStatus"]>[1],
+      input: Parameters<ApiRepository["setServicePrincipalStatus"]>[1],
     ) {
       return tenant(runtimeDatabase, context, async (transaction) => {
         const currentResult = await sql<ServicePrincipalRow>`
@@ -811,7 +842,11 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           resourceId: principal.id,
           before,
           after: principal,
-          details: { reason: input.reason, previousStatus: before.status, status: principal.status },
+          details: {
+            reason: input.reason,
+            previousStatus: before.status,
+            status: principal.status,
+          },
         });
         return { principal, wasChanged: true };
       });

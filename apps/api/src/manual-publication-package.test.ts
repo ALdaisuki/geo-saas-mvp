@@ -36,6 +36,8 @@ const artifact: AuditArtifact = {
   platform: "toutiao",
   payloadHash: sha256Canonical(payload),
   factSnapshotHash: "b".repeat(64),
+  brandSnapshotHash: "e".repeat(64),
+  mediaSnapshotHash: "f".repeat(64),
   policyHash: "c".repeat(64),
   policyVersion: "travel-v1",
   auditHash: "d".repeat(64),

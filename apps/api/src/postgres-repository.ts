@@ -2,13 +2,16 @@ import {
   auditArtifactSchema,
   capabilitySchema,
   hallucinationFindingSchema,
+  mediaReferenceSchema,
   publicationGrantSchema,
   publicationVariantPayloadSchema,
+  visualBriefSchema,
   type Capability,
   type HallucinationFinding,
   type PublicationVariantPayload,
   type TenantContact,
 } from "@geo/contracts";
+import { sha256Canonical } from "@geo/core";
 import { withTenantTransaction, type Database, type TenantTransaction } from "@geo/db";
 import { sql, type Kysely } from "kysely";
 
@@ -32,11 +35,15 @@ import {
   type CreateContentInput,
   type CreateContentVersionInput,
   type CreateEvidenceSourceInput,
+  type CreateMediaJobInput,
   type CreateSessionInput,
   type CreateVariantInput,
   type EvidenceSourceView,
   type FactListInput,
   type LoginIdentity,
+  type MediaAssetView,
+  type MediaGenerationJobView,
+  type RecordMediaAttemptInput,
   type PolicyBundleView,
   type PersistAuditInput,
   type PersistAuditResult,
@@ -88,6 +95,187 @@ function toIso(value: Date | string): string {
 
 function toNullableIso(value: Date | string | null): string | null {
   return value === null ? null : toIso(value);
+}
+
+interface MediaGenerationJobRow {
+  readonly id: string;
+  readonly content_version_id: string;
+  readonly platform: MediaGenerationJobView["platform"];
+  readonly role: MediaGenerationJobView["role"];
+  readonly fact_ids: string[];
+  readonly visual_brief: unknown;
+  readonly visual_brief_hash: string;
+  readonly request_hash: string;
+  readonly idempotency_key: string;
+  readonly provider_id: string;
+  readonly provider_mode: MediaGenerationJobView["providerMode"];
+  readonly state: MediaGenerationJobView["state"];
+  readonly attempt_count: number;
+  readonly asset_id: string | null;
+  readonly last_error_code: string | null;
+  readonly last_error_message: string | null;
+  readonly created_at: Date;
+  readonly updated_at: Date;
+  readonly completed_at: Date | null;
+}
+
+function mediaGenerationJobView(row: MediaGenerationJobRow): MediaGenerationJobView {
+  return {
+    id: row.id,
+    contentVersionId: row.content_version_id,
+    platform: row.platform,
+    role: row.role,
+    factIds: [...row.fact_ids],
+    visualBrief: visualBriefSchema.parse(row.visual_brief),
+    visualBriefHash: row.visual_brief_hash,
+    requestHash: row.request_hash,
+    idempotencyKey: row.idempotency_key,
+    providerId: row.provider_id,
+    providerMode: row.provider_mode,
+    state: row.state,
+    attemptCount: row.attempt_count,
+    assetId: row.asset_id,
+    lastErrorCode: row.last_error_code,
+    lastErrorMessage: row.last_error_message,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    completedAt: toNullableIso(row.completed_at),
+  };
+}
+
+interface MediaAssetRow {
+  readonly id: string;
+  readonly content_version_id: string;
+  readonly storage_key: string;
+  readonly sha256: string;
+  readonly mime_type: string;
+  readonly byte_length: string;
+  readonly width: number;
+  readonly height: number;
+  readonly platform: MediaAssetView["reference"]["platform"];
+  readonly role: MediaAssetView["reference"]["role"];
+  readonly alt_text: string;
+  readonly caption: string;
+  readonly fact_ids: string[];
+  readonly visual_brief: unknown;
+  readonly visual_brief_hash: string;
+  readonly rights: unknown;
+  readonly provenance: unknown;
+  readonly inspection_asset_sha256: string;
+  readonly inspection_status: "passed" | "failed";
+  readonly evaluator: string;
+  readonly evaluator_mode: "fixture" | "live";
+  readonly evaluator_version: string;
+  readonly response_sha256: string;
+  readonly inspected_at: Date;
+  readonly ocr_text: string;
+  readonly labels: unknown;
+  readonly created_at: Date;
+}
+
+function mediaAssetView(row: MediaAssetRow): MediaAssetView {
+  const reference = mediaReferenceSchema.parse({
+    id: row.id,
+    sha256: row.sha256,
+    mimeType: row.mime_type,
+    byteLength: Number(row.byte_length),
+    width: row.width,
+    height: row.height,
+    platform: row.platform,
+    role: row.role,
+    altText: row.alt_text,
+    caption: row.caption,
+    factIds: row.fact_ids,
+    visualBrief: row.visual_brief,
+    visualBriefHash: row.visual_brief_hash,
+    rights: row.rights,
+    provenance: row.provenance,
+    inspection: {
+      assetSha256: row.inspection_asset_sha256,
+      status: row.inspection_status,
+      evaluator: row.evaluator,
+      evaluatorMode: row.evaluator_mode,
+      evaluatorVersion: row.evaluator_version,
+      responseSha256: row.response_sha256,
+      inspectedAt: toIso(row.inspected_at),
+      ocrText: row.ocr_text,
+      labels: stringArray(row.labels),
+    },
+  });
+  return {
+    id: row.id,
+    contentVersionId: row.content_version_id,
+    storageKey: row.storage_key,
+    reference,
+    createdAt: toIso(row.created_at),
+  };
+}
+
+async function readMediaAssets(
+  transaction: TenantTransaction,
+  input: { readonly assetId?: string; readonly contentVersionId?: string },
+): Promise<readonly MediaAssetView[]> {
+  const result = await sql<MediaAssetRow>`
+    select asset.id, asset.content_version_id, asset.storage_key, asset.sha256,
+           asset.mime_type, asset.byte_length::text, asset.width, asset.height,
+           asset.platform, asset.role, asset.alt_text, asset.caption, asset.fact_ids,
+           asset.visual_brief, asset.visual_brief_hash, asset.rights, asset.provenance,
+           inspection.asset_sha256 as inspection_asset_sha256,
+           inspection.status as inspection_status, inspection.evaluator,
+           inspection.evaluator_mode, inspection.evaluator_version,
+           inspection.response_sha256, inspection.inspected_at,
+           inspection.ocr_text, inspection.labels, asset.created_at
+    from geo.media_assets as asset
+    join lateral (
+      select inspected.asset_sha256, inspected.status, inspected.evaluator,
+             inspected.evaluator_mode, inspected.evaluator_version,
+             inspected.response_sha256, inspected.inspected_at,
+             inspected.ocr_text, inspected.labels
+      from geo.media_inspections as inspected
+      where inspected.media_asset_id = asset.id and inspected.asset_sha256 = asset.sha256
+      order by inspected.inspected_at desc, inspected.id desc
+      limit 1
+    ) as inspection on true
+    where asset.source_class <> 'legacy'
+      and (${input.assetId ?? null}::uuid is null or asset.id = ${input.assetId ?? null}::uuid)
+      and (${input.contentVersionId ?? null}::uuid is null or
+           asset.content_version_id = ${input.contentVersionId ?? null}::uuid)
+    order by asset.created_at, asset.id
+  `.execute(transaction);
+  return result.rows.map(mediaAssetView);
+}
+
+async function assertStoredMediaReferences(
+  transaction: TenantTransaction,
+  contentVersionId: string,
+  references: readonly MediaAssetView["reference"][],
+  requireBindings: boolean,
+): Promise<void> {
+  for (const reference of references) {
+    const assets = await readMediaAssets(transaction, { assetId: reference.id });
+    const asset = assets[0];
+    if (asset === undefined || sha256Canonical(asset.reference) !== sha256Canonical(reference)) {
+      throw new RepositoryConflictError(
+        "Publication payload references unknown or changed media evidence",
+      );
+    }
+    if (!requireBindings) continue;
+    const binding = await sql<{ id: string }>`
+      select id from geo.content_media_bindings
+      where content_version_id = ${contentVersionId}
+        and media_asset_id = ${reference.id}
+        and platform = ${reference.platform}
+        and role = ${reference.role}
+        and alt_text = ${reference.altText}
+        and caption = ${reference.caption}
+      limit 1
+    `.execute(transaction);
+    if (binding.rows[0] === undefined) {
+      throw new RepositoryConflictError(
+        "Publication payload media is not bound to its content version",
+      );
+    }
+  }
 }
 
 interface VisibilityRunRow {
@@ -343,6 +531,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
       platform: VariantView["platform"];
       payload_hash: string;
       fact_snapshot_hash: string;
+      brand_snapshot_hash: string;
+      media_snapshot_hash: string;
       policy_hash: string;
       policy_version: string;
       audit_hash: string;
@@ -352,7 +542,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
       expires_at: Date;
     }>`
       select id, audit_run_id, tenant_id, variant_id, channel_account_id, platform, payload_hash,
-             fact_snapshot_hash, policy_hash, policy_version, audit_hash, status,
+             fact_snapshot_hash, brand_snapshot_hash, media_snapshot_hash,
+             policy_hash, policy_version, audit_hash, status,
              findings, created_at, expires_at
       from geo.audit_artifacts where id = ${artifactId}
     `.execute(transaction);
@@ -394,6 +585,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         platform: artifactRow.platform,
         payloadHash: artifactRow.payload_hash,
         factSnapshotHash: artifactRow.fact_snapshot_hash,
+        brandSnapshotHash: artifactRow.brand_snapshot_hash,
+        mediaSnapshotHash: artifactRow.media_snapshot_hash,
         policyHash: artifactRow.policy_hash,
         policyVersion: artifactRow.policy_version,
         auditHash: artifactRow.audit_hash,
@@ -751,12 +944,11 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           status: TenantMemberView["status"];
           created_at: Date;
         }>`
-          select membership.id, membership.user_id, users.email, users.display_name,
-                 membership.role, membership.capabilities, membership.status,
-                 membership.created_at
-          from geo.tenant_memberships as membership
-          join geo.users as users on users.id = membership.user_id
-          order by membership.created_at, membership.id
+          select membership_id as id, member_user_id as user_id,
+                 member_email as email, member_display_name as display_name,
+                 member_role as role, member_capabilities as capabilities,
+                 member_status as status, member_created_at as created_at
+          from geo.list_tenant_member_identities()
         `.execute(transaction);
         return result.rows.map((row) => ({
           id: row.id,
@@ -1622,6 +1814,9 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           id: string;
           content_version_id: string;
           brand_id: string;
+          canonical_name: string;
+          display_name: string;
+          aliases: unknown;
           channel_account_id: string;
           platform: VariantView["platform"];
           variant_version: number;
@@ -1676,6 +1871,16 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         if (accountRow === undefined || versionRow === undefined) {
           throw new RepositoryNotFoundError("Content version or channel account was not found");
         }
+        const payload = publicationVariantPayloadSchema.parse(input.payload);
+        if (sha256Canonical(payload) !== input.payloadHash) {
+          throw new RepositoryConflictError("Publication variant payload hash does not match");
+        }
+        if (payload.media.some((reference) => reference.platform !== accountRow.platform)) {
+          throw new RepositoryConflictError(
+            "Publication variant contains media for another platform",
+          );
+        }
+        await assertStoredMediaReferences(transaction, versionRow.id, payload.media, true);
         const existing = await sql<{
           id: string;
           variant_version: number;
@@ -1713,7 +1918,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             and channel_account_id = ${input.channelAccountId}
         `.execute(transaction);
         const variantVersion = nextVersion.rows[0]?.value ?? 1;
-        const payloadJson = jsonText(input.payload);
+        const payloadJson = jsonText(payload);
         await sql`
           insert into geo.publication_variants (
             tenant_id, id, content_version_id, channel_account_id, platform,
@@ -1729,11 +1934,366 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           channelAccountId: input.channelAccountId,
           platform: accountRow.platform,
           variantVersion,
-          payload: input.payload,
+          payload,
           payloadHash: input.payloadHash,
           state: "draft",
           frozenAt: null,
         };
+      });
+    },
+
+    async createMediaJob(
+      context: RequestContext,
+      input: CreateMediaJobInput,
+    ): Promise<MediaGenerationJobView> {
+      return tenant(context, async (transaction) => {
+        const existing = await sql<MediaGenerationJobRow>`
+          select id, content_version_id, platform, role, fact_ids, visual_brief,
+                 visual_brief_hash, request_hash, idempotency_key, provider_id,
+                 provider_mode, state, attempt_count, asset_id, last_error_code,
+                 last_error_message, created_at, updated_at, completed_at
+          from geo.media_generation_jobs
+          where idempotency_key = ${input.idempotencyKey}
+          for update
+        `.execute(transaction);
+        const existingRow = existing.rows[0];
+        if (existingRow !== undefined) {
+          if (existingRow.request_hash !== input.requestHash) {
+            throw new RepositoryConflictError(
+              "Media job idempotency key conflicts with another request",
+            );
+          }
+          return mediaGenerationJobView(existingRow);
+        }
+
+        const visualBrief = visualBriefSchema.parse(input.visualBrief);
+        if (
+          input.platform !== visualBrief.platform ||
+          input.role !== visualBrief.role ||
+          input.visualBriefHash !== sha256Canonical(visualBrief) ||
+          input.factIds.length !== visualBrief.factIds.length ||
+          input.factIds.some((factId, index) => factId !== visualBrief.factIds[index])
+        ) {
+          throw new RepositoryConflictError("Media job does not match its visual brief");
+        }
+        const result = await sql<MediaGenerationJobRow>`
+          insert into geo.media_generation_jobs (
+            tenant_id, id, content_version_id, platform, role, fact_ids,
+            visual_brief, visual_brief_hash, request_hash, idempotency_key,
+            provider_id, provider_mode, created_by_actor_id
+          ) values (
+            ${context.tenantId}, ${input.jobId}, ${input.contentVersionId},
+            ${input.platform}, ${input.role}, ${input.factIds}::uuid[],
+            ${jsonText(visualBrief)}::jsonb, ${input.visualBriefHash}, ${input.requestHash},
+            ${input.idempotencyKey}, ${input.providerId}, ${input.providerMode},
+            ${context.actorId}
+          )
+          returning id, content_version_id, platform, role, fact_ids, visual_brief,
+                    visual_brief_hash, request_hash, idempotency_key, provider_id,
+                    provider_mode, state, attempt_count, asset_id, last_error_code,
+                    last_error_message, created_at, updated_at, completed_at
+        `.execute(transaction);
+        const row = result.rows[0];
+        if (row === undefined) throw new RepositoryConflictError("Media job was not created");
+        return mediaGenerationJobView(row);
+      });
+    },
+
+    async getMediaJob(context: RequestContext, jobId: string) {
+      return tenant(context, async (transaction) => {
+        const result = await sql<MediaGenerationJobRow>`
+          select id, content_version_id, platform, role, fact_ids, visual_brief,
+                 visual_brief_hash, request_hash, idempotency_key, provider_id,
+                 provider_mode, state, attempt_count, asset_id, last_error_code,
+                 last_error_message, created_at, updated_at, completed_at
+          from geo.media_generation_jobs where id = ${jobId}
+        `.execute(transaction);
+        const row = result.rows[0];
+        return row === undefined ? null : mediaGenerationJobView(row);
+      });
+    },
+
+    async recordMediaAttempt(
+      context: RequestContext,
+      input: RecordMediaAttemptInput,
+    ): Promise<void> {
+      await tenant(context, async (transaction) => {
+        const jobResult = await sql<{
+          state: MediaGenerationJobView["state"];
+          request_hash: string;
+          provider_id: string;
+          provider_mode: MediaGenerationJobView["providerMode"];
+        }>`
+          select state, request_hash, provider_id, provider_mode
+          from geo.media_generation_jobs where id = ${input.jobId} for update
+        `.execute(transaction);
+        const job = jobResult.rows[0];
+        if (job === undefined) throw new RepositoryNotFoundError("Media job was not found");
+        if (["succeeded", "failed", "cancelled"].includes(job.state)) {
+          throw new RepositoryConflictError("Media job is already terminal");
+        }
+        if (
+          input.requestHash !== job.request_hash ||
+          input.providerId !== job.provider_id ||
+          input.providerMode !== job.provider_mode
+        ) {
+          throw new RepositoryConflictError("Media attempt does not match its generation job");
+        }
+        const succeeded = input.status === "succeeded";
+        if (
+          (succeeded &&
+            (input.responseHash === null ||
+              input.outputSha256 === null ||
+              input.errorCode !== null)) ||
+          (!succeeded && (input.outputSha256 !== null || input.errorCode === null))
+        ) {
+          throw new RepositoryConflictError("Media attempt outcome fields are inconsistent");
+        }
+        await sql`
+          insert into geo.media_generation_attempts (
+            tenant_id, id, job_id, attempt_no, status, provider_id, provider_mode,
+            model, input_hash, request_hash, response_hash, output_sha256,
+            provider_request_id, error_code, error_message, started_at, finished_at
+          ) values (
+            ${context.tenantId}, ${input.attemptId}, ${input.jobId}, ${input.attemptNo},
+            ${input.status}, ${input.providerId}, ${input.providerMode}, ${input.model},
+            ${input.inputHash}, ${input.requestHash}, ${input.responseHash},
+            ${input.outputSha256}, ${input.providerRequestId}, ${input.errorCode},
+            ${input.errorMessage}, ${input.startedAt}, ${input.finishedAt}
+          )
+        `.execute(transaction);
+        await sql`
+          update geo.media_generation_jobs
+          set state = ${succeeded ? "running" : "pending"},
+              attempt_count = greatest(attempt_count, ${input.attemptNo}),
+              lease_owner = null, lease_expires_at = null
+          where id = ${input.jobId}
+        `.execute(transaction);
+      });
+    },
+
+    async completeMediaJob(
+      context: RequestContext,
+      input: Parameters<ApiRepository["completeMediaJob"]>[1],
+    ): Promise<MediaAssetView> {
+      return tenant(context, async (transaction) => {
+        const reference = mediaReferenceSchema.parse(input.reference);
+        const payload = publicationVariantPayloadSchema.parse(input.successorPayload);
+        if (sha256Canonical(payload) !== input.successorPayloadHash) {
+          throw new RepositoryConflictError("Successor media payload hash does not match");
+        }
+        const payloadReference = payload.media.find((item) => item.id === reference.id);
+        if (
+          payloadReference === undefined ||
+          sha256Canonical(payloadReference) !== sha256Canonical(reference)
+        ) {
+          throw new RepositoryConflictError(
+            "Successor payload does not contain the exact media reference",
+          );
+        }
+        const extensions: Readonly<Record<string, string>> = {
+          "image/png": "png",
+          "image/jpeg": "jpg",
+          "image/webp": "webp",
+        };
+        const extension = extensions[reference.mimeType];
+        const expectedStorageKey =
+          extension === undefined
+            ? null
+            : `${context.tenantId}/${reference.sha256.slice(0, 2)}/${reference.sha256}.${extension}`;
+        if (input.storageKey !== expectedStorageKey) {
+          throw new RepositoryConflictError("Media storage key is not content addressed");
+        }
+
+        const jobResult = await sql<{
+          content_version_id: string;
+          platform: MediaGenerationJobView["platform"];
+          role: MediaGenerationJobView["role"];
+          visual_brief_hash: string;
+          provider_id: string;
+          provider_mode: MediaGenerationJobView["providerMode"];
+          state: MediaGenerationJobView["state"];
+        }>`
+          select content_version_id, platform, role, visual_brief_hash,
+                 provider_id, provider_mode, state
+          from geo.media_generation_jobs where id = ${input.jobId} for update
+        `.execute(transaction);
+        const job = jobResult.rows[0];
+        if (job === undefined) throw new RepositoryNotFoundError("Media job was not found");
+        if (job.state !== "running") {
+          throw new RepositoryConflictError("Media job is not ready for completion");
+        }
+        if (
+          reference.platform !== job.platform ||
+          reference.role !== job.role ||
+          reference.visualBriefHash !== job.visual_brief_hash ||
+          reference.provenance.kind !== "generated" ||
+          reference.provenance.jobId !== input.jobId ||
+          reference.provenance.provider !== job.provider_id ||
+          reference.provenance.providerMode !== job.provider_mode ||
+          reference.inspection.status !== "passed"
+        ) {
+          throw new RepositoryConflictError("Media asset does not match its generation job");
+        }
+        const successfulAttempt = await sql<{ id: string }>`
+          select id from geo.media_generation_attempts
+          where id = ${reference.provenance.attemptId}
+            and job_id = ${input.jobId} and status = 'succeeded'
+            and output_sha256 = ${reference.sha256}
+            and provider_id = ${reference.provenance.provider}
+            and provider_mode = ${reference.provenance.providerMode}
+            and model = ${reference.provenance.model}
+          limit 1
+        `.execute(transaction);
+        if (successfulAttempt.rows[0] === undefined) {
+          throw new RepositoryConflictError("Media job has no matching successful attempt");
+        }
+
+        const sourceVersion = await sql<{ content_item_id: string; version: number }>`
+          select content_item_id, version from geo.content_versions
+          where id = ${job.content_version_id} for share
+        `.execute(transaction);
+        const source = sourceVersion.rows[0];
+        if (source === undefined) {
+          throw new RepositoryNotFoundError("Source content version was not found");
+        }
+        const nextVersion = await sql<{ value: number }>`
+          select (coalesce(max(version), 0) + 1)::integer as value
+          from geo.content_versions where content_item_id = ${source.content_item_id}
+        `.execute(transaction);
+        const version = nextVersion.rows[0]?.value ?? source.version + 1;
+        await sql`
+          insert into geo.content_versions (
+            tenant_id, id, content_item_id, version, summary, body_markdown,
+            payload, payload_hash, created_by_actor_id
+          ) values (
+            ${context.tenantId}, ${input.successorContentVersionId}, ${source.content_item_id},
+            ${version}, ${payload.summary}, ${payload.bodyMarkdown}, ${jsonText(payload)}::jsonb,
+            ${input.successorPayloadHash}, ${context.actorId}
+          )
+        `.execute(transaction);
+
+        const provenanceHash = sha256Canonical({
+          sha256: reference.sha256,
+          dimensions: { width: reference.width, height: reference.height },
+          platform: reference.platform,
+          role: reference.role,
+          altText: reference.altText,
+          caption: reference.caption,
+          factIds: reference.factIds,
+          visualBriefHash: reference.visualBriefHash,
+          rights: reference.rights,
+          provenance: reference.provenance,
+        });
+        const insertedAsset = await sql<{ created_at: Date }>`
+          insert into geo.media_assets (
+            tenant_id, id, content_version_id, job_id, sha256, source_class,
+            provenance_hash, mime_type, byte_length, width, height, platform, role,
+            storage_key, alt_text, caption, fact_ids, visual_brief, visual_brief_hash,
+            rights, provenance, source_url, metadata
+          ) values (
+            ${context.tenantId}, ${input.assetId}, ${input.successorContentVersionId},
+            ${input.jobId}, ${reference.sha256}, ${reference.provenance.kind},
+            ${provenanceHash}, ${reference.mimeType}, ${reference.byteLength},
+            ${reference.width}, ${reference.height}, ${reference.platform}, ${reference.role},
+            ${input.storageKey}, ${reference.altText}, ${reference.caption},
+            ${reference.factIds}::uuid[], ${jsonText(reference.visualBrief)}::jsonb,
+            ${reference.visualBriefHash}, ${jsonText(reference.rights)}::jsonb,
+            ${jsonText(reference.provenance)}::jsonb, ${null}, '{}'::jsonb
+          )
+          returning created_at
+        `.execute(transaction);
+        const assetCreatedAt = insertedAsset.rows[0]?.created_at;
+        if (assetCreatedAt === undefined) {
+          throw new RepositoryConflictError("Media asset was not created");
+        }
+        await sql`
+          insert into geo.media_inspections (
+            tenant_id, id, media_asset_id, asset_sha256, status, evaluator,
+            evaluator_mode, evaluator_version, response_sha256, inspected_at,
+            ocr_text, labels
+          ) values (
+            ${context.tenantId}, ${input.inspectionId}, ${input.assetId},
+            ${reference.sha256}, ${reference.inspection.status},
+            ${reference.inspection.evaluator}, ${reference.inspection.evaluatorMode},
+            ${reference.inspection.evaluatorVersion}, ${reference.inspection.responseSha256},
+            ${reference.inspection.inspectedAt}, ${reference.inspection.ocrText},
+            ${jsonText(reference.inspection.labels)}::jsonb
+          )
+        `.execute(transaction);
+
+        await assertStoredMediaReferences(
+          transaction,
+          input.successorContentVersionId,
+          payload.media,
+          false,
+        );
+
+        const positions = new Map<string, number>();
+        for (const media of payload.media) {
+          const positionKey = `${media.platform}:${media.role}`;
+          const position = positions.get(positionKey) ?? 0;
+          positions.set(positionKey, position + 1);
+          const bindingId = media.id === reference.id ? input.bindingId : null;
+          await sql`
+            insert into geo.content_media_bindings (
+              tenant_id, id, content_version_id, media_asset_id, platform,
+              role, position, alt_text, caption
+            ) values (
+              ${context.tenantId}, coalesce(${bindingId}::uuid, gen_random_uuid()),
+              ${input.successorContentVersionId}, ${media.id}, ${media.platform},
+              ${media.role}, ${position}, ${media.altText}, ${media.caption}
+            )
+          `.execute(transaction);
+        }
+        await sql`
+          update geo.media_generation_jobs
+          set state = 'succeeded', asset_id = ${input.assetId}, completed_at = ${input.completedAt},
+              lease_owner = null, lease_expires_at = null,
+              last_error_code = null, last_error_message = null
+          where id = ${input.jobId}
+        `.execute(transaction);
+
+        return {
+          id: input.assetId,
+          contentVersionId: input.successorContentVersionId,
+          storageKey: input.storageKey,
+          reference,
+          createdAt: toIso(assetCreatedAt),
+        };
+      });
+    },
+
+    async failMediaJob(
+      context: RequestContext,
+      input: Parameters<ApiRepository["failMediaJob"]>[1],
+    ): Promise<MediaGenerationJobView> {
+      return tenant(context, async (transaction) => {
+        const result = await sql<MediaGenerationJobRow>`
+          update geo.media_generation_jobs
+          set state = 'failed', last_error_code = ${input.errorCode},
+              last_error_message = ${input.errorMessage}, completed_at = ${input.completedAt},
+              lease_owner = null, lease_expires_at = null
+          where id = ${input.jobId} and state in ('pending', 'running')
+          returning id, content_version_id, platform, role, fact_ids, visual_brief,
+                    visual_brief_hash, request_hash, idempotency_key, provider_id,
+                    provider_mode, state, attempt_count, asset_id, last_error_code,
+                    last_error_message, created_at, updated_at, completed_at
+        `.execute(transaction);
+        const row = result.rows[0];
+        if (row === undefined) throw new RepositoryConflictError("Media job cannot be failed");
+        return mediaGenerationJobView(row);
+      });
+    },
+
+    async listMediaAssets(context: RequestContext, contentVersionId: string) {
+      return tenant(context, (transaction) => readMediaAssets(transaction, { contentVersionId }));
+    },
+
+    async getMediaAsset(context: RequestContext, assetId: string) {
+      return tenant(context, async (transaction) => {
+        const assets = await readMediaAssets(transaction, { assetId });
+        return assets[0] ?? null;
       });
     },
 
@@ -1747,6 +2307,9 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           id: string;
           content_version_id: string;
           brand_id: string;
+          canonical_name: string;
+          display_name: string;
+          aliases: unknown;
           channel_account_id: string;
           platform: VariantView["platform"];
           variant_version: number;
@@ -1757,18 +2320,31 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           created_at: Date;
         }>`
           select variant.id, variant.content_version_id, content.brand_id,
+                 brand.canonical_name, brand.display_name, brand.aliases,
                  variant.channel_account_id, variant.platform, variant.variant_version,
                  variant.payload, variant.payload_hash, variant.state, variant.frozen_at,
                  variant.created_at
           from geo.publication_variants as variant
           join geo.content_versions as version on version.id = variant.content_version_id
           join geo.content_items as content on content.id = version.content_item_id
+          join geo.brands as brand on brand.id = content.brand_id
           where variant.id = ${variantId}
         `.execute(transaction);
         const variantRow = variantResult.rows[0];
         if (variantRow === undefined || variantRow.state === "superseded") {
           return null;
         }
+        const auditPayload = publicationVariantPayloadSchema.parse(variantRow.payload);
+        await assertStoredMediaReferences(
+          transaction,
+          variantRow.content_version_id,
+          auditPayload.media,
+          true,
+        );
+        const claimIds = [...new Set(auditPayload.claims.map((claim) => claim.id))];
+        const sourceIds = [
+          ...new Set(auditPayload.claims.flatMap((claim) => claim.evidenceSourceIds)),
+        ];
         const policyResult = await sql<{
           id: string;
           version: string;
@@ -1792,7 +2368,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         }>`
           select id, source_url, content_hash, captured_at, valid_until
           from geo.evidence_sources
-          where content_text is not null
+          where id = any(${sourceIds}::uuid[])
           order by captured_at desc
         `.execute(transaction);
         const factResult = await sql<{
@@ -1805,7 +2381,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         }>`
           select id, brand_id, claim, evidence_refs, valid_from, valid_until
           from geo.claim_facts
-          where status = 'verified'
+          where status = 'verified' and id = any(${claimIds}::uuid[])
           order by id
         `.execute(transaction);
         const priorResult = await sql<{
@@ -1862,14 +2438,19 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             : [];
         });
         return {
-          brandId: variantRow.brand_id,
+          brandSnapshot: {
+            id: variantRow.brand_id,
+            canonicalName: variantRow.canonical_name,
+            displayName: variantRow.display_name,
+            aliases: stringArray(variantRow.aliases),
+          },
           variant: {
             id: variantRow.id,
             contentVersionId: variantRow.content_version_id,
             channelAccountId: variantRow.channel_account_id,
             platform: variantRow.platform,
             variantVersion: variantRow.variant_version,
-            payload: variantRow.payload,
+            payload: auditPayload,
             payloadHash: variantRow.payload_hash,
             state: variantRow.state,
             frozenAt: toNullableIso(variantRow.frozen_at),
@@ -2013,13 +2594,15 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         await sql`
           insert into geo.audit_artifacts (
             tenant_id, id, audit_run_id, variant_id, channel_account_id, platform,
-            payload_hash, fact_snapshot_hash, policy_hash, policy_version, audit_hash,
+            payload_hash, fact_snapshot_hash, brand_snapshot_hash, media_snapshot_hash,
+            policy_hash, policy_version, audit_hash,
             status, findings, created_at, expires_at
           ) values (
             ${context.tenantId}, ${input.artifact.id}, ${input.auditRunId},
             ${input.artifact.variantId}, ${input.artifact.channelAccountId},
             ${input.artifact.platform}, ${input.artifact.payloadHash},
-            ${input.artifact.factSnapshotHash}, ${input.artifact.policyHash},
+            ${input.artifact.factSnapshotHash}, ${input.artifact.brandSnapshotHash},
+            ${input.artifact.mediaSnapshotHash}, ${input.artifact.policyHash},
             ${input.artifact.policyVersion}, ${input.artifact.auditHash},
             ${input.artifact.status}, ${findingsJson}::jsonb,
             ${input.artifact.createdAt}, ${input.artifact.expiresAt}
@@ -2085,6 +2668,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           platform: VariantView["platform"];
           payload_hash: string;
           fact_snapshot_hash: string;
+          brand_snapshot_hash: string;
+          media_snapshot_hash: string;
           policy_hash: string;
           policy_version: string;
           audit_hash: string;
@@ -2094,7 +2679,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           expires_at: Date;
         }>`
           select id, tenant_id, variant_id, channel_account_id, platform, payload_hash,
-                 fact_snapshot_hash, policy_hash, policy_version, audit_hash, status,
+                 fact_snapshot_hash, brand_snapshot_hash, media_snapshot_hash,
+                 policy_hash, policy_version, audit_hash, status,
                  findings, created_at, expires_at
           from geo.audit_artifacts where id = ${artifactId}
         `.execute(transaction);
@@ -2110,6 +2696,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           platform: row.platform,
           payloadHash: row.payload_hash,
           factSnapshotHash: row.fact_snapshot_hash,
+          brandSnapshotHash: row.brand_snapshot_hash,
+          mediaSnapshotHash: row.media_snapshot_hash,
           policyHash: row.policy_hash,
           policyVersion: row.policy_version,
           auditHash: row.audit_hash,
@@ -2134,6 +2722,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           platform: VariantView["platform"];
           payload_hash: string;
           fact_snapshot_hash: string;
+          brand_snapshot_hash: string;
+          media_snapshot_hash: string;
           policy_hash: string;
           policy_version: string;
           audit_hash: string;
@@ -2150,7 +2740,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         }>`
           select artifact.id, artifact.tenant_id, artifact.variant_id,
                  artifact.channel_account_id, artifact.platform, artifact.payload_hash,
-                 artifact.fact_snapshot_hash, artifact.policy_hash, artifact.policy_version,
+                 artifact.fact_snapshot_hash, artifact.brand_snapshot_hash,
+                 artifact.media_snapshot_hash, artifact.policy_hash, artifact.policy_version,
                  artifact.audit_hash, artifact.status, artifact.findings,
                  artifact.created_at, artifact.expires_at, variant.payload,
                  account.id as account_id, account.platform as account_platform,
@@ -2182,6 +2773,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             platform: row.platform,
             payloadHash: row.payload_hash,
             factSnapshotHash: row.fact_snapshot_hash,
+            brandSnapshotHash: row.brand_snapshot_hash,
+            mediaSnapshotHash: row.media_snapshot_hash,
             policyHash: row.policy_hash,
             policyVersion: row.policy_version,
             auditHash: row.audit_hash,
@@ -2242,6 +2835,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           platform: VariantView["platform"];
           payload_hash: string;
           fact_snapshot_hash: string;
+          brand_snapshot_hash: string;
+          media_snapshot_hash: string;
           policy_hash: string;
           policy_version: string;
           audit_hash: string;
@@ -2251,7 +2846,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           expires_at: Date;
         }>`
           select id, tenant_id, variant_id, channel_account_id, platform, payload_hash,
-                 fact_snapshot_hash, policy_hash, policy_version, audit_hash, status,
+                 fact_snapshot_hash, brand_snapshot_hash, media_snapshot_hash,
+                 policy_hash, policy_version, audit_hash, status,
                  findings, created_at, expires_at
           from geo.audit_artifacts
           where (${input.before ?? null}::timestamptz is null or created_at < ${input.before ?? null}::timestamptz)
@@ -2269,6 +2865,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             platform: row.platform,
             payloadHash: row.payload_hash,
             factSnapshotHash: row.fact_snapshot_hash,
+            brandSnapshotHash: row.brand_snapshot_hash,
+            mediaSnapshotHash: row.media_snapshot_hash,
             policyHash: row.policy_hash,
             policyVersion: row.policy_version,
             auditHash: row.audit_hash,
@@ -2460,6 +3058,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           platform: VariantView["platform"];
           payload_hash: string;
           fact_snapshot_hash: string;
+          brand_snapshot_hash: string;
+          media_snapshot_hash: string;
           policy_hash: string;
           policy_version: string;
           audit_hash: string;
@@ -2475,6 +3075,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
                  artifact.id as artifact_id,
                  artifact.tenant_id, artifact.variant_id, artifact.channel_account_id,
                  artifact.platform, artifact.payload_hash, artifact.fact_snapshot_hash,
+                 artifact.brand_snapshot_hash, artifact.media_snapshot_hash,
                  artifact.policy_hash, artifact.policy_version, artifact.audit_hash,
                  artifact.status as audit_status, artifact.findings,
                  artifact.created_at as artifact_created_at,
@@ -2501,6 +3102,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             platform: row.platform,
             payloadHash: row.payload_hash,
             factSnapshotHash: row.fact_snapshot_hash,
+            brandSnapshotHash: row.brand_snapshot_hash,
+            mediaSnapshotHash: row.media_snapshot_hash,
             policyHash: row.policy_hash,
             policyVersion: row.policy_version,
             auditHash: row.audit_hash,

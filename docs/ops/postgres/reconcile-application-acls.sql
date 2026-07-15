@@ -33,6 +33,16 @@ REVOKE ALL ON geo.tenant_provisioning_receipts FROM geo_runtime;
 REVOKE UPDATE, DELETE ON geo.automation_batches, geo.automation_runs,
   geo.automation_run_targets FROM geo_runtime;
 
+REVOKE ALL ON geo.media_generation_jobs, geo.media_generation_attempts,
+  geo.media_assets, geo.content_media_bindings, geo.media_inspections FROM geo_runtime;
+GRANT SELECT, INSERT ON geo.media_generation_jobs TO geo_runtime;
+GRANT UPDATE (
+  state, attempt_count, lease_owner, lease_expires_at, asset_id,
+  last_error_code, last_error_message, updated_at, completed_at
+) ON geo.media_generation_jobs TO geo_runtime;
+GRANT SELECT, INSERT ON geo.media_generation_attempts, geo.media_assets,
+  geo.content_media_bindings, geo.media_inspections TO geo_runtime;
+
 REVOKE ALL ON TABLE geo.publication_readbacks FROM geo_runtime;
 GRANT SELECT ON geo.publication_readbacks TO geo_runtime;
 GRANT UPDATE (status, completed_at, last_error) ON geo.publication_readbacks TO geo_runtime;
@@ -61,6 +71,8 @@ GRANT EXECUTE ON FUNCTION geo.reconcile_automation_run(uuid, text, integer, inte
 GRANT EXECUTE ON FUNCTION geo.cancel_automation_batch(uuid, text) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, text, text, text)
   TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.list_tenant_member_identities() TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.research_allowed_hosts_valid(text[]) TO geo_runtime;
 
 GRANT EXECUTE ON FUNCTION geo.claim_outbox_events(text, integer, integer) TO geo_dispatcher;
@@ -116,6 +128,22 @@ BEGIN
        'geo_runtime',
        'geo.create_tenant_member_identity(uuid,uuid,text,text,text,text)',
        'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime', 'geo.list_tenant_member_identities()', 'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime', 'geo.get_tenant_member_identity(uuid)', 'EXECUTE'
+     )
+     OR NOT has_table_privilege('geo_runtime', 'geo.media_assets', 'SELECT')
+     OR NOT has_table_privilege('geo_runtime', 'geo.media_assets', 'INSERT')
+     OR has_table_privilege('geo_runtime', 'geo.media_assets', 'UPDATE')
+     OR has_table_privilege('geo_runtime', 'geo.media_inspections', 'DELETE')
+     OR NOT has_column_privilege(
+       'geo_runtime', 'geo.media_generation_jobs', 'state', 'UPDATE'
+     )
+     OR has_column_privilege(
+       'geo_runtime', 'geo.media_generation_jobs', 'request_hash', 'UPDATE'
      )
      OR NOT has_function_privilege(
        'geo_runtime', 'geo.research_allowed_hosts_valid(text[])', 'EXECUTE'

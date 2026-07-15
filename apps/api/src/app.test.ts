@@ -186,6 +186,10 @@ class FakeRepository implements ApiRepository {
   >();
   readonly contentVersionInputs: Parameters<ApiRepository["createContentVersion"]>[1][] = [];
   readonly variantInputs: Parameters<ApiRepository["createVariant"]>[1][] = [];
+  readonly mediaJobs = new Map<string, Awaited<ReturnType<ApiRepository["createMediaJob"]>>>();
+  readonly mediaJobIdempotency = new Map<string, string>();
+  readonly mediaAttempts: Parameters<ApiRepository["recordMediaAttempt"]>[1][] = [];
+  readonly mediaAssets = new Map<string, Awaited<ReturnType<ApiRepository["completeMediaJob"]>>>();
   readonly visibilityRuns: Parameters<ApiRepository["persistVisibilityRun"]>[1][] = [];
   readonly brandInputs: Parameters<ApiRepository["createBrand"]>[1][] = [];
   readonly policyInputs: Parameters<ApiRepository["createPolicyBundle"]>[1][] = [];
@@ -957,6 +961,17 @@ class FakeRepository implements ApiRepository {
     input: Parameters<ApiRepository["createVariant"]>[1],
   ) {
     this.variantInputs.push(input);
+    if (sha256Canonical(input.payload) !== input.payloadHash) {
+      throw new RepositoryConflictError("Publication variant payload hash does not match");
+    }
+    for (const reference of input.payload.media) {
+      const asset = this.mediaAssets.get(`${_context.tenantId}:${reference.id}`);
+      if (asset === undefined || sha256Canonical(asset.reference) !== sha256Canonical(reference)) {
+        throw new RepositoryConflictError(
+          "Publication payload references unknown or changed media evidence",
+        );
+      }
+    }
     return {
       id: input.variantId,
       contentVersionId: input.contentVersionId,
@@ -970,9 +985,234 @@ class FakeRepository implements ApiRepository {
     };
   }
 
+  async createMediaJob(
+    context: RequestContext,
+    input: Parameters<ApiRepository["createMediaJob"]>[1],
+  ): ReturnType<ApiRepository["createMediaJob"]> {
+    const idempotencyKey = `${context.tenantId}:${input.idempotencyKey}`;
+    const existingJobId = this.mediaJobIdempotency.get(idempotencyKey);
+    if (existingJobId !== undefined) {
+      const existing = this.mediaJobs.get(`${context.tenantId}:${existingJobId}`);
+      if (existing === undefined) {
+        throw new RepositoryConflictError("Media job idempotency state is inconsistent");
+      }
+      if (existing.requestHash !== input.requestHash) {
+        throw new RepositoryConflictError(
+          "Media job idempotency key conflicts with another request",
+        );
+      }
+      return Promise.resolve(existing);
+    }
+
+    const job: Awaited<ReturnType<ApiRepository["createMediaJob"]>> = {
+      id: input.jobId,
+      contentVersionId: input.contentVersionId,
+      platform: input.platform,
+      role: input.role,
+      factIds: input.factIds,
+      visualBrief: input.visualBrief,
+      visualBriefHash: input.visualBriefHash,
+      requestHash: input.requestHash,
+      idempotencyKey: input.idempotencyKey,
+      providerId: input.providerId,
+      providerMode: input.providerMode,
+      state: "pending",
+      attemptCount: 0,
+      assetId: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      completedAt: null,
+    };
+    if (
+      input.platform !== input.visualBrief.platform ||
+      input.role !== input.visualBrief.role ||
+      input.visualBriefHash !== sha256Canonical(input.visualBrief) ||
+      input.factIds.length !== input.visualBrief.factIds.length ||
+      input.factIds.some((factId, index) => factId !== input.visualBrief.factIds[index])
+    ) {
+      throw new RepositoryConflictError("Media job does not match its visual brief");
+    }
+    this.mediaJobs.set(`${context.tenantId}:${input.jobId}`, job);
+    this.mediaJobIdempotency.set(idempotencyKey, input.jobId);
+    return Promise.resolve(job);
+  }
+
+  async getMediaJob(context: RequestContext, jobId: string) {
+    return this.mediaJobs.get(`${context.tenantId}:${jobId}`) ?? null;
+  }
+
+  async recordMediaAttempt(
+    context: RequestContext,
+    input: Parameters<ApiRepository["recordMediaAttempt"]>[1],
+  ) {
+    const key = `${context.tenantId}:${input.jobId}`;
+    const job = this.mediaJobs.get(key);
+    if (job === undefined) throw new RepositoryNotFoundError("Media job was not found");
+    if (["succeeded", "failed", "cancelled"].includes(job.state)) {
+      throw new RepositoryConflictError("Media job is already terminal");
+    }
+    if (
+      input.requestHash !== job.requestHash ||
+      input.providerId !== job.providerId ||
+      input.providerMode !== job.providerMode
+    ) {
+      throw new RepositoryConflictError("Media attempt does not match its generation job");
+    }
+    const succeeded = input.status === "succeeded";
+    if (
+      (succeeded &&
+        (input.responseHash === null || input.outputSha256 === null || input.errorCode !== null)) ||
+      (!succeeded && (input.outputSha256 !== null || input.errorCode === null))
+    ) {
+      throw new RepositoryConflictError("Media attempt outcome fields are inconsistent");
+    }
+    this.mediaAttempts.push(input);
+    this.mediaJobs.set(key, {
+      ...job,
+      state: succeeded ? "running" : "pending",
+      attemptCount: Math.max(job.attemptCount, input.attemptNo),
+      updatedAt: input.finishedAt,
+    });
+  }
+
+  async completeMediaJob(
+    context: RequestContext,
+    input: Parameters<ApiRepository["completeMediaJob"]>[1],
+  ): ReturnType<ApiRepository["completeMediaJob"]> {
+    const jobKey = `${context.tenantId}:${input.jobId}`;
+    const job = this.mediaJobs.get(jobKey);
+    if (job === undefined) throw new RepositoryNotFoundError("Media job was not found");
+    if (job.state !== "running") {
+      throw new RepositoryConflictError("Media job is not ready for completion");
+    }
+    const provenance = input.reference.provenance;
+    if (
+      input.reference.platform !== job.platform ||
+      input.reference.role !== job.role ||
+      input.reference.visualBriefHash !== job.visualBriefHash ||
+      provenance.kind !== "generated" ||
+      provenance.jobId !== input.jobId ||
+      provenance.provider !== job.providerId ||
+      provenance.providerMode !== job.providerMode ||
+      input.reference.inspection.status !== "passed"
+    ) {
+      throw new RepositoryConflictError("Media asset does not match its generation job");
+    }
+    const successfulAttempt = this.mediaAttempts.some(
+      (attempt) =>
+        attempt.jobId === input.jobId &&
+        attempt.attemptId === provenance.attemptId &&
+        attempt.status === "succeeded" &&
+        attempt.outputSha256 === input.reference.sha256 &&
+        attempt.providerId === provenance.provider &&
+        attempt.providerMode === provenance.providerMode &&
+        attempt.model === provenance.model,
+    );
+    if (!successfulAttempt) {
+      throw new RepositoryConflictError("Media job has no matching successful attempt");
+    }
+    if (sha256Canonical(input.successorPayload) !== input.successorPayloadHash) {
+      throw new RepositoryConflictError("Successor media payload hash does not match");
+    }
+    const payloadReference = input.successorPayload.media.find(
+      (media) => media.id === input.reference.id,
+    );
+    if (
+      payloadReference === undefined ||
+      sha256Canonical(payloadReference) !== sha256Canonical(input.reference)
+    ) {
+      throw new RepositoryConflictError(
+        "Successor payload does not contain the exact media reference",
+      );
+    }
+    const extensions: Readonly<Record<string, string>> = {
+      "image/png": "png",
+      "image/jpeg": "jpg",
+      "image/webp": "webp",
+    };
+    const extension = extensions[input.reference.mimeType];
+    const expectedStorageKey =
+      extension === undefined
+        ? null
+        : `${context.tenantId}/${input.reference.sha256.slice(0, 2)}/${input.reference.sha256}.${extension}`;
+    if (input.storageKey !== expectedStorageKey) {
+      throw new RepositoryConflictError("Media storage key is not content addressed");
+    }
+    for (const reference of input.successorPayload.media) {
+      if (reference.id === input.reference.id) continue;
+      const asset = this.mediaAssets.get(`${context.tenantId}:${reference.id}`);
+      if (asset === undefined || sha256Canonical(asset.reference) !== sha256Canonical(reference)) {
+        throw new RepositoryConflictError(
+          "Publication payload references unknown or changed media evidence",
+        );
+      }
+    }
+
+    const asset: Awaited<ReturnType<ApiRepository["completeMediaJob"]>> = {
+      id: input.assetId,
+      contentVersionId: input.successorContentVersionId,
+      storageKey: input.storageKey,
+      reference: input.reference,
+      createdAt: input.completedAt,
+    };
+    this.mediaAssets.set(`${context.tenantId}:${input.assetId}`, asset);
+    this.mediaJobs.set(jobKey, {
+      ...job,
+      state: "succeeded",
+      assetId: input.assetId,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      updatedAt: input.completedAt,
+      completedAt: input.completedAt,
+    });
+    return Promise.resolve(asset);
+  }
+
+  async failMediaJob(
+    context: RequestContext,
+    input: Parameters<ApiRepository["failMediaJob"]>[1],
+  ): ReturnType<ApiRepository["failMediaJob"]> {
+    const key = `${context.tenantId}:${input.jobId}`;
+    const job = this.mediaJobs.get(key);
+    if (job === undefined) throw new RepositoryNotFoundError("Media job was not found");
+    if (job.state !== "pending" && job.state !== "running") {
+      throw new RepositoryConflictError("Media job cannot be failed");
+    }
+    const failed: Awaited<ReturnType<ApiRepository["failMediaJob"]>> = {
+      ...job,
+      state: "failed",
+      lastErrorCode: input.errorCode,
+      lastErrorMessage: input.errorMessage,
+      updatedAt: input.completedAt,
+      completedAt: input.completedAt,
+    };
+    this.mediaJobs.set(key, failed);
+    return Promise.resolve(failed);
+  }
+
+  async listMediaAssets(context: RequestContext, contentVersionId: string) {
+    return [...this.mediaAssets.entries()]
+      .filter(
+        ([key, asset]) =>
+          key.startsWith(`${context.tenantId}:`) && asset.contentVersionId === contentVersionId,
+      )
+      .map(([, asset]) => asset);
+  }
+
+  async getMediaAsset(context: RequestContext, assetId: string) {
+    return this.mediaAssets.get(`${context.tenantId}:${assetId}`) ?? null;
+  }
+
   async loadAuditContext(): Promise<AuditContextRecord> {
     return {
-      brandId: ids.brand,
+      brandSnapshot: {
+        id: ids.brand,
+        canonicalName: "zhongtong-international-travel",
+        displayName: "Zhongtong International Travel Agency",
+        aliases: ["Zhongtong Travel"],
+      },
       variant: {
         id: ids.variant,
         contentVersionId: ids.version,
@@ -1171,6 +1411,8 @@ class FakeRepository implements ApiRepository {
         platform: "toutiao",
         payloadHash: "a".repeat(64),
         factSnapshotHash: "b".repeat(64),
+        brandSnapshotHash: "e".repeat(64),
+        mediaSnapshotHash: "f".repeat(64),
         policyHash: "c".repeat(64),
         policyVersion: "travel-v1",
         auditHash: "d".repeat(64),

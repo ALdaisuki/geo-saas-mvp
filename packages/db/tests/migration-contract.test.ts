@@ -28,7 +28,11 @@ const expectedTables = [
   "research_capture_records",
   "content_items",
   "content_versions",
+  "media_generation_jobs",
+  "media_generation_attempts",
   "media_assets",
+  "content_media_bindings",
+  "media_inspections",
   "publication_variants",
   "audit_runs",
   "audit_artifacts",
@@ -143,7 +147,11 @@ describe("PostgreSQL migration contract", () => {
         name !== "automation_runs" &&
         name !== "automation_run_targets" &&
         name !== "research_source_policies" &&
-        name !== "research_capture_records",
+        name !== "research_capture_records" &&
+        name !== "media_generation_jobs" &&
+        name !== "media_generation_attempts" &&
+        name !== "content_media_bindings" &&
+        name !== "media_inspections",
     )) {
       expect(rlsPrefix, tableName).toContain(`'${tableName}'`);
     }
@@ -177,10 +185,63 @@ describe("PostgreSQL migration contract", () => {
       "audit_log_append_only",
       "visibility_observations_append_only",
       "research_capture_records_append_only",
+      "media_generation_attempts_append_only",
+      "media_assets_append_only",
+      "content_media_bindings_append_only",
+      "media_inspections_append_only",
     ]) {
       expect(migrationSql).toContain(`CREATE TRIGGER ${triggerName}`);
     }
     expect(migrationSql).toContain("EXECUTE FUNCTION geo.prevent_append_only_mutation()");
+  });
+
+  it("persists tenant-scoped governed media jobs and immutable media evidence", () => {
+    const jobs = tableDefinition("media_generation_jobs");
+    const attempts = tableDefinition("media_generation_attempts");
+    const bindings = tableDefinition("content_media_bindings");
+    const inspections = tableDefinition("media_inspections");
+
+    expect(jobs).toContain("content_version_id uuid NOT NULL");
+    expect(jobs).toContain("UNIQUE (tenant_id, idempotency_key)");
+    expect(jobs).toContain("UNIQUE (tenant_id, id, request_hash)");
+    expect(jobs).toContain("UNIQUE (tenant_id, id, request_hash, provider_id, provider_mode)");
+    expect(jobs).toMatch(
+      /FOREIGN KEY \(tenant_id, content_version_id\)[\s\S]*REFERENCES geo\.content_versions \(tenant_id, id\)/i,
+    );
+    expect(attempts).toContain("job_id uuid NOT NULL");
+    expect(attempts).toContain("UNIQUE (tenant_id, job_id, attempt_no)");
+    expect(attempts).toMatch(
+      /FOREIGN KEY \(tenant_id, job_id\)[\s\S]*REFERENCES geo\.media_generation_jobs \(tenant_id, id\)/i,
+    );
+    expect(attempts).toMatch(
+      /FOREIGN KEY \(tenant_id, job_id, request_hash, provider_id, provider_mode\)[\s\S]*REFERENCES geo\.media_generation_jobs[\s\S]*\(tenant_id, id, request_hash, provider_id, provider_mode\)/i,
+    );
+    expect(bindings).toMatch(
+      /FOREIGN KEY \(tenant_id, media_asset_id\)[\s\S]*REFERENCES geo\.media_assets \(tenant_id, id\)/i,
+    );
+    expect(inspections).toMatch(
+      /FOREIGN KEY \(tenant_id, media_asset_id, asset_sha256\)[\s\S]*REFERENCES geo\.media_assets \(tenant_id, id, sha256\)/i,
+    );
+
+    expect(migrationSql).toContain("DROP CONSTRAINT media_assets_tenant_id_sha256_key");
+    expect(migrationSql).toContain("UNIQUE (tenant_id, provenance_hash)");
+    expect(migrationSql).toContain("brand_snapshot_hash geo.sha256_hex");
+    expect(migrationSql).toContain("media_snapshot_hash geo.sha256_hex");
+    expect(migrationSql).toContain("terminal media generation jobs are immutable");
+
+    for (const tableName of [
+      "media_generation_jobs",
+      "media_generation_attempts",
+      "content_media_bindings",
+      "media_inspections",
+    ]) {
+      expect(migrationSql).toContain(`ALTER TABLE geo.${tableName} ENABLE ROW LEVEL SECURITY`);
+      expect(migrationSql).toContain(`ALTER TABLE geo.${tableName} FORCE ROW LEVEL SECURITY`);
+      expect(migrationSql).toContain(`CREATE POLICY tenant_isolation ON geo.${tableName}`);
+    }
+    expect(migrationSql).toMatch(
+      /REVOKE UPDATE, DELETE, TRUNCATE[\s\S]*media_generation_attempts[\s\S]*media_assets[\s\S]*content_media_bindings[\s\S]*media_inspections FROM geo_runtime/i,
+    );
   });
 
   it("persists governed research policies and redacted append-only capture records", () => {
@@ -456,6 +517,27 @@ describe("PostgreSQL migration contract", () => {
     expect(createMember).toContain("tenant_member.created");
     expect(migrationSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, text, text, text)",
+    );
+  });
+
+  it("reads tenant member identities without weakening user self-isolation", () => {
+    const listMembers = latestFunctionDefinition("list_tenant_member_identities");
+    const getMember = latestFunctionDefinition("get_tenant_member_identity");
+    for (const definition of [listMembers, getMember]) {
+      expect(definition).toContain("SECURITY DEFINER");
+      expect(definition).toContain("geo.require_tenant_id()");
+      expect(definition).toContain("geo.require_actor_id()");
+      expect(definition).toContain("actor_role NOT IN ('owner', 'admin')");
+      expect(definition).toContain("membership.tenant_id = tenant_value");
+      expect(definition).toContain("users.email");
+      expect(definition).not.toContain("password_hash");
+    }
+    expect(getMember).toContain("FOR UPDATE OF membership");
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.list_tenant_member_identities() TO geo_runtime",
+    );
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime",
     );
   });
 

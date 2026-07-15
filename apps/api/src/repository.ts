@@ -4,6 +4,9 @@ import type {
   ConnectorCapability,
   EvidenceType,
   ExecutionLevel,
+  MediaProviderMode,
+  MediaReference,
+  MediaRole,
   ObservationMethod,
   Platform,
   PublicationGrant,
@@ -11,10 +14,11 @@ import type {
   PublicationVariantPayload,
   TenantContact,
   TenantRole,
+  VisualBrief,
   VisibilityObservation,
   VisibilityProvider,
 } from "@geo/contracts";
-import type { FactSnapshot, PriorPublicationVariant } from "@geo/core";
+import type { BrandSnapshot, FactSnapshot, PriorPublicationVariant } from "@geo/core";
 import type { CompetitorTruth, VisibilityMetrics } from "@geo/visibility";
 
 import type { AutomationRepository } from "./automation-repository.js";
@@ -472,8 +476,91 @@ export interface CreateVariantInput {
   readonly payloadHash: string;
 }
 
+export interface MediaGenerationJobView {
+  readonly id: string;
+  readonly contentVersionId: string;
+  readonly platform: Platform;
+  readonly role: MediaRole;
+  readonly factIds: readonly string[];
+  readonly visualBrief: VisualBrief;
+  readonly visualBriefHash: string;
+  readonly requestHash: string;
+  readonly idempotencyKey: string;
+  readonly providerId: string;
+  readonly providerMode: MediaProviderMode;
+  readonly state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  readonly attemptCount: number;
+  readonly assetId: string | null;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorMessage: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedAt: string | null;
+}
+
+export interface CreateMediaJobInput {
+  readonly jobId: string;
+  readonly contentVersionId: string;
+  readonly platform: Platform;
+  readonly role: MediaRole;
+  readonly factIds: readonly string[];
+  readonly visualBrief: VisualBrief;
+  readonly visualBriefHash: string;
+  readonly requestHash: string;
+  readonly idempotencyKey: string;
+  readonly providerId: string;
+  readonly providerMode: MediaProviderMode;
+}
+
+export interface RecordMediaAttemptInput {
+  readonly attemptId: string;
+  readonly jobId: string;
+  readonly attemptNo: number;
+  readonly status: "succeeded" | "failed" | "timed_out";
+  readonly providerId: string;
+  readonly providerMode: MediaProviderMode;
+  readonly model: string;
+  readonly inputHash: string;
+  readonly requestHash: string;
+  readonly responseHash: string | null;
+  readonly outputSha256: string | null;
+  readonly providerRequestId: string | null;
+  readonly errorCode: string | null;
+  readonly errorMessage: string | null;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+}
+
+export interface CompleteMediaJobInput {
+  readonly jobId: string;
+  readonly assetId: string;
+  readonly inspectionId: string;
+  readonly bindingId: string;
+  readonly successorContentVersionId: string;
+  readonly storageKey: string;
+  readonly reference: MediaReference;
+  readonly successorPayload: PublicationVariantPayload;
+  readonly successorPayloadHash: string;
+  readonly completedAt: string;
+}
+
+export interface FailMediaJobInput {
+  readonly jobId: string;
+  readonly errorCode: string;
+  readonly errorMessage: string;
+  readonly completedAt: string;
+}
+
+export interface MediaAssetView {
+  readonly id: string;
+  readonly contentVersionId: string;
+  readonly storageKey: string;
+  readonly reference: MediaReference;
+  readonly createdAt: string;
+}
+
 export interface AuditContextRecord {
-  readonly brandId: string;
+  readonly brandSnapshot: BrandSnapshot;
   readonly variant: VariantView;
   readonly contacts: readonly TenantContact[];
   readonly factSnapshot: FactSnapshot;
@@ -848,6 +935,19 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
   ): Promise<ContentVersionView | null>;
   listVariants(context: RequestContext, contentItemId: string): Promise<readonly VariantView[]>;
   createVariant(context: RequestContext, input: CreateVariantInput): Promise<VariantView>;
+  createMediaJob(
+    context: RequestContext,
+    input: CreateMediaJobInput,
+  ): Promise<MediaGenerationJobView>;
+  getMediaJob(context: RequestContext, jobId: string): Promise<MediaGenerationJobView | null>;
+  recordMediaAttempt(context: RequestContext, input: RecordMediaAttemptInput): Promise<void>;
+  completeMediaJob(context: RequestContext, input: CompleteMediaJobInput): Promise<MediaAssetView>;
+  failMediaJob(context: RequestContext, input: FailMediaJobInput): Promise<MediaGenerationJobView>;
+  listMediaAssets(
+    context: RequestContext,
+    contentVersionId: string,
+  ): Promise<readonly MediaAssetView[]>;
+  getMediaAsset(context: RequestContext, assetId: string): Promise<MediaAssetView | null>;
 
   loadAuditContext(
     context: RequestContext,

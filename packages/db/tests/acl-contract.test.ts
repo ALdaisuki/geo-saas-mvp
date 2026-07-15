@@ -71,6 +71,18 @@ describe("replayable application ACL contract", () => {
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, text, text, text)",
     );
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.list_tenant_member_identities() TO geo_runtime",
+    );
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime",
+    );
+    expect(aclSql).toContain(
+      "REVOKE ALL ON geo.media_generation_jobs, geo.media_generation_attempts",
+    );
+    expect(aclSql).toContain(
+      "GRANT SELECT, INSERT ON geo.media_generation_attempts, geo.media_assets",
+    );
     expect(aclSql).toContain("application ACL reconciliation failed");
   });
 

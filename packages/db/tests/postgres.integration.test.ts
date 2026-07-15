@@ -7,7 +7,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import EmbeddedPostgres from "embedded-postgres";
-import { buildBaselineAuditPolicyDocument, sha256Canonical } from "@geo/core";
+import { buildBaselineAuditPolicyDocument, sha256Canonical, sha256Text } from "@geo/core";
 import { travelQuerySetPromptsV1 } from "@geo/visibility";
 import { Migrator, sql } from "kysely";
 import { Client } from "pg";
@@ -123,6 +123,25 @@ const ids = {
   governancePolicy: "30000000-0000-4000-8000-000000000075",
   governanceAccount: "30000000-0000-4000-8000-000000000076",
   governancePrincipal: "30000000-0000-4000-8000-000000000077",
+  mediaCampaign: "30000000-0000-4000-8000-000000000078",
+  mediaContentItem: "30000000-0000-4000-8000-000000000079",
+  mediaSourceVersion: "30000000-0000-4000-8000-000000000080",
+  mediaJob: "30000000-0000-4000-8000-000000000081",
+  mediaAttempt: "30000000-0000-4000-8000-000000000082",
+  mediaAsset: "30000000-0000-4000-8000-000000000083",
+  mediaInspection: "30000000-0000-4000-8000-000000000084",
+  mediaBinding: "30000000-0000-4000-8000-000000000085",
+  mediaSuccessorVersion: "30000000-0000-4000-8000-000000000086",
+  mediaJobWithDifferentRights: "30000000-0000-4000-8000-000000000087",
+  mediaAttemptWithDifferentRights: "30000000-0000-4000-8000-000000000088",
+  mediaAssetWithDifferentRights: "30000000-0000-4000-8000-000000000089",
+  mediaInspectionWithDifferentRights: "30000000-0000-4000-8000-000000000090",
+  mediaBindingWithDifferentRights: "30000000-0000-4000-8000-000000000091",
+  mediaSuccessorVersionWithDifferentRights: "30000000-0000-4000-8000-000000000092",
+  mediaFailedJob: "30000000-0000-4000-8000-000000000093",
+  mediaReplayJob: "30000000-0000-4000-8000-000000000094",
+  mediaVariant: "30000000-0000-4000-8000-000000000095",
+  mediaTamperedVariant: "30000000-0000-4000-8000-000000000096",
 };
 
 const payloadHash = "a".repeat(64);
@@ -131,7 +150,6 @@ const policyHash = "c".repeat(64);
 const auditHash = "d".repeat(64);
 const tokenHash = "e".repeat(64);
 const requestHash = "f".repeat(64);
-const variantPayloadHash = "9".repeat(64);
 
 interface VariantRepositoryForTest {
   transitionCampaign(
@@ -183,6 +201,86 @@ interface VariantRepositoryForTest {
   ): Promise<{
     priorVariants: readonly { variantId: string; bodyMarkdown: string }[];
   } | null>;
+  createMediaJob(
+    context: { actorId: string; tenantId: string; requestId: string },
+    input: {
+      jobId: string;
+      contentVersionId: string;
+      platform: "toutiao" | "sohu" | "ctrip_community";
+      role: "cover" | "inline";
+      factIds: readonly string[];
+      visualBrief: Readonly<Record<string, unknown>>;
+      visualBriefHash: string;
+      requestHash: string;
+      idempotencyKey: string;
+      providerId: string;
+      providerMode: "fixture" | "live";
+    },
+  ): Promise<{
+    id: string;
+    state: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+    requestHash: string;
+    attemptCount: number;
+    assetId: string | null;
+    lastErrorCode: string | null;
+  }>;
+  getMediaJob(
+    context: { actorId: string; tenantId: string; requestId: string },
+    jobId: string,
+  ): ReturnType<VariantRepositoryForTest["createMediaJob"]> | Promise<null>;
+  recordMediaAttempt(
+    context: { actorId: string; tenantId: string; requestId: string },
+    input: {
+      attemptId: string;
+      jobId: string;
+      attemptNo: number;
+      status: "succeeded" | "failed" | "timed_out";
+      providerId: string;
+      providerMode: "fixture" | "live";
+      model: string;
+      inputHash: string;
+      requestHash: string;
+      responseHash: string | null;
+      outputSha256: string | null;
+      providerRequestId: string | null;
+      errorCode: string | null;
+      errorMessage: string | null;
+      startedAt: string;
+      finishedAt: string;
+    },
+  ): Promise<void>;
+  completeMediaJob(
+    context: { actorId: string; tenantId: string; requestId: string },
+    input: {
+      jobId: string;
+      assetId: string;
+      inspectionId: string;
+      bindingId: string;
+      successorContentVersionId: string;
+      storageKey: string;
+      reference: Readonly<Record<string, unknown>>;
+      successorPayload: Readonly<Record<string, unknown>>;
+      successorPayloadHash: string;
+      completedAt: string;
+    },
+  ): Promise<{
+    id: string;
+    contentVersionId: string;
+    storageKey: string;
+    reference: Readonly<Record<string, unknown>>;
+  }>;
+  failMediaJob(
+    context: { actorId: string; tenantId: string; requestId: string },
+    input: { jobId: string; errorCode: string; errorMessage: string; completedAt: string },
+  ): ReturnType<VariantRepositoryForTest["createMediaJob"]>;
+  listMediaAssets(
+    context: { actorId: string; tenantId: string; requestId: string },
+    contentVersionId: string,
+  ): Promise<readonly Awaited<ReturnType<VariantRepositoryForTest["completeMediaJob"]>>[]>;
+  getMediaAsset(
+    context: { actorId: string; tenantId: string; requestId: string },
+    assetId: string,
+  ): ReturnType<VariantRepositoryForTest["completeMediaJob"]> | Promise<null>;
   createContact(
     context: { actorId: string; tenantId: string; requestId: string },
     input: {
@@ -252,9 +350,11 @@ interface VariantRepositoryForTest {
       reason: string;
     },
   ): Promise<{ id: string; status: string; supportedExecutionLevels: readonly string[] }>;
-  listServicePrincipals(
-    context: { actorId: string; tenantId: string; requestId: string },
-  ): Promise<readonly { id: string; credentialStatus: string; capabilities: readonly string[] }[]>;
+  listServicePrincipals(context: {
+    actorId: string;
+    tenantId: string;
+    requestId: string;
+  }): Promise<readonly { id: string; credentialStatus: string; capabilities: readonly string[] }[]>;
   createAutomationServicePrincipal(
     context: { actorId: string; tenantId: string; requestId: string },
     input: { id: string; name: string },
@@ -547,8 +647,9 @@ async function insertAuditedVariantAndGrant(client: Client): Promise<void> {
       `INSERT INTO geo.audit_artifacts
          (tenant_id, id, audit_run_id, variant_id, channel_account_id, platform,
           payload_hash, fact_snapshot_hash, policy_hash, policy_version, audit_hash,
+          brand_snapshot_hash, media_snapshot_hash,
           status, findings, expires_at)
-       VALUES ($1, $2, $3, $4, $5, 'toutiao', $6, $7, $8, 'travel-v1', $9,
+       VALUES ($1, $2, $3, $4, $5, 'toutiao', $6, $7, $8, 'travel-v1', $9, $10, $11,
                'passed', '[]'::jsonb, clock_timestamp() + interval '10 minutes')`,
       [
         tenantId,
@@ -560,6 +661,8 @@ async function insertAuditedVariantAndGrant(client: Client): Promise<void> {
         factHash,
         policyHash,
         auditHash,
+        "b".repeat(64),
+        "c".repeat(64),
       ],
     );
     for (const [grantId, grantTokenHash] of [
@@ -789,6 +892,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0011_visibility_evaluation_contract",
       "0012_tenant_governance_management",
       "0013_research_capture_governance",
+      "0014_media_production_governance",
+      "0015_tenant_member_identity_reader",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -945,7 +1050,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
                and quota = '{"maxConcurrent":1,"perMinute":10,"perDay":100,"cooldownSeconds":0,"errorBudget":5}'::jsonb) as safe_controls,
            (select count(*)::text from geo.policy_bundles
              where tenant_id = $2 and status = 'active'
-               and document ->> 'schemaVersion' = 'geo.audit-policy.v1') as active_policies,
+               and document ->> 'schemaVersion' = 'geo.audit-policy.v2') as active_policies,
            (select count(*)::text from geo.query_sets
              where tenant_id = $2 and status = 'active' and industry = $4) as active_query_sets,
            (select count(*)::text from geo.query_set_versions as version
@@ -1264,9 +1369,10 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       `INSERT INTO geo.audit_artifacts
          (tenant_id, id, audit_run_id, variant_id, channel_account_id, platform,
           payload_hash, fact_snapshot_hash, policy_hash, policy_version,
-          audit_hash, status, findings, expires_at)
+          audit_hash, brand_snapshot_hash, media_snapshot_hash,
+          status, findings, expires_at)
        VALUES ($1, $2, $3, $4, $5, 'toutiao', $6, $7, $8, 'automation-v1',
-               $9, 'failed', '[]'::jsonb, clock_timestamp() + interval '10 minutes')`,
+               $9, $10, $11, 'failed', '[]'::jsonb, clock_timestamp() + interval '10 minutes')`,
       [
         tenantId,
         ids.automationAuditArtifact,
@@ -1277,6 +1383,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         "6".repeat(64),
         "7".repeat(64),
         "8".repeat(64),
+        "9".repeat(64),
+        "a".repeat(64),
       ],
     );
 
@@ -2064,6 +2172,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         contactIds: [],
         tags: ["verified"],
       };
+      const variantPayloadHash = sha256Canonical(payload);
       const commonInput = {
         contentItemId: ids.variantConcurrencyContentItem,
         contentVersionId: ids.variantConcurrencyContentVersion,
@@ -2112,6 +2221,426 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           payload_hash: variantPayloadHash,
         },
       ]);
+    } finally {
+      await database.destroy();
+    }
+  });
+
+  it("persists tenant-scoped media production as immutable successor content", async () => {
+    if (adminClient === undefined || postgresPort === undefined) {
+      throw new Error("PostgreSQL test client is not initialized");
+    }
+    const sourcePayload = {
+      editorialProfile: "guide",
+      title: "Governed media source",
+      summary: "Verified source content before media production",
+      bodyMarkdown: "## Verified source\n\nThe source version remains immutable.",
+      media: [],
+      claims: [],
+      contactIds: [],
+      tags: ["verified"],
+    };
+    await runtimeTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO geo.campaigns
+           (tenant_id, id, brand_id, name, objective, industry, topic_key)
+         VALUES ($1, $2, $3, 'Media production', 'Verify immutable media production',
+                 'travel', 'media-production')`,
+        [tenantId, ids.mediaCampaign, SEED_IDS.zhongtong.brand],
+      );
+      await client.query(
+        `INSERT INTO geo.content_items
+           (tenant_id, id, campaign_id, brand_id, title, content_type, state, topic_key)
+         VALUES ($1, $2, $3, $4, 'Governed media source', 'guide', 'draft',
+                 'media-production')`,
+        [tenantId, ids.mediaContentItem, ids.mediaCampaign, SEED_IDS.zhongtong.brand],
+      );
+      await client.query(
+        `INSERT INTO geo.content_versions
+           (tenant_id, id, content_item_id, version, summary, body_markdown, payload,
+            payload_hash, created_by_actor_id)
+         VALUES ($1, $2, $3, 1, $4, $5, $6::jsonb, $7, $8)`,
+        [
+          tenantId,
+          ids.mediaSourceVersion,
+          ids.mediaContentItem,
+          sourcePayload.summary,
+          sourcePayload.bodyMarkdown,
+          JSON.stringify(sourcePayload),
+          sha256Canonical(sourcePayload),
+          actorId,
+        ],
+      );
+    });
+
+    const connectionString = `postgresql://postgres:${encodeURIComponent(password)}@127.0.0.1:${postgresPort}/${databaseName}`;
+    const database = createDatabase({
+      connectionString,
+      applicationName: "geo-media-production-integration",
+      maxConnections: 4,
+    });
+    const factory = await loadVariantRepositoryFactory();
+    const repository = factory({ runtimeDatabase: database, identityDatabase: database });
+    const context = { actorId, tenantId, requestId: "media-production-integration" };
+    const factId = ids.mediaContentItem;
+    const visualBrief = {
+      schemaVersion: "geo.visual-brief.v1",
+      editorialProfile: "guide",
+      platform: "toutiao",
+      role: "cover",
+      aspectRatio: "16:9",
+      factIds: [factId],
+      prompt: "Verified travel service office scene without text or contact details.",
+      negativePrompt: "text, watermark, QR code, phone number, contact handle, price, credential",
+      altText: "Verified travel service office scene",
+      caption: "The image represents only the verified service fact.",
+    } as const;
+    const visualBriefHash = sha256Canonical(visualBrief);
+    const assetSha256 = "8".repeat(64);
+    const storageKey = `${tenantId}/${assetSha256.slice(0, 2)}/${assetSha256}.png`;
+    const generatedAt = "2026-07-15T04:01:00.000Z";
+    const completedAt = "2026-07-15T04:02:00.000Z";
+    const reference = (
+      jobId: string,
+      attemptId: string,
+      assetId: string,
+      rightsName: string,
+      inspectionResponseHash: string,
+    ): Readonly<Record<string, unknown>> => ({
+      id: assetId,
+      sha256: assetSha256,
+      mimeType: "image/png",
+      byteLength: 128,
+      width: 1280,
+      height: 720,
+      platform: "toutiao",
+      role: "cover",
+      altText: visualBrief.altText,
+      caption: visualBrief.caption,
+      factIds: [...visualBrief.factIds],
+      visualBrief,
+      visualBriefHash,
+      rights: {
+        basis: "generated_terms",
+        licenseName: rightsName,
+        licenseUrl: "https://example.test/fixture-terms",
+        verifiedAt: "2026-07-15T04:00:00.000Z",
+      },
+      provenance: {
+        kind: "generated",
+        jobId,
+        attemptId,
+        provider: "fixture",
+        providerMode: "fixture",
+        model: "fixture-png-v1",
+        promptHash: sha256Text(visualBrief.prompt),
+        parametersHash: "7".repeat(64),
+        generatedAt,
+      },
+      inspection: {
+        assetSha256,
+        status: "passed",
+        evaluator: "fixture-inspector",
+        evaluatorMode: "fixture",
+        evaluatorVersion: "fixture-inspector-v1",
+        responseSha256: inspectionResponseHash,
+        inspectedAt: completedAt,
+        ocrText: "",
+        labels: ["fixture", "travel-office"],
+      },
+    });
+    const createJobInput = {
+      jobId: ids.mediaJob,
+      contentVersionId: ids.mediaSourceVersion,
+      platform: "toutiao" as const,
+      role: "cover" as const,
+      factIds: [factId],
+      visualBrief,
+      visualBriefHash,
+      requestHash: "1".repeat(64),
+      idempotencyKey: "media-fixture-production",
+      providerId: "fixture",
+      providerMode: "fixture" as const,
+    };
+
+    try {
+      const created = await repository.createMediaJob(context, createJobInput);
+      const replayed = await repository.createMediaJob(
+        { ...context, requestId: "media-production-replay" },
+        { ...createJobInput, jobId: ids.mediaReplayJob },
+      );
+      expect(created).toMatchObject({ id: ids.mediaJob, state: "pending", attemptCount: 0 });
+      expect(replayed.id).toBe(ids.mediaJob);
+      await expect(
+        repository.createMediaJob(
+          { ...context, requestId: "media-production-conflict" },
+          { ...createJobInput, requestHash: "2".repeat(64) },
+        ),
+      ).rejects.toThrow(/idempotency key conflicts/u);
+      expect(
+        await repository.getMediaJob(
+          {
+            actorId: SEED_IDS.synthetic.actor,
+            tenantId: syntheticTenantId,
+            requestId: "media-production-cross-tenant",
+          },
+          ids.mediaJob,
+        ),
+      ).toBeNull();
+
+      await expect(
+        repository.recordMediaAttempt(context, {
+          attemptId: ids.mediaReplayJob,
+          jobId: ids.mediaJob,
+          attemptNo: 1,
+          status: "succeeded",
+          providerId: "fixture",
+          providerMode: "fixture",
+          model: "fixture-png-v1",
+          inputHash: visualBriefHash,
+          requestHash: "2".repeat(64),
+          responseHash: "3".repeat(64),
+          outputSha256: assetSha256,
+          providerRequestId: null,
+          errorCode: null,
+          errorMessage: null,
+          startedAt: "2026-07-15T04:00:00.000Z",
+          finishedAt: generatedAt,
+        }),
+      ).rejects.toThrow("Media attempt does not match its generation job");
+
+      await repository.recordMediaAttempt(context, {
+        attemptId: ids.mediaAttempt,
+        jobId: ids.mediaJob,
+        attemptNo: 1,
+        status: "succeeded",
+        providerId: "fixture",
+        providerMode: "fixture",
+        model: "fixture-png-v1",
+        inputHash: visualBriefHash,
+        requestHash: "1".repeat(64),
+        responseHash: "3".repeat(64),
+        outputSha256: assetSha256,
+        providerRequestId: null,
+        errorCode: null,
+        errorMessage: null,
+        startedAt: "2026-07-15T04:00:00.000Z",
+        finishedAt: generatedAt,
+      });
+      expect(await repository.getMediaJob(context, ids.mediaJob)).toMatchObject({
+        state: "running",
+        attemptCount: 1,
+      });
+
+      const firstReference = reference(
+        ids.mediaJob,
+        ids.mediaAttempt,
+        ids.mediaAsset,
+        "Fixture generation terms v1",
+        "4".repeat(64),
+      );
+      const firstSuccessorPayload = { ...sourcePayload, media: [firstReference] };
+      const firstAsset = await repository.completeMediaJob(context, {
+        jobId: ids.mediaJob,
+        assetId: ids.mediaAsset,
+        inspectionId: ids.mediaInspection,
+        bindingId: ids.mediaBinding,
+        successorContentVersionId: ids.mediaSuccessorVersion,
+        storageKey,
+        reference: firstReference,
+        successorPayload: firstSuccessorPayload,
+        successorPayloadHash: sha256Canonical(firstSuccessorPayload),
+        completedAt,
+      });
+      expect(firstAsset).toMatchObject({
+        id: ids.mediaAsset,
+        contentVersionId: ids.mediaSuccessorVersion,
+        storageKey,
+      });
+      expect(await repository.getMediaJob(context, ids.mediaJob)).toMatchObject({
+        state: "succeeded",
+        assetId: ids.mediaAsset,
+      });
+      expect(await repository.getMediaAsset(context, ids.mediaAsset)).toEqual(firstAsset);
+      expect(await repository.listMediaAssets(context, ids.mediaSuccessorVersion)).toEqual([
+        firstAsset,
+      ]);
+      expect(
+        await repository.getMediaAsset(
+          {
+            actorId: SEED_IDS.synthetic.actor,
+            tenantId: syntheticTenantId,
+            requestId: "media-asset-cross-tenant",
+          },
+          ids.mediaAsset,
+        ),
+      ).toBeNull();
+
+      const tamperedReference = {
+        ...firstReference,
+        rights: {
+          ...(firstReference.rights as Readonly<Record<string, unknown>>),
+          licenseName: "Tampered fixture terms",
+        },
+      };
+      const tamperedVariantPayload = { ...sourcePayload, media: [tamperedReference] };
+      await expect(
+        repository.createVariant(context, {
+          variantId: ids.mediaTamperedVariant,
+          contentItemId: ids.mediaContentItem,
+          contentVersionId: ids.mediaSuccessorVersion,
+          channelAccountId: SEED_IDS.zhongtong.toutiao,
+          payload: tamperedVariantPayload,
+          payloadHash: sha256Canonical(tamperedVariantPayload),
+        }),
+      ).rejects.toThrow("unknown or changed media evidence");
+      const mediaVariant = await repository.createVariant(context, {
+        variantId: ids.mediaVariant,
+        contentItemId: ids.mediaContentItem,
+        contentVersionId: ids.mediaSuccessorVersion,
+        channelAccountId: SEED_IDS.zhongtong.toutiao,
+        payload: firstSuccessorPayload,
+        payloadHash: sha256Canonical(firstSuccessorPayload),
+      });
+      expect(mediaVariant.id).toBe(ids.mediaVariant);
+      expect(
+        await repository.loadAuditContext(context, ids.mediaVariant, completedAt),
+      ).not.toBeNull();
+
+      const secondJobInput = {
+        ...createJobInput,
+        jobId: ids.mediaJobWithDifferentRights,
+        idempotencyKey: "media-fixture-different-rights",
+        requestHash: "5".repeat(64),
+      };
+      await repository.createMediaJob(context, secondJobInput);
+      await repository.recordMediaAttempt(context, {
+        attemptId: ids.mediaAttemptWithDifferentRights,
+        jobId: ids.mediaJobWithDifferentRights,
+        attemptNo: 1,
+        status: "succeeded",
+        providerId: "fixture",
+        providerMode: "fixture",
+        model: "fixture-png-v1",
+        inputHash: visualBriefHash,
+        requestHash: "5".repeat(64),
+        responseHash: "6".repeat(64),
+        outputSha256: assetSha256,
+        providerRequestId: null,
+        errorCode: null,
+        errorMessage: null,
+        startedAt: "2026-07-15T04:03:00.000Z",
+        finishedAt: "2026-07-15T04:04:00.000Z",
+      });
+      const secondReference = reference(
+        ids.mediaJobWithDifferentRights,
+        ids.mediaAttemptWithDifferentRights,
+        ids.mediaAssetWithDifferentRights,
+        "Fixture generation terms v2",
+        "9".repeat(64),
+      );
+      const secondSuccessorPayload = { ...sourcePayload, media: [secondReference] };
+      await repository.completeMediaJob(context, {
+        jobId: ids.mediaJobWithDifferentRights,
+        assetId: ids.mediaAssetWithDifferentRights,
+        inspectionId: ids.mediaInspectionWithDifferentRights,
+        bindingId: ids.mediaBindingWithDifferentRights,
+        successorContentVersionId: ids.mediaSuccessorVersionWithDifferentRights,
+        storageKey,
+        reference: secondReference,
+        successorPayload: secondSuccessorPayload,
+        successorPayloadHash: sha256Canonical(secondSuccessorPayload),
+        completedAt: "2026-07-15T04:05:00.000Z",
+      });
+
+      const failed = await repository.createMediaJob(context, {
+        ...createJobInput,
+        jobId: ids.mediaFailedJob,
+        idempotencyKey: "media-fixture-failed",
+        requestHash: "a".repeat(64),
+      });
+      expect(failed.state).toBe("pending");
+      expect(
+        await repository.failMediaJob(context, {
+          jobId: ids.mediaFailedJob,
+          errorCode: "FIXTURE_ABORTED",
+          errorMessage: "Fixture generation was deliberately aborted",
+          completedAt: "2026-07-15T04:06:00.000Z",
+        }),
+      ).toMatchObject({ state: "failed", lastErrorCode: "FIXTURE_ABORTED" });
+
+      const persisted = await adminClient.query<{
+        asset_count: string;
+        binding_count: string;
+        inspection_count: string;
+        job_state: string;
+        source_payload_hash: string;
+        source_version: number;
+        successor_count: string;
+      }>(
+        `SELECT
+           (SELECT count(*)::text FROM geo.media_assets
+             WHERE tenant_id = $1 AND sha256 = $2) AS asset_count,
+           (SELECT count(*)::text FROM geo.media_inspections
+             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4)) AS inspection_count,
+           (SELECT count(*)::text FROM geo.content_media_bindings
+             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4)) AS binding_count,
+           (SELECT state FROM geo.media_generation_jobs
+             WHERE tenant_id = $1 AND id = $5) AS job_state,
+           (SELECT version FROM geo.content_versions
+             WHERE tenant_id = $1 AND id = $6) AS source_version,
+           (SELECT payload_hash FROM geo.content_versions
+             WHERE tenant_id = $1 AND id = $6) AS source_payload_hash,
+           (SELECT count(*)::text FROM geo.content_versions
+             WHERE tenant_id = $1 AND content_item_id = $7 AND version > 1) AS successor_count`,
+        [
+          tenantId,
+          assetSha256,
+          ids.mediaAsset,
+          ids.mediaAssetWithDifferentRights,
+          ids.mediaJob,
+          ids.mediaSourceVersion,
+          ids.mediaContentItem,
+        ],
+      );
+      expect(persisted.rows[0]).toEqual({
+        asset_count: "2",
+        inspection_count: "2",
+        binding_count: "2",
+        job_state: "succeeded",
+        source_version: 1,
+        source_payload_hash: sha256Canonical(sourcePayload),
+        successor_count: "2",
+      });
+
+      await expect(
+        adminClient.query(
+          "UPDATE geo.media_generation_attempts SET error_message = 'tampered' WHERE id = $1",
+          [ids.mediaAttempt],
+        ),
+      ).rejects.toMatchObject({ code: "55000" });
+      await expect(
+        adminClient.query("UPDATE geo.media_assets SET caption = 'tampered' WHERE id = $1", [
+          ids.mediaAsset,
+        ]),
+      ).rejects.toMatchObject({ code: "55000" });
+      await expect(
+        adminClient.query("UPDATE geo.media_inspections SET labels = '[]'::jsonb WHERE id = $1", [
+          ids.mediaInspection,
+        ]),
+      ).rejects.toMatchObject({ code: "55000" });
+      await expect(
+        adminClient.query(
+          "UPDATE geo.content_media_bindings SET caption = 'tampered' WHERE id = $1",
+          [ids.mediaBinding],
+        ),
+      ).rejects.toMatchObject({ code: "55000" });
+      await expect(
+        adminClient.query(
+          "UPDATE geo.media_generation_jobs SET completed_at = completed_at + interval '1 second' WHERE id = $1",
+          [ids.mediaJob],
+        ),
+      ).rejects.toMatchObject({ code: "55000" });
     } finally {
       await database.destroy();
     }
@@ -3303,7 +3832,9 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       ]);
       expect(persisted.rows.every((row) => row.after_hash.length === 64)).toBe(true);
       expect(
-        persisted.rows.filter((row) => row.action.endsWith(".created")).every((row) => row.before_hash === null),
+        persisted.rows
+          .filter((row) => row.action.endsWith(".created"))
+          .every((row) => row.before_hash === null),
       ).toBe(true);
 
       const policyState = await adminClient.query<{ id: string; status: string }>(

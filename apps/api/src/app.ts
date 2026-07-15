@@ -1730,7 +1730,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       const artifact = auditPublicationVariant({
         artifactId: uuid(),
         tenantId: requestScope.tenantId,
-        brandId: context.brandId,
+        brandSnapshot: context.brandSnapshot,
         variantId,
         channelAccountId: context.variant.channelAccountId,
         platform: context.variant.platform,

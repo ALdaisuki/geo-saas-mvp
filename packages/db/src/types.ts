@@ -332,14 +332,91 @@ export interface ContentVersionsTable extends TenantRow, CreatedRow {
   frozen_at: NullableDbTimestamp;
 }
 
+export interface MediaGenerationJobsTable extends TenantRow, MutableRow {
+  content_version_id: string;
+  platform: "toutiao" | "sohu" | "ctrip_community";
+  role: "cover" | "inline";
+  fact_ids: TextArrayColumn;
+  visual_brief: JsonColumn<JsonObject>;
+  visual_brief_hash: string;
+  request_hash: string;
+  idempotency_key: string;
+  provider_id: string;
+  provider_mode: "fixture" | "live";
+  state: Generated<"pending" | "running" | "succeeded" | "failed" | "cancelled">;
+  attempt_count: Generated<number>;
+  lease_owner: string | null;
+  lease_expires_at: NullableDbTimestamp;
+  asset_id: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  created_by_actor_id: string;
+  completed_at: NullableDbTimestamp;
+}
+
+export interface MediaGenerationAttemptsTable extends TenantRow, CreatedRow {
+  job_id: string;
+  attempt_no: number;
+  status: "succeeded" | "failed" | "timed_out";
+  provider_id: string;
+  provider_mode: "fixture" | "live";
+  model: string;
+  input_hash: string;
+  request_hash: string;
+  response_hash: string | null;
+  output_sha256: string | null;
+  provider_request_id: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  started_at: RequiredDbTimestamp;
+  finished_at: NullableDbTimestamp;
+}
+
 export interface MediaAssetsTable extends TenantRow, CreatedRow {
   content_version_id: string | null;
+  job_id: string | null;
   sha256: string;
+  source_class: "generated" | "licensed_stock" | "tenant_owned" | "legacy";
+  provenance_hash: string;
   mime_type: string;
+  byte_length: NullableNumericColumn;
+  width: number | null;
+  height: number | null;
+  platform: "toutiao" | "sohu" | "ctrip_community" | null;
+  role: "cover" | "inline" | null;
   storage_key: string;
   alt_text: string;
+  caption: string;
+  fact_ids: TextArrayColumn;
+  visual_brief: JsonColumn<JsonObject> | null;
+  visual_brief_hash: string | null;
+  rights: JsonColumn<JsonObject>;
+  provenance: JsonColumn<JsonObject>;
   source_url: string | null;
   metadata: JsonColumn<JsonObject>;
+}
+
+export interface ContentMediaBindingsTable extends TenantRow, CreatedRow {
+  content_version_id: string;
+  media_asset_id: string;
+  platform: "toutiao" | "sohu" | "ctrip_community";
+  role: "cover" | "inline";
+  position: number;
+  alt_text: string;
+  caption: string;
+}
+
+export interface MediaInspectionsTable extends TenantRow, CreatedRow {
+  media_asset_id: string;
+  asset_sha256: string;
+  status: "passed" | "failed";
+  evaluator: string;
+  evaluator_mode: "fixture" | "live";
+  evaluator_version: string;
+  response_sha256: string;
+  inspected_at: RequiredDbTimestamp;
+  ocr_text: string;
+  labels: JsonColumn<JsonValue[]>;
 }
 
 export interface PublicationVariantsTable extends TenantRow, CreatedRow {
@@ -371,6 +448,8 @@ export interface AuditArtifactsTable extends TenantRow {
   platform: "toutiao" | "sohu" | "ctrip_community";
   payload_hash: string;
   fact_snapshot_hash: string;
+  brand_snapshot_hash: string;
+  media_snapshot_hash: string;
   policy_hash: string;
   policy_version: string;
   audit_hash: string;
@@ -658,7 +737,11 @@ export interface Database {
   research_capture_records: ResearchCaptureRecordsTable;
   content_items: ContentItemsTable;
   content_versions: ContentVersionsTable;
+  media_generation_jobs: MediaGenerationJobsTable;
+  media_generation_attempts: MediaGenerationAttemptsTable;
   media_assets: MediaAssetsTable;
+  content_media_bindings: ContentMediaBindingsTable;
+  media_inspections: MediaInspectionsTable;
   publication_variants: PublicationVariantsTable;
   audit_runs: AuditRunsTable;
   audit_artifacts: AuditArtifactsTable;
@@ -701,7 +784,11 @@ export const TENANT_TABLES = [
   "research_capture_records",
   "content_items",
   "content_versions",
+  "media_generation_jobs",
+  "media_generation_attempts",
   "media_assets",
+  "content_media_bindings",
+  "media_inspections",
   "publication_variants",
   "audit_runs",
   "audit_artifacts",

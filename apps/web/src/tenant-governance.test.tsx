@@ -36,13 +36,32 @@ const members: readonly TenantMember[] = [
   },
 ];
 
+const policyDocument = {
+  schemaVersion: "geo.audit-policy.v2",
+  rulesVersion: "travel-v2",
+  industry: "travel",
+  contentTemplates: { title: {}, summary: {}, body: {}, tag: {} },
+  editorialProfiles: {},
+  platformEditorialStyles: {},
+  audit: {
+    artifactTtlMs: 3_600_000,
+    maxEvidenceAgeMs: 30 * 86_400_000,
+    minClaims: 1,
+    duplicateThreshold: 0.88,
+    minDuplicateCharacters: 120,
+    prohibitedGuarantees: ["100%保证"],
+    media: {},
+    platformLimits: {},
+  },
+} as const;
+
 const policies: readonly PolicyBundle[] = [
   {
     id: "10000000-0000-4000-8000-000000000501",
     version: "travel-v2",
     status: "draft",
     policyHash: "a".repeat(64),
-    document: {},
+    document: policyDocument,
     effectiveAt: "2026-07-15T00:00:00.000Z",
     retiredAt: null,
     createdAt: "2026-07-15T00:00:00.000Z",
@@ -100,6 +119,7 @@ function props(overrides: Partial<TenantGovernanceProps> = {}): TenantGovernance
     onExpireContact: vi.fn(async () => undefined),
     onCreateMember: vi.fn(async () => undefined),
     onUpdateMember: vi.fn(async () => undefined),
+    onCreatePolicy: vi.fn(async () => undefined),
     onTransitionPolicy: vi.fn(async () => undefined),
     onCreateChannelAccount: vi.fn(async () => undefined),
     onUpdateChannelAccount: vi.fn(async () => undefined),
@@ -214,6 +234,48 @@ describe("TenantGovernance", () => {
     );
   });
 
+  it("clones the current policy into a constrained audited draft", async () => {
+    const onCreatePolicy = vi.fn<TenantGovernanceProps["onCreatePolicy"]>(async () => undefined);
+    render(<TenantGovernance {...props({ onCreatePolicy })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "新建策略版本" }));
+    fireEvent.change(screen.getByLabelText("新策略版本"), {
+      target: { value: "travel-v3" },
+    });
+    fireEvent.change(screen.getByLabelText("证据最长有效天数"), {
+      target: { value: "45" },
+    });
+    fireEvent.change(screen.getByLabelText("最少事实声明数"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText("近重复阻断阈值"), {
+      target: { value: "0.82" },
+    });
+    fireEvent.change(screen.getByLabelText("策略创建原因"), {
+      target: { value: "调整证据时效并提高事实覆盖要求" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存策略草案" }));
+
+    await waitFor(() => expect(onCreatePolicy).toHaveBeenCalledTimes(1));
+    const created = onCreatePolicy.mock.calls[0]?.[0];
+    expect(created).toMatchObject({
+      version: "travel-v3",
+      reason: "调整证据时效并提高事实覆盖要求",
+      document: {
+        schemaVersion: "geo.audit-policy.v2",
+        rulesVersion: "travel-v3",
+        industry: "travel",
+        contentTemplates: policyDocument.contentTemplates,
+        audit: {
+          maxEvidenceAgeMs: 45 * 86_400_000,
+          minClaims: 2,
+          duplicateThreshold: 0.82,
+          minDuplicateCharacters: 120,
+        },
+      },
+    });
+  });
+
   it("creates manual-only accounts with dry-run as the only execution level", async () => {
     const onCreateChannelAccount = vi.fn(async () => undefined);
     render(<TenantGovernance {...props({ onCreateChannelAccount })} />);
@@ -246,6 +308,7 @@ describe("TenantGovernance", () => {
 
     expect(screen.getByRole("button", { name: "新增联系方式" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "新增成员" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "新建策略版本" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "创建自动化身份" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "新增平台账号" })).toBeDisabled();
   });

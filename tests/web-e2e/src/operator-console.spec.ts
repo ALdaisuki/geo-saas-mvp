@@ -26,9 +26,14 @@ async function openRoute(page: Page, label: string, mobile: boolean): Promise<vo
   await page.getByRole("link", { name: label, exact: true }).click();
 }
 
-async function attachScreenshot(page: Page, testInfo: TestInfo, slug: string): Promise<void> {
+async function attachScreenshot(
+  page: Page,
+  testInfo: TestInfo,
+  slug: string,
+  fullPage = true,
+): Promise<void> {
   await testInfo.attach(`${testInfo.project.name}-${slug}`, {
-    body: await page.screenshot({ fullPage: true }),
+    body: await page.screenshot({ fullPage }),
     contentType: "image/png",
   });
 }
@@ -89,6 +94,7 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
       role: "owner",
       capabilities: [
         "tenant:read",
+        "tenant:manage",
         "content:read",
         "content:write",
         "automation:manage",
@@ -155,6 +161,30 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
       evidenceRefs: ["operator-verification"],
       status: "active",
       lastVerifiedAt: now,
+    },
+  ];
+  const policies = [
+    {
+      id: "10000000-0000-4000-8000-000000000501",
+      version: "travel-policy-v1",
+      status: "active",
+      policyHash: "a".repeat(64),
+      document: {
+        schemaVersion: "geo.audit-policy.v2",
+        rulesVersion: "travel-policy-v1",
+        industry: "travel",
+        audit: {
+          artifactTtlMs: 3_600_000,
+          maxEvidenceAgeMs: 30 * 86_400_000,
+          minClaims: 2,
+          duplicateThreshold: 0.88,
+          minDuplicateCharacters: 160,
+          prohibitedGuarantees: ["保证", "百分百"],
+        },
+      },
+      effectiveAt: now,
+      retiredAt: null,
+      createdAt: now,
     },
   ];
   const batch = {
@@ -277,7 +307,7 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
         ]),
       ],
       ["/api/members", items([])],
-      ["/api/policies", items([])],
+      ["/api/policies", items(policies)],
       ["/api/query-sets", items([])],
       ["/api/evidence-sources", items([])],
       ["/api/facts", items([])],
@@ -430,4 +460,49 @@ test("live automation operations remain bounded and non-overlapping", async ({
   await expect(page.getByText(/完成是不可逆终态/)).toBeVisible();
   await assertNoPageOverflow(page);
   await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+});
+
+test("live policy draft editor stays usable across viewports", async ({ page }, testInfo) => {
+  await installAutomationApiFixture(page);
+  await page.goto("/customers");
+
+  await expect(page.getByRole("heading", { level: 1, name: "客户与品牌" })).toBeVisible();
+  await page.getByRole("button", { name: "新建策略版本" }).click();
+  const dialog = page.getByRole("dialog", { name: "新建审计策略版本" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("基于策略版本")).toHaveValue("travel-policy-v1");
+  await expect(dialog.getByLabel("最少事实声明数")).toHaveValue("2");
+  await expect(dialog.getByLabel("禁止保证词（每行一项）")).toHaveValue("保证\n百分百");
+
+  const dialogBounds = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      clientWidth: element.clientWidth,
+      clientHeight: element.clientHeight,
+      scrollWidth: element.scrollWidth,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(dialogBounds.top).toBeGreaterThanOrEqual(-1);
+  expect(dialogBounds.left).toBeGreaterThanOrEqual(-1);
+  expect(dialogBounds.right).toBeLessThanOrEqual(dialogBounds.viewportWidth + 1);
+  expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight + 1);
+  expect(dialogBounds.scrollWidth).toBeLessThanOrEqual(dialogBounds.clientWidth + 1);
+  expect(dialogBounds.overflowY).toBe("auto");
+  if (testInfo.project.name.startsWith("mobile-")) {
+    expect(dialogBounds.scrollHeight).toBeGreaterThan(dialogBounds.clientHeight);
+  }
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [
+    ".governance-dialog > header",
+    ".governance-dialog-actions",
+  ]);
+  await attachScreenshot(page, testInfo, "policy-draft-editor", false);
 });

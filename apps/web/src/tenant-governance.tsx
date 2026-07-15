@@ -51,6 +51,12 @@ export interface PolicyTransitionInput {
   readonly reason: string;
 }
 
+export interface CreatePolicyInput {
+  readonly version: string;
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly reason: string;
+}
+
 export interface CreateChannelAccountInput {
   readonly platform: "toutiao" | "sohu" | "ctrip_community";
   readonly displayName: string;
@@ -91,6 +97,7 @@ export interface TenantGovernanceProps {
   readonly onExpireContact: (contactId: string, input: ExpireContactInput) => Promise<void>;
   readonly onCreateMember: (input: CreateMemberInput) => Promise<void>;
   readonly onUpdateMember: (memberId: string, input: UpdateMemberInput) => Promise<void>;
+  readonly onCreatePolicy: (input: CreatePolicyInput) => Promise<void>;
   readonly onTransitionPolicy: (policyId: string, input: PolicyTransitionInput) => Promise<void>;
   readonly onCreateChannelAccount: (input: CreateChannelAccountInput) => Promise<void>;
   readonly onUpdateChannelAccount: (
@@ -105,7 +112,7 @@ export interface TenantGovernanceProps {
   readonly onChanged?: () => void;
 }
 
-type CreateForm = "contact" | "member" | "account" | "principal" | null;
+type CreateForm = "contact" | "member" | "policy" | "account" | "principal" | null;
 type ActionIntent =
   | { readonly type: "expire-contact"; readonly contact: TenantContact }
   | { readonly type: "member"; readonly member: TenantMember }
@@ -130,6 +137,18 @@ function splitEvidence(value: string): string[] {
     .split(/\r?\n|,/u)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function objectValue(value: unknown): Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : {};
+}
+
+function finiteFormNumber(data: FormData, name: string): number {
+  const value = Number(data.get(name));
+  if (!Number.isFinite(value)) throw new TypeError(`${name} 必须是有效数字`);
+  return value;
 }
 
 function platformLabel(platform: string): string {
@@ -222,6 +241,8 @@ export function TenantGovernance(props: TenantGovernanceProps) {
   const canManageTenant = props.capabilities.includes("tenant:manage");
   const canManageMembers = props.capabilities.includes("member:manage");
   const canManagePrincipals = props.capabilities.includes("principal:manage");
+  const basePolicy =
+    props.policies.find((policy) => policy.status === "active") ?? props.policies[0];
 
   async function perform(operation: () => Promise<void>, success: string): Promise<boolean> {
     setPending(true);
@@ -331,7 +352,19 @@ export function TenantGovernance(props: TenantGovernanceProps) {
       </section>
 
       <section className="governance-section">
-        <GovernanceHeader title="审计策略" />
+        <GovernanceHeader
+          title="审计策略"
+          action={
+            <button
+              className="button-secondary"
+              type="button"
+              disabled={!canManageTenant || basePolicy === undefined}
+              onClick={() => setCreateForm("policy")}
+            >
+              <Plus size={16} /> 新建策略版本
+            </button>
+          }
+        />
         <div className="governance-rows">
           {props.policies.map((policy) => (
             <div className="governance-row" key={policy.id}>
@@ -567,6 +600,19 @@ export function TenantGovernance(props: TenantGovernanceProps) {
         </Dialog>
       ) : null}
 
+      {createForm === "policy" && basePolicy !== undefined ? (
+        <PolicyDraftDialog
+          basePolicy={basePolicy}
+          pending={pending}
+          onClose={() => setCreateForm(null)}
+          onSubmit={(input) =>
+            perform(() => props.onCreatePolicy(input), "策略草案已创建").then((ok) => {
+              if (ok) setCreateForm(null);
+            })
+          }
+        />
+      ) : null}
+
       {createForm === "account" ? (
         <ChannelAccountDialog
           title="新增平台账号"
@@ -713,6 +759,146 @@ export function TenantGovernance(props: TenantGovernanceProps) {
         />
       ) : null}
     </div>
+  );
+}
+
+function PolicyDraftDialog({
+  basePolicy,
+  pending,
+  onClose,
+  onSubmit,
+}: {
+  readonly basePolicy: PolicyBundle;
+  readonly pending: boolean;
+  readonly onClose: () => void;
+  readonly onSubmit: (input: CreatePolicyInput) => Promise<void>;
+}) {
+  const audit = objectValue(basePolicy.document.audit);
+  const artifactTtlHours = Number(audit.artifactTtlMs ?? 3_600_000) / 3_600_000;
+  const evidenceAgeDays = Number(audit.maxEvidenceAgeMs ?? 30 * 86_400_000) / 86_400_000;
+  const minClaims = Number(audit.minClaims ?? 0);
+  const duplicateThreshold = Number(audit.duplicateThreshold ?? 0.88);
+  const minDuplicateCharacters = Number(audit.minDuplicateCharacters ?? 0);
+  const prohibitedGuarantees = Array.isArray(audit.prohibitedGuarantees)
+    ? audit.prohibitedGuarantees.filter((value): value is string => typeof value === "string")
+    : [];
+
+  return (
+    <Dialog title="新建审计策略版本" pending={pending} onClose={onClose}>
+      <form
+        className="governance-form governance-form-grid"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const data = new FormData(event.currentTarget);
+          const version = String(data.get("version")).trim();
+          void onSubmit({
+            version,
+            reason: String(data.get("reason")).trim(),
+            document: {
+              ...basePolicy.document,
+              rulesVersion: version,
+              audit: {
+                ...audit,
+                artifactTtlMs: Math.round(finiteFormNumber(data, "artifactTtlHours") * 3_600_000),
+                maxEvidenceAgeMs: Math.round(
+                  finiteFormNumber(data, "maxEvidenceAgeDays") * 86_400_000,
+                ),
+                minClaims: Math.round(finiteFormNumber(data, "minClaims")),
+                duplicateThreshold: finiteFormNumber(data, "duplicateThreshold"),
+                minDuplicateCharacters: Math.round(
+                  finiteFormNumber(data, "minDuplicateCharacters"),
+                ),
+                prohibitedGuarantees: splitEvidence(String(data.get("prohibitedGuarantees"))),
+              },
+            },
+          });
+        }}
+      >
+        <label>
+          基于策略版本
+          <input value={basePolicy.version} readOnly />
+        </label>
+        <label>
+          新策略版本
+          <input name="version" required minLength={1} maxLength={100} />
+        </label>
+        <label>
+          审计结果有效小时数
+          <input
+            name="artifactTtlHours"
+            type="number"
+            required
+            min={0.25}
+            max={720}
+            step={0.25}
+            defaultValue={artifactTtlHours}
+          />
+        </label>
+        <label>
+          证据最长有效天数
+          <input
+            name="maxEvidenceAgeDays"
+            type="number"
+            required
+            min={1}
+            max={3650}
+            step={1}
+            defaultValue={evidenceAgeDays}
+          />
+        </label>
+        <label>
+          最少事实声明数
+          <input
+            name="minClaims"
+            type="number"
+            required
+            min={0}
+            max={100}
+            defaultValue={minClaims}
+          />
+        </label>
+        <label>
+          近重复阻断阈值
+          <input
+            name="duplicateThreshold"
+            type="number"
+            required
+            min={0.01}
+            max={1}
+            step={0.01}
+            defaultValue={duplicateThreshold}
+          />
+        </label>
+        <label>
+          近重复最少字符数
+          <input
+            name="minDuplicateCharacters"
+            type="number"
+            required
+            min={0}
+            max={100000}
+            step={1}
+            defaultValue={minDuplicateCharacters}
+          />
+        </label>
+        <label className="governance-form-wide">
+          禁止保证词（每行一项）
+          <textarea
+            name="prohibitedGuarantees"
+            rows={4}
+            maxLength={20_000}
+            defaultValue={prohibitedGuarantees.join("\n")}
+          />
+        </label>
+        <label className="governance-form-wide">
+          策略创建原因
+          <textarea name="reason" required minLength={3} maxLength={1_000} rows={3} />
+        </label>
+        <div className="governance-dialog-actions governance-form-wide">
+          <SubmitButton label="保存策略草案" pending={pending} />
+        </div>
+      </form>
+    </Dialog>
   );
 }
 

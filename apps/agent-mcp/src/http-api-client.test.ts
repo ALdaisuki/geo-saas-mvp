@@ -72,6 +72,184 @@ describe("GEO API session and destination policy", () => {
     ).toThrow(/unique/);
   });
 
+  it("supplies discoverable brands, campaigns, and policy summaries in tenant context", async () => {
+    const document = buildBaselineAuditPolicyDocument({
+      rulesVersion: "travel-v1",
+      industry: "travel",
+    });
+    const paths: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      paths.push(url.pathname);
+      if (url.pathname === "/api/auth/login") {
+        const headers = new Headers();
+        headers.append("set-cookie", "geo_session=session-value; Path=/; HttpOnly");
+        headers.append("set-cookie", "geo_csrf=csrf-value; Path=/");
+        return jsonResponse(
+          {
+            actor: {
+              id: ids.actor,
+              role: "owner",
+              capabilities: ["tenant:read", "content:read", "audit:read"],
+            },
+            tenant: { id: ids.tenant, slug: "tenant", displayName: "Tenant" },
+            csrfToken: "csrf-value",
+            expiresAt: "2027-01-01T00:00:00.000Z",
+          },
+          { headers },
+        );
+      }
+      if (url.pathname === "/api/tenant") {
+        return jsonResponse({ id: ids.tenant, slug: "tenant", displayName: "Tenant" });
+      }
+      if (url.pathname === "/api/contacts") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/channel-accounts") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/capabilities") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/brand-agent-profiles") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/brands") {
+        return jsonResponse({
+          items: [
+            {
+              id: ids.brand,
+              displayName: "中通国际旅行社",
+              industry: "travel",
+              isPrimary: true,
+            },
+          ],
+        });
+      }
+      if (url.pathname === "/api/campaigns") {
+        return jsonResponse({
+          items: [
+            {
+              id: ids.campaign,
+              brandId: ids.brand,
+              name: "日本线路问答",
+              objective: "回答可核验的行程问题",
+              industry: "travel",
+              status: "active",
+              topicKey: "japan-faq",
+            },
+          ],
+        });
+      }
+      if (url.pathname === "/api/policies") {
+        return jsonResponse({
+          items: [
+            {
+              id: ids.policy,
+              version: document.rulesVersion,
+              status: "active",
+              policyHash: sha256Canonical(document),
+              document,
+              effectiveAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        });
+      }
+      return jsonResponse({ error: { code: "UNEXPECTED_TEST_ROUTE" } }, { status: 500 });
+    });
+    const sessions = new GeoApiSessionRegistry({
+      baseUrl: "http://127.0.0.1:4100",
+      credentials: parseMcpPrincipalCredentials(
+        JSON.stringify([
+          {
+            accessToken,
+            clientId: "tenant-context-client",
+            email: "owner@example.test",
+            password: "test-password",
+          },
+        ]),
+      ),
+      fetchImpl,
+    });
+    const principal = (await sessions.authenticateBearer(`Bearer ${accessToken}`, "context-1"))
+      .principal;
+    const api = new HttpInternalGeoApiClient({ sessions, fetchImpl });
+
+    await expect(api.getTenantContext(principal)).resolves.toMatchObject({
+      brands: [{ id: ids.brand, displayName: "中通国际旅行社", isPrimary: true }],
+      campaigns: [{ id: ids.campaign, brandId: ids.brand, status: "active" }],
+      policies: [
+        {
+          id: ids.policy,
+          version: "travel-v1",
+          status: "active",
+          policyHash: sha256Canonical(document),
+        },
+      ],
+    });
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "/api/brands",
+        "/api/campaigns",
+        "/api/policies",
+        "/api/brand-agent-profiles",
+      ]),
+    );
+  });
+
+  it("omits protected tenant context collections when the principal lacks their capabilities", async () => {
+    const paths: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      paths.push(url.pathname);
+      if (url.pathname === "/api/auth/login") {
+        const headers = new Headers();
+        headers.append("set-cookie", "geo_session=session-value; Path=/; HttpOnly");
+        headers.append("set-cookie", "geo_csrf=csrf-value; Path=/");
+        return jsonResponse(
+          {
+            actor: {
+              id: ids.actor,
+              role: "viewer",
+              capabilities: ["tenant:read"],
+            },
+            tenant: { id: ids.tenant, slug: "tenant", displayName: "Tenant" },
+            csrfToken: "csrf-value",
+            expiresAt: "2027-01-01T00:00:00.000Z",
+          },
+          { headers },
+        );
+      }
+      if (url.pathname === "/api/tenant") {
+        return jsonResponse({ id: ids.tenant, slug: "tenant", displayName: "Tenant" });
+      }
+      if (url.pathname === "/api/contacts") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/channel-accounts") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/capabilities") return jsonResponse({ items: [] });
+      if (url.pathname === "/api/brands") return jsonResponse({ items: [] });
+      return jsonResponse({ error: { code: "PROTECTED_ROUTE_REQUESTED" } }, { status: 500 });
+    });
+    const sessions = new GeoApiSessionRegistry({
+      baseUrl: "http://127.0.0.1:4100",
+      credentials: parseMcpPrincipalCredentials(
+        JSON.stringify([
+          {
+            accessToken,
+            clientId: "tenant-context-viewer",
+            email: "viewer@example.test",
+            password: "test-password",
+          },
+        ]),
+      ),
+      fetchImpl,
+    });
+    const principal = (await sessions.authenticateBearer(`Bearer ${accessToken}`, "context-2"))
+      .principal;
+    const api = new HttpInternalGeoApiClient({ sessions, fetchImpl });
+
+    await expect(api.getTenantContext(principal)).resolves.toMatchObject({
+      brandAgentProfiles: { items: [] },
+      brands: [],
+      campaigns: [],
+      policies: [],
+    });
+    expect(paths).not.toContain("/api/brand-agent-profiles");
+    expect(paths).not.toContain("/api/campaigns");
+    expect(paths).not.toContain("/api/policies");
+  });
+
   it("renders draft text only from the active policy, verified facts, and contacts", async () => {
     const document = buildBaselineAuditPolicyDocument({
       rulesVersion: "travel-v1",

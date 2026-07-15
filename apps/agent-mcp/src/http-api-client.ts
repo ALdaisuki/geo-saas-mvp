@@ -111,6 +111,23 @@ const policyBundleSchema = z.object({
   effectiveAt: z.string().datetime({ offset: true }),
 });
 
+const tenantBrandContextSchema = z.object({
+  id: idSchema,
+  displayName: z.string().min(1),
+  industry: z.string().min(1),
+  isPrimary: z.boolean(),
+});
+
+const tenantCampaignContextSchema = z.object({
+  id: idSchema,
+  brandId: idSchema,
+  name: z.string().min(1),
+  objective: z.string().min(1),
+  industry: z.string().min(1),
+  status: z.enum(["draft", "active", "paused", "completed"]),
+  topicKey: z.string().min(1),
+});
+
 const contentVersionSchema = z.object({
   id: idSchema,
   contentItemId: idSchema,
@@ -581,14 +598,63 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
   }
 
   async getTenantContext(principal: Readonly<ActorContext>): Promise<unknown> {
-    const [tenant, contacts, accounts, capabilities, brandAgentProfiles] = await Promise.all([
+    const canReadContent = principal.capabilities.includes("content:read");
+    const canReadAudit = principal.capabilities.includes("audit:read");
+    const [
+      tenant,
+      contacts,
+      accounts,
+      capabilities,
+      brandAgentProfiles,
+      brandsResult,
+      campaignsResult,
+      policiesResult,
+    ] = await Promise.all([
       this.#request(principal, "/api/tenant"),
       this.#request(principal, "/api/contacts"),
       this.#request(principal, "/api/channel-accounts"),
       this.#request(principal, "/api/capabilities"),
-      this.#request(principal, "/api/brand-agent-profiles"),
+      canReadContent
+        ? this.#request(principal, "/api/brand-agent-profiles")
+        : Promise.resolve({ items: [] }),
+      this.#request(principal, "/api/brands"),
+      canReadContent ? this.#request(principal, "/api/campaigns") : Promise.resolve({ items: [] }),
+      canReadAudit ? this.#request(principal, "/api/policies") : Promise.resolve({ items: [] }),
     ]);
-    return { tenant, contacts, accounts, capabilities, brandAgentProfiles };
+    const brands = z.object({ items: z.array(tenantBrandContextSchema) }).parse(brandsResult).items;
+    const campaigns = z
+      .object({ items: z.array(tenantCampaignContextSchema) })
+      .parse(campaignsResult).items;
+    const policies = z
+      .object({ items: z.array(policyBundleSchema) })
+      .parse(policiesResult)
+      .items.map((policy) => ({
+        id: policy.id,
+        version: policy.version,
+        status: policy.status,
+        policyHash: policy.policyHash,
+        effectiveAt: policy.effectiveAt,
+        industry: policy.document.industry,
+        audit: {
+          artifactTtlMs: policy.document.audit.artifactTtlMs,
+          maxEvidenceAgeMs: policy.document.audit.maxEvidenceAgeMs,
+          minClaims: policy.document.audit.minClaims,
+          duplicateThreshold: policy.document.audit.duplicateThreshold,
+          minDuplicateCharacters: policy.document.audit.minDuplicateCharacters,
+          prohibitedGuarantees: policy.document.audit.prohibitedGuarantees,
+          platformLimits: policy.document.audit.platformLimits,
+        },
+      }));
+    return {
+      tenant,
+      contacts,
+      accounts,
+      capabilities,
+      brandAgentProfiles,
+      brands,
+      campaigns,
+      policies,
+    };
   }
 
   async getArticleTemplateCatalog(

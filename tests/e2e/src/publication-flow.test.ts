@@ -1485,6 +1485,7 @@ describe("governed multi-tenant publication flow", () => {
       payload: {
         version: healthcarePolicyVersion,
         document: healthcarePolicyDocument,
+        reason: "Create the healthcare vertical E2E policy draft",
       },
     });
     const healthcareQuerySet = await app.inject({
@@ -1506,7 +1507,27 @@ describe("governed multi-tenant publication flow", () => {
     });
     expect(healthcareBrand.statusCode).toBe(201);
     expect(healthcarePolicy.statusCode).toBe(201);
-    expect(healthcarePolicy.json()).toMatchObject({ status: "draft" });
+    const healthcarePolicyBody = healthcarePolicy.json<{ id: string; status: string }>();
+    expect(healthcarePolicyBody).toMatchObject({ status: "draft" });
+    const policyCreationAudit = await adminClient.query<{
+      action: string;
+      details: { reason?: string };
+    }>(
+      `select action, details
+       from geo.audit_log
+       where tenant_id = $1 and resource_type = 'policy_bundle' and resource_id = $2`,
+      [SEED_IDS.zhongtong.tenant, healthcarePolicyBody.id],
+    );
+    expect(policyCreationAudit.rows).toEqual([
+      {
+        action: "policy_bundle.created",
+        details: {
+          reason: "Create the healthcare vertical E2E policy draft",
+          status: "draft",
+          version: healthcarePolicyVersion,
+        },
+      },
+    ]);
     expect(healthcareQuerySet.statusCode).toBe(201);
     expect(healthcareQuerySet.json()).toMatchObject({
       industry: "healthcare",

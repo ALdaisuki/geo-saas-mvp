@@ -176,6 +176,13 @@ export interface PolicyBundle {
   readonly createdAt: string;
 }
 
+export interface CreatePolicyInput {
+  readonly version: string;
+  readonly document: Readonly<Record<string, unknown>>;
+  readonly effectiveAt?: string;
+  readonly reason: string;
+}
+
 export interface PolicyTransitionInput {
   readonly targetStatus: "active" | "retired";
   readonly reason: string;
@@ -839,6 +846,7 @@ export interface GeoApi {
   createMember(input: CreateMemberInput): Promise<TenantMember>;
   updateMember(memberId: string, input: UpdateMemberInput): Promise<TenantMember>;
   getPolicies(): Promise<readonly PolicyBundle[]>;
+  createPolicy(input: CreatePolicyInput): Promise<PolicyBundle>;
   transitionPolicy(policyId: string, input: PolicyTransitionInput): Promise<PolicyTransitionResult>;
   getServicePrincipals(): Promise<readonly ServicePrincipal[]>;
   createAutomationServicePrincipal(input: { readonly name: string }): Promise<ServicePrincipal>;
@@ -2245,6 +2253,12 @@ export class HttpGeoApi implements GeoApi {
 
   async getPolicies(): Promise<readonly PolicyBundle[]> {
     return itemsValue(await this.request("/api/policies"), parsePolicyBundle);
+  }
+
+  async createPolicy(input: CreatePolicyInput): Promise<PolicyBundle> {
+    return parsePolicyBundle(
+      await this.request("/api/policies", { method: "POST", body: JSON.stringify(input) }, true),
+    );
   }
 
   async transitionPolicy(

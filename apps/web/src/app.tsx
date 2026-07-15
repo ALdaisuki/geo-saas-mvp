@@ -1342,6 +1342,9 @@ function CustomersView({
             onUpdateMember={async (memberId, input) => {
               await api.updateMember(memberId, input);
             }}
+            onCreatePolicy={async (input) => {
+              await api.createPolicy(input);
+            }}
             onTransitionPolicy={async (policyId, input) => {
               await api.transitionPolicy(policyId, input);
             }}

@@ -96,7 +96,8 @@ export const geoMcpToolMetadata: Readonly<
 > = {
   geo_tenant_context: {
     title: "Tenant context",
-    description: "Read authenticated tenant context.",
+    description:
+      "Discover authenticated tenant, brand, Campaign, policy, contact, account, and capability context.",
     readOnly: true,
   },
   geo_template_catalog: {

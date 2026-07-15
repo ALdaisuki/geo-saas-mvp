@@ -1143,6 +1143,21 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           `.execute(transaction);
           const row = result.rows[0];
           if (row === undefined) throw new RepositoryConflictError("Policy bundle was not created");
+          await sql`
+            insert into geo.audit_log (
+              tenant_id, actor_id, action, resource_type, resource_id,
+              request_id, after_hash, details
+            ) values (
+              ${context.tenantId}::uuid, ${context.actorId}::uuid,
+              'policy_bundle.created', 'policy_bundle', ${row.id}::uuid,
+              ${context.requestId}, ${input.policyHash},
+              ${jsonText({
+                version: input.version,
+                reason: input.reason,
+                status: "draft",
+              })}::jsonb
+            )
+          `.execute(transaction);
           return {
             id: row.id,
             version: row.version,

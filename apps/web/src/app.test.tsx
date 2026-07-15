@@ -288,6 +288,9 @@ function liveApi(): GeoApi {
         createdAt: "2026-07-14T08:00:00.000Z",
       },
     ],
+    createPolicy: async () => {
+      throw new Error("not used by this App fixture");
+    },
     transitionPolicy: async () => {
       throw new Error("not used by this App fixture");
     },

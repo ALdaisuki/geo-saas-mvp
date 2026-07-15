@@ -1011,6 +1011,7 @@ describe("HttpGeoApi", () => {
       jsonResponse({ ...contact, validUntil: "2026-07-15T01:00:00.000Z" }),
       jsonResponse(member, 201),
       jsonResponse({ ...member, role: "publisher" }),
+      jsonResponse({ ...policy, status: "draft" }, 201),
       jsonResponse({ policy, previousStatus: "draft", wasChanged: true }),
       jsonResponse(account, 201),
       jsonResponse({ ...account, status: "active" }),
@@ -1040,6 +1041,11 @@ describe("HttpGeoApi", () => {
       initialPassword: "replace-this-password-2026",
     });
     await api.updateMember(memberId, { role: "publisher", reason: "调整发布职责" });
+    await api.createPolicy({
+      version: "travel-v2",
+      document: { ...policy.document, rulesVersion: "travel-v2" },
+      reason: "建立下一版审计策略草案",
+    });
     await api.transitionPolicy(policyId, { targetStatus: "active", reason: "审核通过" });
     await api.createChannelAccount({
       platform: "sohu",
@@ -1074,6 +1080,7 @@ describe("HttpGeoApi", () => {
       `/api/contacts/${contactId}/expire`,
       "/api/members",
       `/api/members/${memberId}`,
+      "/api/policies",
       `/api/policies/${policyId}/state`,
       "/api/channel-accounts",
       `/api/channel-accounts/${accountId}`,
@@ -1084,6 +1091,11 @@ describe("HttpGeoApi", () => {
     for (const call of calls.slice(1).filter((item) => item.init?.method !== undefined)) {
       expect(new Headers(call.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
     }
-    expect(JSON.parse(String(calls[9]?.init?.body))).toEqual({ name: principal.name });
+    expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({
+      version: "travel-v2",
+      document: { rulesVersion: "travel-v2" },
+      reason: "建立下一版审计策略草案",
+    });
+    expect(JSON.parse(String(calls[10]?.init?.body))).toEqual({ name: principal.name });
   });
 });

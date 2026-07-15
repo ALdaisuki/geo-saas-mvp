@@ -199,6 +199,7 @@ const policyBundleSchema = z
     version: z.string().trim().min(1).max(100),
     document: geoAuditPolicyDocumentSchema,
     effectiveAt: isoDateTimeSchema.optional(),
+    reason: z.string().trim().min(3).max(1_000),
   })
   .superRefine((value, context) => {
     if (value.version !== value.document.rulesVersion) {
@@ -1120,6 +1121,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         policyHash: sha256Canonical(body.document),
         document: body.document,
         effectiveAt: body.effectiveAt ?? now().toISOString(),
+        reason: body.reason,
       });
       return reply.status(201).send(policy);
     },

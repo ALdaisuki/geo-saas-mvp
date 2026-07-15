@@ -175,6 +175,7 @@ export interface CreatePolicyBundleInput {
   readonly policyHash: string;
   readonly document: Readonly<Record<string, unknown>>;
   readonly effectiveAt: string;
+  readonly reason: string;
 }
 
 export interface TransitionPolicyBundleInput {

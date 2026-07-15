@@ -2204,7 +2204,11 @@ describe("Fastify API security and vertical publication flow", () => {
       method: "POST",
       url: "/api/policies",
       headers: writeHeaders,
-      payload: { version: "healthcare-draft-v1", document: healthcarePolicyDocument },
+      payload: {
+        version: "healthcare-draft-v1",
+        document: healthcarePolicyDocument,
+        reason: "Create the first reviewed healthcare policy draft",
+      },
     });
     const createdQuerySet = await app.inject({
       method: "POST",
@@ -2235,6 +2239,7 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.policyInputs[0]).toMatchObject({
       policyHash: sha256Canonical(healthcarePolicyDocument),
       document: healthcarePolicyDocument,
+      reason: "Create the first reviewed healthcare policy draft",
     });
     expect(createdQuerySet.statusCode).toBe(201);
     expect(createdQuerySet.json()).toMatchObject({
@@ -2309,23 +2314,38 @@ describe("Fastify API security and vertical publication flow", () => {
       industry: "travel",
     });
 
-    const [unknownField, mismatchedVersion] = await Promise.all([
+    const [unknownField, mismatchedVersion, missingReason] = await Promise.all([
       app.inject({
         method: "POST",
         url: "/api/policies",
         headers,
-        payload: { version: "travel-v2", document: { ...document, bypassAudit: true } },
+        payload: {
+          version: "travel-v2",
+          document: { ...document, bypassAudit: true },
+          reason: "Attempt an invalid policy draft",
+        },
       }),
       app.inject({
         method: "POST",
         url: "/api/policies",
         headers,
-        payload: { version: "travel-v3", document },
+        payload: {
+          version: "travel-v3",
+          document,
+          reason: "Attempt a mismatched policy version",
+        },
+      }),
+      app.inject({
+        method: "POST",
+        url: "/api/policies",
+        headers,
+        payload: { version: "travel-v2", document },
       }),
     ]);
 
     expect(unknownField.statusCode).toBe(400);
     expect(mismatchedVersion.statusCode).toBe(400);
+    expect(missingReason.statusCode).toBe(400);
     expect(repository.policyInputs).toHaveLength(0);
   });
 

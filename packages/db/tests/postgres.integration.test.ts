@@ -317,6 +317,17 @@ interface VariantRepositoryForTest {
       reason: string;
     },
   ): Promise<{ id: string; role: string; capabilities: readonly string[]; status: string }>;
+  createPolicyBundle(
+    context: { actorId: string; tenantId: string; requestId: string },
+    input: {
+      id: string;
+      version: string;
+      policyHash: string;
+      document: Readonly<Record<string, unknown>>;
+      effectiveAt: string;
+      reason: string;
+    },
+  ): Promise<{ id: string; status: "draft"; policyHash: string }>;
   transitionPolicyBundle(
     context: { actorId: string; tenantId: string; requestId: string },
     input: {
@@ -3721,18 +3732,6 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       industry: "travel",
     });
     const governancePolicyHash = sha256Canonical(policyDocument);
-    await adminClient.query(
-      `INSERT INTO geo.policy_bundles
-         (tenant_id, id, version, status, policy_hash, document, effective_at)
-       VALUES ($1, $2, 'travel-governance-v2', 'draft', $3, $4::jsonb, $5)`,
-      [
-        tenantId,
-        ids.governancePolicy,
-        governancePolicyHash,
-        JSON.stringify(policyDocument),
-        "2026-07-15T00:00:00.000Z",
-      ],
-    );
 
     const connectionString = `postgresql://postgres:${encodeURIComponent(password)}@127.0.0.1:${postgresPort}/${databaseName}`;
     const database = createDatabase({
@@ -3744,6 +3743,20 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     const repository = factory({ runtimeDatabase: database, identityDatabase: database });
     const context = { actorId, tenantId, requestId: "tenant-governance-integration" };
     try {
+      const createdPolicy = await repository.createPolicyBundle(context, {
+        id: ids.governancePolicy,
+        version: "travel-governance-v2",
+        policyHash: governancePolicyHash,
+        document: policyDocument,
+        effectiveAt: "2026-07-15T00:00:00.000Z",
+        reason: "Create a reviewed integration policy draft",
+      });
+      expect(createdPolicy).toMatchObject({
+        id: ids.governancePolicy,
+        status: "draft",
+        policyHash: governancePolicyHash,
+      });
+
       const createdContact = await repository.createContact(context, {
         id: ids.governanceContact,
         type: "wechat",
@@ -3859,6 +3872,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         [tenantId],
       );
       expect(persisted.rows.map((row) => row.action)).toEqual([
+        "policy_bundle.created",
         "tenant_contact.created",
         "tenant_contact.expired",
         "tenant_member.created",

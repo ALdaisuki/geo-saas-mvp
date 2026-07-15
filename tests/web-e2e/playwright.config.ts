@@ -2,6 +2,11 @@ import { defineConfig } from "@playwright/test";
 
 const configuredChannel = process.env.PLAYWRIGHT_CHANNEL;
 const channel = configuredChannel ?? (process.platform === "win32" ? "msedge" : undefined);
+const webPort = process.env.WEB_E2E_PORT ?? "4174";
+if (!/^\d+$/.test(webPort)) {
+  throw new TypeError("WEB_E2E_PORT must contain only digits");
+}
+const baseURL = `http://127.0.0.1:${webPort}`;
 
 export default defineConfig({
   testDir: "./src",
@@ -15,7 +20,7 @@ export default defineConfig({
     timeout: 10_000,
   },
   use: {
-    baseURL: "http://127.0.0.1:4174",
+    baseURL,
     colorScheme: "light",
     locale: "zh-CN",
     screenshot: "only-on-failure",
@@ -34,8 +39,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "corepack pnpm --filter @geo/web exec vite --host 127.0.0.1 --port 4174 --strictPort",
-    url: "http://127.0.0.1:4174",
+    command: `corepack pnpm --filter @geo/web exec vite --host 127.0.0.1 --port ${webPort} --strictPort`,
+    url: baseURL,
     reuseExistingServer: false,
     timeout: 60_000,
   },

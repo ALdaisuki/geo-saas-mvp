@@ -1,4 +1,10 @@
-import type { ActorContext, ExecutionLevel, Platform, VisibilityProvider } from "@geo/contracts";
+import type {
+  ActorContext,
+  ExecutionLevel,
+  MediaRole,
+  Platform,
+  VisibilityProvider,
+} from "@geo/contracts";
 
 export interface TenantFactLookupInput {
   brandId: string;
@@ -39,6 +45,18 @@ export interface VisibilityRequestInput {
   idempotencyKey: string;
 }
 
+export interface MediaProductionRequestInput {
+  contentVersionId: string;
+  platform: Platform;
+  role: MediaRole;
+  claimIds: readonly string[];
+  idempotencyKey: string;
+}
+
+export interface MediaJobStatusInput {
+  mediaJobId: string;
+}
+
 export interface InternalGeoApiClient {
   getTenantContext(principal: Readonly<ActorContext>): Promise<unknown>;
   lookupFacts(
@@ -64,6 +82,14 @@ export interface InternalGeoApiClient {
   requestVisibilityRun(
     principal: Readonly<ActorContext>,
     input: Readonly<VisibilityRequestInput>,
+  ): Promise<unknown>;
+  requestMediaProduction(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaProductionRequestInput>,
+  ): Promise<unknown>;
+  getMediaJobStatus(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaJobStatusInput>,
   ): Promise<unknown>;
   authorizeResourceScope(
     principal: Readonly<ActorContext>,

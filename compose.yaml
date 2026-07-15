@@ -239,11 +239,14 @@ services:
       # Bare form passes the secret only when it is present in the operator environment/.env.
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
+      - GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}
+      - GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media
       - DOUBAO_ADAPTER=${DOUBAO_ADAPTER:-fixture}
       - QWEN_ADAPTER=${QWEN_ADAPTER:-fixture}
       - ENABLE_BROWSER_ASSISTED=false
     volumes:
       - evidence-data:/var/lib/geo/evidence
+      - media-data:/var/lib/geo/media
     ports:
       - ${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-4100}:4100
       # agent-mcp shares this network namespace so its HTTP-only loopback API URL is accepted.
@@ -398,3 +401,4 @@ networks:
 volumes:
   postgres-data:
   evidence-data:
+  media-data:

@@ -72,6 +72,25 @@ const schemas = {
     },
     { additionalProperties: false },
   ),
+  geo_media_production_request: Type.Object(
+    {
+      tenantId,
+      contentVersionId: resourceId,
+      platform: Type.Union([
+        Type.Literal("toutiao"),
+        Type.Literal("sohu"),
+        Type.Literal("ctrip_community"),
+      ]),
+      role: Type.Union([Type.Literal("cover"), Type.Literal("inline")]),
+      claimIds: Type.Array(resourceId, { minItems: 1, maxItems: 3, uniqueItems: true }),
+      idempotencyKey,
+    },
+    { additionalProperties: false },
+  ),
+  geo_media_job_status: Type.Object(
+    { tenantId, mediaJobId: resourceId },
+    { additionalProperties: false },
+  ),
   plastic_context_supply: Type.Object(
     {
       tenantId,
@@ -126,6 +145,14 @@ const descriptions: Readonly<Record<AgentToolName, { label: string; description:
   geo_visibility_request: {
     label: "Visibility request",
     description: "Request a tenant-scoped Doubao or Qwen visibility run.",
+  },
+  geo_media_production_request: {
+    label: "Media production request",
+    description: "Request governed fixture media production using scoped content and claim IDs.",
+  },
+  geo_media_job_status: {
+    label: "Media job status",
+    description: "Read tenant-scoped media production status and immutable asset metadata.",
   },
   plastic_context_supply: {
     label: "Governance context",

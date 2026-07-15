@@ -9,6 +9,8 @@ export const GEO_AGENT_TOOL_NAMES = [
   "geo_audit_request",
   "geo_publication_request",
   "geo_visibility_request",
+  "geo_media_production_request",
+  "geo_media_job_status",
 ] as const;
 
 export const PLASTIC_PROMISE_TOOL_NAMES = [
@@ -67,6 +69,16 @@ export const AGENT_TOOL_POLICIES = {
     requiredCapability: "visibility:run",
     stateChanging: true,
     sequential: true,
+  },
+  geo_media_production_request: {
+    requiredCapability: "content:write",
+    stateChanging: true,
+    sequential: true,
+  },
+  geo_media_job_status: {
+    requiredCapability: "content:read",
+    stateChanging: false,
+    sequential: false,
   },
   plastic_context_supply: {
     requiredCapability: "tenant:read",

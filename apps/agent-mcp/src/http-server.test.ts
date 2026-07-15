@@ -43,6 +43,8 @@ function mockApi(): InternalGeoApiClient {
     requestAudit: vi.fn(async () => ({ auditRunId: actorId })),
     requestPublication: vi.fn(async () => ({ publicationRequestId: actorId })),
     requestVisibilityRun: vi.fn(async () => ({ visibilityRunId: actorId })),
+    requestMediaProduction: vi.fn(async () => ({ mediaJobId: actorId })),
+    getMediaJobStatus: vi.fn(async () => ({ mediaJobId: actorId, state: "succeeded" })),
     authorizeResourceScope: vi.fn(async () => true),
   };
 }
@@ -155,6 +157,8 @@ describe("authenticated Streamable HTTP MCP server", () => {
       "geo_audit_request",
       "geo_publication_request",
       "geo_visibility_request",
+      "geo_media_production_request",
+      "geo_media_job_status",
     ]);
     const result = await client.callTool({
       name: "geo_tenant_context",

@@ -91,6 +91,8 @@ function fakeApi(
       };
     },
     requestVisibilityRun: async () => ({ visibilityRunId: ids.publication }),
+    requestMediaProduction: async () => ({ mediaJobId: ids.publication }),
+    getMediaJobStatus: async () => ({ mediaJobId: ids.publication, state: "succeeded" }),
     authorizeResourceScope: async (_principal, toolName) => {
       scopeToolNames.push(toolName);
       return toolName.startsWith("geo_");

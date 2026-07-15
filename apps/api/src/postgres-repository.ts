@@ -679,6 +679,11 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           select exists(select 1 from geo.query_set_versions where id = ${resource.id}) as value
         `.execute(transaction);
         break;
+      case "media_job":
+        result = await sql<{ value: boolean }>`
+          select exists(select 1 from geo.media_generation_jobs where id = ${resource.id}) as value
+        `.execute(transaction);
+        break;
     }
     return result.rows[0]?.value === true;
   }

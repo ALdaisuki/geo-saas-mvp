@@ -117,6 +117,9 @@ importers:
       '@geo/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@geo/media':
+        specifier: workspace:*
+        version: link:../../packages/media
       '@geo/research':
         specifier: workspace:*
         version: link:../../packages/research

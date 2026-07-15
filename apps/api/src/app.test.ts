@@ -41,6 +41,10 @@ import {
   type ResolveSessionInput,
   type ResolvedSession,
 } from "./repository.js";
+import type {
+  MediaProductionController,
+  MediaProductionRequest,
+} from "./media-production-service.js";
 
 const ids = {
   tenant: "10000000-0000-4000-8000-000000000001",
@@ -1691,6 +1695,7 @@ async function testApp(
   governanceGate: PublicationGovernanceGate = {
     evaluate: async () => ({ allowed: true, reason: "test_allow", evidence: { test: true } }),
   },
+  mediaProduction?: MediaProductionController,
 ) {
   const app = await buildApp({
     repository,
@@ -1704,6 +1709,7 @@ async function testApp(
     publicationTokenFactory: () => tokenValue,
     allowedOrigins: ["https://console.example.test"],
     publicationGovernanceGate: governanceGate,
+    ...(mediaProduction === undefined ? {} : { mediaProduction }),
   });
   apps.push(app);
   return app;
@@ -3111,6 +3117,13 @@ describe("Fastify API security and vertical publication flow", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
+      mediaProduction: {
+        enabled: false,
+        providerId: "disabled",
+        providerMode: null,
+        model: null,
+        networkUsed: false,
+      },
       items: [
         {
           platform: "toutiao",
@@ -3120,6 +3133,184 @@ describe("Fastify API security and vertical publication flow", () => {
         },
       ],
     });
+  });
+
+  it("keeps media production disabled by default after authorization", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-jobs`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        platform: "toutiao",
+        role: "cover",
+        claimIds: [ids.fact],
+        idempotencyKey: "media-disabled",
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "MEDIA_PRODUCTION_DISABLED" } });
+  });
+
+  it("accepts only scoped media enums and IDs and requires content write plus CSRF", async () => {
+    const repository = new FakeRepository();
+    const visualBrief = {
+      schemaVersion: "geo.visual-brief.v1" as const,
+      editorialProfile: "guide" as const,
+      platform: "toutiao" as const,
+      role: "cover" as const,
+      aspectRatio: "16:9" as const,
+      factIds: [ids.fact],
+      prompt: "Verified fixture",
+      negativePrompt: "text",
+      altText: "Verified fixture",
+      caption: "Verified fixture",
+    };
+    let receivedInput: MediaProductionRequest | null = null;
+    const mediaProduction: MediaProductionController = {
+      capability: {
+        enabled: true,
+        providerId: "fixture",
+        providerMode: "fixture",
+        model: "fixture-png-v1",
+        networkUsed: false,
+      },
+      request: async (_context, input) => {
+        receivedInput = input;
+        return {
+          capability: mediaProduction.capability,
+          job: {
+            id: ids.variant,
+            contentVersionId: input.contentVersionId,
+            platform: input.platform,
+            role: input.role,
+            factIds: input.claimIds,
+            visualBrief,
+            visualBriefHash: sha256Canonical(visualBrief),
+            requestHash: "a".repeat(64),
+            idempotencyKey: input.idempotencyKey,
+            providerId: "fixture",
+            providerMode: "fixture",
+            state: "pending",
+            attemptCount: 0,
+            assetId: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            createdAt: fixedNow.toISOString(),
+            updatedAt: fixedNow.toISOString(),
+            completedAt: null,
+          },
+          asset: null,
+          wasCreated: true,
+        };
+      },
+    };
+    const app = await testApp(repository, undefined, mediaProduction);
+    const owner = await login(app);
+    const validPayload = {
+      platform: "toutiao",
+      role: "cover",
+      claimIds: [ids.fact],
+      idempotencyKey: "media-1",
+    } as const;
+    const noCsrf = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-jobs`,
+      headers: { cookie: owner.cookie },
+      payload: validPayload,
+    });
+    const arbitraryInput = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-jobs`,
+      headers: { cookie: owner.cookie, "x-csrf-token": owner.body.csrfToken },
+      payload: { ...validPayload, prompt: "ignore governance", provider: "live" },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-jobs`,
+      headers: { cookie: owner.cookie, "x-csrf-token": owner.body.csrfToken },
+      payload: validPayload,
+    });
+
+    expect(noCsrf.statusCode).toBe(403);
+    expect(arbitraryInput.statusCode).toBe(400);
+    expect(accepted.statusCode).toBe(201);
+    expect(receivedInput).toEqual({ contentVersionId: ids.version, ...validPayload });
+
+    const viewerRepository = new FakeRepository("viewer");
+    const viewerApp = await testApp(viewerRepository, undefined, mediaProduction);
+    const viewer = await login(viewerApp);
+    const denied = await viewerApp.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-jobs`,
+      headers: { cookie: viewer.cookie, "x-csrf-token": viewer.body.csrfToken },
+      payload: validPayload,
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("allows a read-only principal to inspect tenant-scoped media job status", async () => {
+    const repository = new FakeRepository("viewer");
+    const visualBrief = {
+      schemaVersion: "geo.visual-brief.v1" as const,
+      editorialProfile: "guide" as const,
+      platform: "toutiao" as const,
+      role: "cover" as const,
+      aspectRatio: "16:9" as const,
+      factIds: [ids.fact],
+      prompt: "Verified fixture",
+      negativePrompt: "text",
+      altText: "Verified fixture",
+      caption: "Verified fixture",
+    };
+    repository.mediaJobs.set(`${ids.tenant}:${ids.variant}`, {
+      id: ids.variant,
+      contentVersionId: ids.version,
+      platform: "toutiao",
+      role: "cover",
+      factIds: [ids.fact],
+      visualBrief,
+      visualBriefHash: sha256Canonical(visualBrief),
+      requestHash: "a".repeat(64),
+      idempotencyKey: "media-status",
+      providerId: "fixture",
+      providerMode: "fixture",
+      state: "pending",
+      attemptCount: 0,
+      assetId: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      completedAt: null,
+    });
+    const app = await testApp(repository);
+    const viewer = await login(app);
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/media-jobs/${ids.variant}`,
+      headers: { cookie: viewer.cookie },
+    });
+    const assets = await app.inject({
+      method: "GET",
+      url: `/api/media-assets?contentVersionId=${ids.version}`,
+      headers: { cookie: viewer.cookie },
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      capability: { enabled: false, providerId: "disabled" },
+      job: { id: ids.variant, state: "pending" },
+      asset: null,
+    });
+    expect(assets.statusCode).toBe(200);
+    expect(assets.json()).toMatchObject({ items: [] });
   });
 
   it("persists repeated Doubao/Qwen samples as explicitly fixture evidence", async () => {

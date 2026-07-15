@@ -17,6 +17,8 @@ describe("serverEnvSchema", () => {
     expect(env.DOUBAO_ADAPTER).toBe("fixture");
     expect(env.QWEN_ADAPTER).toBe("fixture");
     expect(env.ENABLE_BROWSER_ASSISTED).toBe(false);
+    expect(env.GEO_MEDIA_PROVIDER).toBe("disabled");
+    expect(env.GEO_MEDIA_OBJECT_ROOT).toBe(".data/media");
   });
 
   it("rejects short session secrets", () => {
@@ -37,6 +39,7 @@ describe("serverEnvSchema", () => {
     };
     expect(() => serverEnvSchema.parse({ ...base, DOUBAO_ADAPTER: "api" })).toThrow();
     expect(() => serverEnvSchema.parse({ ...base, QWEN_ADAPTER: "manual" })).toThrow();
+    expect(() => serverEnvSchema.parse({ ...base, GEO_MEDIA_PROVIDER: "live" })).toThrow();
   });
 
   it("rejects checked-in placeholder secrets in production server configuration", () => {
@@ -127,5 +130,8 @@ describe("productionDeploymentEnvSchema", () => {
     expect(agentMcpBlock).toContain(
       "AUTOMATION_PRODUCER_CONCURRENCY: ${AUTOMATION_PRODUCER_CONCURRENCY:-1}",
     );
+    expect(composeSource).toContain("GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}");
+    expect(composeSource).toContain("GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media");
+    expect(composeSource).toContain("media-data:/var/lib/geo/media");
   });
 });

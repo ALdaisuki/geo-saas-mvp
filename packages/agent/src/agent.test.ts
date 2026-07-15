@@ -44,6 +44,8 @@ describe("static agent policy", () => {
     const names = AGENT_TOOL_ALLOWLIST.join(" ");
     expect(names).not.toMatch(/grant|connector|browser|fetch|http|file|shell|bash/i);
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_publication_request");
+    expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_production_request");
+    expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_job_status");
   });
 
   it("checks principal tenant, capability, and resource scope before a tool call", async () => {
@@ -89,6 +91,14 @@ describe("static agent policy", () => {
     expect(AGENT_TOOL_POLICIES.plastic_context_supply.sequential).toBe(true);
     expect(AGENT_TOOL_POLICIES.plastic_audit_pre_check.sequential).toBe(true);
     expect(AGENT_TOOL_POLICIES.plastic_defense.sequential).toBe(true);
+    expect(AGENT_TOOL_POLICIES.geo_media_production_request).toMatchObject({
+      stateChanging: true,
+      sequential: true,
+    });
+    expect(AGENT_TOOL_POLICIES.geo_media_job_status).toMatchObject({
+      stateChanging: false,
+      sequential: false,
+    });
   });
 });
 

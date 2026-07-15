@@ -13,6 +13,7 @@
       "@geo/contracts": ["../../packages/contracts/src/index.ts"],
       "@geo/core": ["../../packages/core/src/index.ts"],
       "@geo/db": ["../../packages/db/src/index.ts"],
+      "@geo/media": ["../../packages/media/src/index.ts"],
       "@geo/visibility": ["../../packages/visibility/src/index.ts"],
       "kysely": ["../../packages/db/node_modules/kysely/dist/esm/index.d.ts"],
       "zod": ["../../packages/contracts/node_modules/zod/index.d.cts"]

@@ -417,7 +417,13 @@ export interface FactListInput {
 }
 
 export type ResourceScopeKind =
-  "brand" | "campaign" | "content_version" | "variant" | "channel_account" | "query_set_version";
+  | "brand"
+  | "campaign"
+  | "content_version"
+  | "variant"
+  | "channel_account"
+  | "query_set_version"
+  | "media_job";
 
 export interface ResourceScopeRef {
   readonly kind: ResourceScopeKind;

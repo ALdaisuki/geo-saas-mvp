@@ -66,6 +66,12 @@ import {
   ManualPublicationPackageExportError,
 } from "./manual-publication-package.js";
 import {
+  DISABLED_MEDIA_PRODUCTION_CAPABILITY,
+  mediaProductionRequestSchema,
+  MediaProductionServiceError,
+  type MediaProductionController,
+} from "./media-production-service.js";
+import {
   RepositoryConflictError,
   RepositoryNotFoundError,
   type ApiRepository,
@@ -138,6 +144,7 @@ export interface BuildAppOptions {
   readonly logger?: FastifyServerOptions["logger"];
   readonly allowedOrigins?: readonly string[];
   readonly publicationGovernanceGate: PublicationGovernanceGate;
+  readonly mediaProduction?: MediaProductionController;
 }
 
 class ApiError extends Error {
@@ -307,6 +314,7 @@ const resourceScopeSchema = z.object({
           "variant",
           "channel_account",
           "query_set_version",
+          "media_job",
         ]),
         id: idSchema,
       }),
@@ -357,6 +365,12 @@ const contentSchema = z
 
 const contentVersionSchema = z.object({
   payload: publicationVariantPayloadSchema,
+});
+
+const mediaProductionBodySchema = mediaProductionRequestSchema.omit({ contentVersionId: true });
+
+const mediaAssetListQuerySchema = z.strictObject({
+  contentVersionId: idSchema,
 });
 
 const variantSchema = z.strictObject({
@@ -561,6 +575,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     trustProxy: false,
   });
   const repository = options.repository;
+  const mediaProduction = options.mediaProduction;
+  const mediaProductionCapability =
+    mediaProduction?.capability ?? DISABLED_MEDIA_PRODUCTION_CAPABILITY;
   const passwordService = options.passwordService ?? defaultPasswordService();
   const dummyPasswordHash =
     options.dummyPasswordHash ?? (await passwordService.hash("geo-invalid-login-password"));
@@ -671,6 +688,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof MediaProductionServiceError) {
+      void reply.status(error.statusCode).send({
+        error: {
+          code: error.code,
+          message: error.message,
+          requestId: request.id,
+          ...(error.details === undefined ? {} : { details: error.details }),
+        },
+      });
+      return;
+    }
     if (error instanceof ApiError) {
       void reply.status(error.statusCode).send({
         error: {
@@ -1286,6 +1314,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get("/api/capabilities", { preHandler: guard("tenant:read") }, async (request) => {
     const accounts = await repository.listChannelAccounts(requestContext(request));
     return {
+      mediaProduction: mediaProductionCapability,
       items: accounts.map((account) => ({
         accountId: account.id,
         platform: account.platform,
@@ -1617,6 +1646,54 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       return version;
     },
   );
+
+  app.post(
+    "/api/content-versions/:id/media-jobs",
+    { preHandler: guard("content:write", true) },
+    async (request, reply) => {
+      if (mediaProduction === undefined) {
+        throw new MediaProductionServiceError(
+          "MEDIA_PRODUCTION_DISABLED",
+          503,
+          "Media production is disabled",
+        );
+      }
+      const body = mediaProductionBodySchema.parse(request.body);
+      const result = await mediaProduction.request(requestContext(request), {
+        contentVersionId: parseIdParams(request.params, "id"),
+        ...body,
+      });
+      return reply.status(result.wasCreated ? 201 : 200).send(result);
+    },
+  );
+
+  app.get("/api/media-jobs/:id", { preHandler: guard("content:read") }, async (request) => {
+    const context = requestContext(request);
+    const job = await repository.getMediaJob(context, parseIdParams(request.params, "id"));
+    if (job === null) {
+      throw new MediaProductionServiceError("MEDIA_JOB_NOT_FOUND", 404, "Media job was not found");
+    }
+    const asset =
+      job.state === "succeeded" && job.assetId !== null
+        ? await repository.getMediaAsset(context, job.assetId)
+        : null;
+    if (job.state === "succeeded" && asset === null) {
+      throw new MediaProductionServiceError(
+        "MEDIA_JOB_ASSET_INCONSISTENT",
+        409,
+        "Succeeded media job has no immutable asset",
+      );
+    }
+    return { capability: mediaProductionCapability, job, asset };
+  });
+
+  app.get("/api/media-assets", { preHandler: guard("content:read") }, async (request) => {
+    const query = mediaAssetListQuerySchema.parse(request.query);
+    return {
+      capability: mediaProductionCapability,
+      items: await repository.listMediaAssets(requestContext(request), query.contentVersionId),
+    };
+  });
 
   app.get(
     "/api/content/:contentId/variants",

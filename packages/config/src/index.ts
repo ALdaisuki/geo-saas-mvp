@@ -63,6 +63,8 @@ const serverEnvBaseSchema = z.object({
   PLASTIC_PROMISE_MCP_URL: z.string().url().optional(),
   PLASTIC_PROMISE_MCP_AUTHORIZATION: z.string().min(1).optional(),
   EVIDENCE_STORAGE_DIR: z.string().min(1).default(".data/evidence"),
+  GEO_MEDIA_PROVIDER: z.enum(["disabled", "fixture"]).default("disabled"),
+  GEO_MEDIA_OBJECT_ROOT: z.string().min(1).default(".data/media"),
   AGENT_PROVIDER: z.string().min(1).default("fixture"),
   AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
   AGENT_API_KEY: z.string().min(1).optional(),

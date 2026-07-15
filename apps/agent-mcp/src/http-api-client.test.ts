@@ -462,4 +462,92 @@ describe("GEO API session and destination policy", () => {
       }),
     ).rejects.toMatchObject({ code: "PUBLICATION_GRANT_NOT_AVAILABLE" });
   });
+
+  it("maps bounded media operations without exposing prompt or provider controls", async () => {
+    let mediaBody: unknown;
+    const scopeBodies: unknown[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/api/auth/login") {
+        const headers = new Headers();
+        headers.append("set-cookie", "geo_session=session-value; Path=/; HttpOnly");
+        headers.append("set-cookie", "geo_csrf=csrf-value; Path=/");
+        return jsonResponse(
+          {
+            actor: {
+              id: ids.actor,
+              role: "owner",
+              capabilities: ["tenant:read", "content:read", "content:write"],
+            },
+            tenant: { id: ids.tenant, slug: "tenant", displayName: "Tenant" },
+            csrfToken: "csrf-value",
+            expiresAt: "2027-01-01T00:00:00.000Z",
+          },
+          { headers },
+        );
+      }
+      if (url.pathname === `/api/content-versions/${ids.version}/media-jobs`) {
+        mediaBody = JSON.parse(String(init?.body));
+        return jsonResponse({ job: { id: ids.job, state: "succeeded" }, wasCreated: true });
+      }
+      if (url.pathname === `/api/media-jobs/${ids.job}`) {
+        return jsonResponse({ job: { id: ids.job, state: "succeeded" } });
+      }
+      if (url.pathname === "/api/resource-scope-check") {
+        scopeBodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse({ allowed: true, denied: [] });
+      }
+      return jsonResponse({ error: { code: "UNEXPECTED_TEST_ROUTE" } }, { status: 500 });
+    });
+    const sessions = new GeoApiSessionRegistry({
+      baseUrl: "http://127.0.0.1:4100",
+      credentials: parseMcpPrincipalCredentials(
+        JSON.stringify([
+          {
+            accessToken,
+            clientId: "media-client",
+            email: "owner@example.test",
+            password: "test-password",
+          },
+        ]),
+      ),
+      fetchImpl,
+    });
+    const principal = (await sessions.authenticateBearer(`Bearer ${accessToken}`, "media-1"))
+      .principal;
+    const api = new HttpInternalGeoApiClient({ sessions, fetchImpl });
+
+    await expect(
+      api.requestMediaProduction(principal, {
+        contentVersionId: ids.version,
+        platform: "toutiao",
+        role: "cover",
+        claimIds: [ids.fact],
+        idempotencyKey: "media-1",
+      }),
+    ).resolves.toMatchObject({ job: { id: ids.job, state: "succeeded" } });
+    await expect(api.getMediaJobStatus(principal, { mediaJobId: ids.job })).resolves.toMatchObject({
+      job: { id: ids.job, state: "succeeded" },
+    });
+    await expect(
+      api.authorizeResourceScope(principal, "geo_media_production_request", {
+        contentVersionId: ids.version,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      api.authorizeResourceScope(principal, "geo_media_job_status", { mediaJobId: ids.job }),
+    ).resolves.toBe(true);
+
+    expect(mediaBody).toEqual({
+      platform: "toutiao",
+      role: "cover",
+      claimIds: [ids.fact],
+      idempotencyKey: "media-1",
+    });
+    expect(JSON.stringify(mediaBody)).not.toMatch(/prompt|provider|url|storage|credential/iu);
+    expect(scopeBodies).toEqual([
+      { resources: [{ kind: "content_version", id: ids.version }] },
+      { resources: [{ kind: "media_job", id: ids.job }] },
+    ]);
+  });
 });

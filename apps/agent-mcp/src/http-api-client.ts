@@ -36,6 +36,8 @@ import type {
   TenantFactLookupInput,
   VariantPreviewInput,
   VisibilityRequestInput,
+  MediaJobStatusInput,
+  MediaProductionRequestInput,
 } from "./api-client.js";
 import type {
   AutomationGeoApiClient,
@@ -832,6 +834,32 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     });
   }
 
+  async requestMediaProduction(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaProductionRequestInput>,
+  ): Promise<unknown> {
+    return this.#request(
+      principal,
+      `/api/content-versions/${encodeURIComponent(input.contentVersionId)}/media-jobs`,
+      {
+        method: "POST",
+        body: {
+          platform: input.platform,
+          role: input.role,
+          claimIds: input.claimIds,
+          idempotencyKey: input.idempotencyKey,
+        },
+      },
+    );
+  }
+
+  async getMediaJobStatus(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaJobStatusInput>,
+  ): Promise<unknown> {
+    return this.#request(principal, `/api/media-jobs/${encodeURIComponent(input.mediaJobId)}`, {});
+  }
+
   async claimAutomationRuns(
     principal: Readonly<ActorContext>,
     input: {
@@ -1054,6 +1082,12 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
         break;
       case "geo_visibility_request":
         add("query_set_version", "querySetVersionId");
+        break;
+      case "geo_media_production_request":
+        add("content_version", "contentVersionId");
+        break;
+      case "geo_media_job_status":
+        add("media_job", "mediaJobId");
         break;
       default:
         return false;

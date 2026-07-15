@@ -36,12 +36,14 @@ function mockApi(): InternalGeoApiClient {
     requestAudit: vi.fn(async () => ({ auditRunId: variantId })),
     requestPublication: vi.fn(async () => ({ publicationRequestId: variantId })),
     requestVisibilityRun: vi.fn(async () => ({ visibilityRunId: variantId })),
+    requestMediaProduction: vi.fn(async () => ({ mediaJobId: variantId })),
+    getMediaJobStatus: vi.fn(async () => ({ mediaJobId: variantId, state: "succeeded" })),
     authorizeResourceScope: vi.fn(async () => true),
   };
 }
 
 describe("GEO MCP schemas", () => {
-  it("publishes exactly the seven bounded application tools", () => {
+  it("publishes exactly nine bounded application tools", () => {
     expect(GEO_MCP_TOOL_NAMES).toEqual([
       "geo_tenant_context",
       "geo_fact_lookup",
@@ -50,6 +52,8 @@ describe("GEO MCP schemas", () => {
       "geo_audit_request",
       "geo_publication_request",
       "geo_visibility_request",
+      "geo_media_production_request",
+      "geo_media_job_status",
     ]);
     expect(GEO_MCP_TOOL_NAMES.join(" ")).not.toMatch(/grant|connector|browser|http|file|shell/i);
   });
@@ -64,6 +68,20 @@ describe("GEO MCP schemas", () => {
         brandId,
         query: "travel",
         url: "https://attacker.invalid",
+      }).success,
+    ).toBe(false);
+    expect(
+      geoMcpToolSchemas.geo_media_production_request.safeParse({
+        tenantId,
+        contentVersionId: variantId,
+        platform: "toutiao",
+        role: "cover",
+        claimIds: [brandId],
+        idempotencyKey: "media-1",
+        prompt: "arbitrary prompt",
+        provider: "live",
+        url: "https://attacker.invalid",
+        storageKey: "attacker/key.png",
       }).success,
     ).toBe(false);
     expect(
@@ -144,6 +162,39 @@ describe("authenticated internal API mapping", () => {
       idempotencyKey: "publication-1",
     });
     expect(Object.keys(api).join(" ")).not.toMatch(/grant|connector|browser/i);
+  });
+
+  it("maps media production and read-only status to exactly two API methods", async () => {
+    const api = mockApi();
+    await invokeGeoMcpTool({
+      toolName: "geo_media_production_request",
+      args: {
+        tenantId,
+        contentVersionId: variantId,
+        platform: "toutiao",
+        role: "cover",
+        claimIds: [brandId],
+        idempotencyKey: "media-1",
+      },
+      principal,
+      api,
+      authorizeScope: () => true,
+    });
+    await invokeGeoMcpTool({
+      toolName: "geo_media_job_status",
+      args: { tenantId, mediaJobId: variantId },
+      principal,
+      api,
+      authorizeScope: () => true,
+    });
+    expect(api.requestMediaProduction).toHaveBeenCalledWith(principal, {
+      contentVersionId: variantId,
+      platform: "toutiao",
+      role: "cover",
+      claimIds: [brandId],
+      idempotencyKey: "media-1",
+    });
+    expect(api.getMediaJobStatus).toHaveBeenCalledWith(principal, { mediaJobId: variantId });
   });
 
   it("denies arbitrary tools before API access", async () => {

@@ -133,6 +133,8 @@ function harness(initialRun: AutomationRunView): Harness {
     requestAudit: async () => ({}),
     requestPublication: async () => ({}),
     requestVisibilityRun: async () => ({}),
+    requestMediaProduction: async () => ({}),
+    getMediaJobStatus: async () => ({}),
     authorizeResourceScope: async () => true,
     claimAutomationRuns: async (actor: Readonly<ActorContext>) =>
       state.claimByTenant.get(actor.tenantId)?.splice(0, 1) ?? [],
@@ -386,7 +388,9 @@ describe("GEO automation producer adapter", () => {
     let firstCheckpoint = true;
     const api = {
       ...state.api,
-      checkpointAutomationTarget: async (...args: Parameters<AutomationGeoApiClient["checkpointAutomationTarget"]>) => {
+      checkpointAutomationTarget: async (
+        ...args: Parameters<AutomationGeoApiClient["checkpointAutomationTarget"]>
+      ) => {
         if (firstCheckpoint) {
           firstCheckpoint = false;
           markCheckpointEntered?.();

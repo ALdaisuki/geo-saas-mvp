@@ -11,6 +11,8 @@ const REQUIRED_CAPABILITY = {
   geo_audit_request: "audit:run",
   geo_publication_request: "publish:request",
   geo_visibility_request: "visibility:run",
+  geo_media_production_request: "content:write",
+  geo_media_job_status: "content:read",
 } as const satisfies Readonly<Record<GeoMcpToolName, Capability>>;
 
 const SENSITIVE_KEY = /(?:authorization|cookie|password|secret|token|api[_-]?key|session)/i;
@@ -142,6 +144,20 @@ export async function invokeGeoMcpTool(options: {
         provider: input.provider as "doubao" | "qwen",
         sampleCount: Number(input.sampleCount),
         idempotencyKey: String(input.idempotencyKey),
+      });
+      break;
+    case "geo_media_production_request":
+      result = await options.api.requestMediaProduction(options.principal, {
+        contentVersionId: String(input.contentVersionId),
+        platform: input.platform as "toutiao" | "sohu" | "ctrip_community",
+        role: input.role as "cover" | "inline",
+        claimIds: (input.claimIds as string[]).map(String),
+        idempotencyKey: String(input.idempotencyKey),
+      });
+      break;
+    case "geo_media_job_status":
+      result = await options.api.getMediaJobStatus(options.principal, {
+        mediaJobId: String(input.mediaJobId),
       });
       break;
   }

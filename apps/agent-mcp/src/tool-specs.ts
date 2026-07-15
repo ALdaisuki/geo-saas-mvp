@@ -51,6 +51,21 @@ export const geoMcpToolSchemas = {
       idempotencyKey,
     })
     .strict(),
+  geo_media_production_request: z
+    .object({
+      tenantId,
+      contentVersionId: resourceId,
+      platform: z.enum(["toutiao", "sohu", "ctrip_community"]),
+      role: z.enum(["cover", "inline"]),
+      claimIds: z
+        .array(resourceId)
+        .min(1)
+        .max(3)
+        .refine((values) => new Set(values).size === values.length),
+      idempotencyKey,
+    })
+    .strict(),
+  geo_media_job_status: z.object({ tenantId, mediaJobId: resourceId }).strict(),
 } as const;
 
 export type GeoMcpToolName = keyof typeof geoMcpToolSchemas;
@@ -101,5 +116,15 @@ export const geoMcpToolMetadata: Readonly<
     title: "Visibility request",
     description: "Request a Doubao or Qwen visibility run.",
     readOnly: false,
+  },
+  geo_media_production_request: {
+    title: "Media production request",
+    description: "Request governed deterministic fixture media production for a content version.",
+    readOnly: false,
+  },
+  geo_media_job_status: {
+    title: "Media job status",
+    description: "Read tenant-scoped media production job status and immutable asset metadata.",
+    readOnly: true,
   },
 };

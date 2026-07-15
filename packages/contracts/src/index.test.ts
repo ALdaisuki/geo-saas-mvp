@@ -53,7 +53,7 @@ function mediaReference(provenance: Record<string, unknown>): Record<string, unk
     caption: visualBrief.caption,
     factIds: [...visualBrief.factIds],
     visualBrief,
-    visualBriefHash: "b".repeat(64),
+    visualBriefHash: "ebbb54c1ad740f7442e5eec7465fb4cda7ce7ce7d0f6734a250eaf7332fac351",
     rights: {
       basis: "generated_terms",
       licenseName: "Fixture image generation terms",
@@ -332,7 +332,13 @@ describe("strict media contracts", () => {
     ).toBe(false);
   });
 
-  it("rejects prompt provenance and inspection asset mismatches", () => {
+  it("rejects visual brief, prompt provenance, and inspection asset hash mismatches", () => {
+    expect(
+      mediaReferenceSchema.safeParse({
+        ...mediaReference(generated),
+        visualBriefHash: hash,
+      }).success,
+    ).toBe(false);
     expect(
       mediaReferenceSchema.safeParse({
         ...mediaReference({ ...generated, promptHash: hash }),
@@ -347,6 +353,37 @@ describe("strict media contracts", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("rejects duplicate media IDs and platform-role bindings in either input order", () => {
+    const first = mediaReferenceSchema.parse(mediaReference(generated));
+    const duplicateBinding = {
+      ...first,
+      id: "00000000-0000-4000-8000-000000000003",
+      sha256: "f".repeat(64),
+      inspection: { ...first.inspection, assetSha256: "f".repeat(64) },
+    };
+    const duplicateId = {
+      ...first,
+      role: "inline" as const,
+      visualBrief: { ...first.visualBrief, role: "inline" as const },
+      visualBriefHash: "fb77eb3426199a157a7b3564f3eaf55a536721322a0947341fc87cec23e7d40a",
+    };
+    const payload = (media: unknown[]) => ({
+      title: "Media title",
+      summary: "Media summary",
+      bodyMarkdown: "Media body",
+      media,
+    });
+
+    for (const values of [
+      [first, duplicateBinding],
+      [duplicateBinding, first],
+      [first, duplicateId],
+      [duplicateId, first],
+    ]) {
+      expect(publicationVariantPayloadSchema.safeParse(payload(values)).success).toBe(false);
+    }
   });
 });
 

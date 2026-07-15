@@ -53,15 +53,28 @@ const NEGATIVE_PROMPT = "文字、水印、二维码、电话号码、微信号�
 const SAFETY_DIRECTIVE =
   "不得虚构地点、人物、日期、价格、资质、品牌标识、联系方式或保证性承诺；图片像素中不得呈现联系方式文字";
 
-const PHONE_PATTERN =
-  /(?<!\d)(?:(?:\+?86[-\s]?)?1[3-9]\d{9}|400[-\s]?\d{3}[-\s]?\d{4}|(?:0\d{2,3}[-\s]?)?\d{7,8})(?!\d)/gu;
-const WECHAT_PATTERN =
-  /(?:微信(?:咨询|号)?|wechat|weixin|wx|vx)\s*[:：]?\s*[A-Za-z][A-Za-z0-9_-]{5,19}/giu;
-const PRICE_PATTERN = /(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元(?:起)?)/gu;
-const QR_PATTERN = /(?:二维码|QR\s*码?)/giu;
-const GUARANTEE_PATTERN = /(?:百分百|100%|保证(?:签证|通过|成功)?|包过|零风险)/giu;
+const EMAIL_PATTERN = /[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+/giu;
+const URL_PATTERN =
+  /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s，。；]+|(?<![@\p{L}\p{N}])(?:[\p{L}\p{N}-]+\.)+[a-z]{2,63}(?:\/[^\s，。；]*)?/giu;
 const CREDENTIAL_PATTERN =
-  /[^\s，。；]{0,12}(?:许可证|营业执照|资质证书|证件号码)[^\s，。；]{0,24}/gu;
+  /(?:许可证|营业执照|资质证书|证件|统一社会信用代码|credential|licen[cs]e)(?:号|号码|编号|number)?\s*[:：]?\s*[A-Za-z\p{N}][A-Za-z\p{N}_.-]{2,}/giu;
+const LABELED_CONTACT_HANDLE_PATTERN =
+  /(?:微信(?:咨询|号)?|微\s*信|wechat|weixin|whatsapp|telegram|line|(?:wx|vx|qq)(?:号)?|客服账号|联系账号|社交账号|contact)\s*[:：]?\s*[A-Za-z][A-Za-z0-9_.-]{2,31}/giu;
+const PHONE_LIKE_PATTERN =
+  /[+＋]?(?:[（(]?\p{N}{1,4}[）)]?)(?:[\s.．·/／\-‐‑‒–—―]*[（(]?\p{N}{2,4}[）)]?){2,}/gu;
+const PRICE_PATTERN =
+  /(?:(?:[A-Z]{3}|人民币|美元|欧元|英镑|日元|港币|\p{Sc})\s*[\p{N}\s,，.．]+|[\p{N}\s,，.．]+\s*(?:[A-Z]{3}|元|人民币|美元|欧元|英镑|日元|港币)(?:起)?)/giu;
+const CURRENCY_PATTERN =
+  /(?<![A-Za-z])(?:USD|CNY|RMB|EUR|GBP|JPY|HKD)(?![A-Za-z])|人民币|美元|欧元|英镑|日元|港币|\p{Sc}/giu;
+const GUARANTEE_PATTERN =
+  /(?:\p{N}+\s*[%％]|百分(?:之)?百|承诺|保证(?:办理|通过|成功|签证|结果)?|确保(?:办理|通过|成功|结果)?|担保|保过|包过|必过|稳过|零风险|无风险|一定(?:通过|成功|有效)|绝对(?:保证|成功)|肯定(?:通过|成功))/giu;
+const AT_HANDLE_PATTERN = /(?<![\p{L}\p{N}])@[A-Za-z][A-Za-z0-9_.-]{2,31}/gu;
+const MIXED_HANDLE_PATTERN =
+  /(?<![A-Za-z0-9_.-])(?=[A-Za-z0-9_.-]{6,32}(?![A-Za-z0-9_.-]))(?=[A-Za-z0-9_.-]*[A-Za-z])(?=[A-Za-z0-9_.-]*[0-9])[A-Za-z][A-Za-z0-9_.-]+/gu;
+const UNDERSCORE_HANDLE_PATTERN =
+  /(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]{1,15}_[A-Za-z0-9_]{2,31}(?![A-Za-z0-9_])/gu;
+const QR_PATTERN = /(?:二维码|QR\s*码?)/giu;
+const PHONE_PUNCTUATION_PATTERN = /[+＋()（）.．·/／\\\-‐‑‒–—―]{3,}/gu;
 
 function sameOrderedValues(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -79,12 +92,22 @@ function clipWithSuffix(value: string, suffix: string, maxCodePoints: number): s
 function sanitizeFactText(value: string): string {
   return value
     .trim()
-    .replace(WECHAT_PATTERN, CONTACT_MARKER)
-    .replace(PHONE_PATTERN, CONTACT_MARKER)
-    .replace(PRICE_PATTERN, SENSITIVE_MARKER)
-    .replace(QR_PATTERN, SENSITIVE_MARKER)
+    .normalize("NFKC")
+    .replace(EMAIL_PATTERN, CONTACT_MARKER)
+    .replace(URL_PATTERN, CONTACT_MARKER)
     .replace(CREDENTIAL_PATTERN, SENSITIVE_MARKER)
+    .replace(LABELED_CONTACT_HANDLE_PATTERN, CONTACT_MARKER)
+    .replace(PHONE_LIKE_PATTERN, CONTACT_MARKER)
+    .replace(PRICE_PATTERN, SENSITIVE_MARKER)
+    .replace(CURRENCY_PATTERN, SENSITIVE_MARKER)
     .replace(GUARANTEE_PATTERN, SENSITIVE_MARKER)
+    .replace(AT_HANDLE_PATTERN, CONTACT_MARKER)
+    .replace(MIXED_HANDLE_PATTERN, CONTACT_MARKER)
+    .replace(UNDERSCORE_HANDLE_PATTERN, CONTACT_MARKER)
+    .replace(QR_PATTERN, SENSITIVE_MARKER)
+    .replace(/\p{N}+/gu, SENSITIVE_MARKER)
+    .replace(CURRENCY_PATTERN, SENSITIVE_MARKER)
+    .replace(PHONE_PUNCTUATION_PATTERN, " ")
     .replace(/\s+/gu, " ");
 }
 
@@ -283,6 +306,25 @@ function compareText(left: string, right: string): number {
 }
 
 export function mediaSnapshotHash(media: readonly MediaReference[]): string {
+  const mediaIds = new Set<string>();
+  const bindings = new Set<string>();
+  for (const item of media) {
+    invariant(
+      !mediaIds.has(item.id),
+      "MEDIA_SNAPSHOT_DUPLICATE_ID",
+      "Media snapshot contains a duplicate media ID",
+      { mediaId: item.id },
+    );
+    mediaIds.add(item.id);
+    const binding = `${item.platform}:${item.role}`;
+    invariant(
+      !bindings.has(binding),
+      "MEDIA_SNAPSHOT_DUPLICATE_BINDING",
+      "Media snapshot contains a duplicate platform-role binding",
+      { platform: item.platform, role: item.role },
+    );
+    bindings.add(binding);
+  }
   const roleOrder: Readonly<Record<MediaRole, number>> = { cover: 0, inline: 1 };
   const sorted = [...media].sort(
     (left, right) =>

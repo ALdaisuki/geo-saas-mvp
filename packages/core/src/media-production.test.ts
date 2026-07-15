@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditorialProfile, MediaReference, Platform } from "@geo/contracts";
+import { mediaReferenceSchema } from "../../contracts/src/index.js";
 
 import type { VerifiedFact } from "./audit.js";
 import { sha256Canonical, sha256Text } from "./canonical.js";
@@ -68,6 +69,33 @@ describe("visual brief production", () => {
       "文字、水印、二维码、电话号码、微信号、价格、证件、夸张承诺、虚构人物背书",
     );
     expect(brief.prompt).toContain("不得虚构");
+  });
+
+  it("aggressively redacts numeric and contact-like visual content while preserving context", () => {
+    const sensitiveFact = fact(
+      6,
+      "本社持续提供出境旅游咨询；客服热线＋８６（１０）１２３４．５６７８，备用 400.113.3986；邮箱 service@example.com；网址 https://example.io/a；费用 USD 1,299、CAD 77、$99、￥８８８；微信 ZTGL3411，备用 @travel_service，VX travel_guide，客服账号 travel-guide；许可证号 SC123456789；承诺 １００％保证办理、确保成功、包过、零风险；编号 ١٢٣。",
+    );
+    const brief = buildVisualBrief({
+      editorialProfile: "local_service",
+      platform: "ctrip_community",
+      role: "inline",
+      facts: [sensitiveFact],
+    });
+
+    for (const value of [brief.prompt, brief.altText, brief.caption]) {
+      expect(value).toContain("本社持续提供出境旅游咨询");
+      expect(value).not.toMatch(/\p{N}/u);
+      expect(value).not.toMatch(/\p{Sc}|\b(?:USD|CNY|RMB|EUR|GBP|JPY|HKD)\b/iu);
+      expect(value).not.toMatch(/https?:|www\.|[\w.+-]+@[\w.-]+/iu);
+      expect(value).not.toMatch(
+        /CAD|ZTGL3411|travel-service|travel_service|travel_guide|SC123456789/iu,
+      );
+      expect(value).not.toMatch(
+        /＋８６|400\.113|１２３４．５６７８|保证办理|确保成功|包过|零风险/iu,
+      );
+      expect(value).toContain("不在图片中呈现");
+    }
   });
 
   it("accepts one to three unique same-brand facts and rejects invalid inputs", () => {
@@ -217,6 +245,15 @@ function media(idSuffix: number, platform: Platform, role: "cover" | "inline"): 
 }
 
 describe("media snapshot hashing", () => {
+  it("accepts the exact Core canonical visual brief hash", () => {
+    const reference = media(5, "toutiao", "cover");
+    expect(reference.visualBriefHash).toBe(sha256Canonical(reference.visualBrief));
+    expect(mediaReferenceSchema.parse(reference)).toEqual(reference);
+    expect(
+      mediaReferenceSchema.safeParse({ ...reference, visualBriefHash: "0".repeat(64) }).success,
+    ).toBe(false);
+  });
+
   it("is order-independent under the platform-role-id stable sort", () => {
     const items = [
       media(1, "sohu", "inline"),
@@ -225,6 +262,21 @@ describe("media snapshot hashing", () => {
     ];
 
     expect(mediaSnapshotHash(items)).toBe(mediaSnapshotHash([...items].reverse()));
+  });
+
+  it("fails closed on duplicate IDs and duplicate platform-role bindings in either order", () => {
+    const first = media(6, "toutiao", "cover");
+    const duplicateBinding = media(7, "toutiao", "cover");
+    const duplicateId = media(6, "sohu", "inline");
+
+    for (const values of [
+      [first, duplicateBinding],
+      [duplicateBinding, first],
+      [first, duplicateId],
+      [duplicateId, first],
+    ]) {
+      expect(() => mediaSnapshotHash(values)).toThrow(/duplicate/iu);
+    }
   });
 
   it.each([

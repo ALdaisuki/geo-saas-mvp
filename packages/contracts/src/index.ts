@@ -491,6 +491,29 @@ function sameOrderedValues(left: readonly string[], right: readonly string[]): b
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function canonicalStrictJson(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "number") {
+    return Object.is(value, -0) ? "0" : String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalStrictJson(item)).join(",")}]`;
+  }
+  const record = value as Readonly<Record<string, unknown>>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalStrictJson(record[key])}`)
+    .join(",")}}`;
+}
+
 const SHA256_INITIAL = [
   0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ] as const;
@@ -664,6 +687,13 @@ export const mediaReferenceSchema = z
         message: "Inspection must reference the exact asset SHA-256",
       });
     }
+    if (value.visualBriefHash !== sha256Text(canonicalStrictJson(value.visualBrief))) {
+      context.addIssue({
+        code: "custom",
+        path: ["visualBriefHash"],
+        message: "Visual brief hash must match the complete canonical visual brief",
+      });
+    }
     if (
       value.provenance.kind === "generated" &&
       value.provenance.promptHash !== sha256Text(value.visualBrief.prompt)
@@ -746,21 +776,46 @@ export const canonicalBodyBlockSchema = z.discriminatedUnion("type", [
 ]);
 export type CanonicalBodyBlock = z.infer<typeof canonicalBodyBlockSchema>;
 
-export const publicationVariantPayloadSchema = z.object({
-  editorialProfile: editorialProfileSchema.optional(),
-  title: z.string().trim().min(1).max(200),
-  summary: z.string().trim().min(1).max(500),
-  bodyMarkdown: z.string().trim().min(1).max(100_000),
-  titleBlocks: z.array(canonicalInlineBlockSchema).min(1).max(50).optional(),
-  summaryBlocks: z.array(canonicalInlineBlockSchema).min(1).max(100).optional(),
-  bodyBlocks: z.array(canonicalBodyBlockSchema).min(1).max(500).optional(),
-  tagTemplateIds: z.array(contentTemplateIdSchema).max(20).optional(),
-  canonicalUrl: z.string().url().optional(),
-  media: z.array(mediaReferenceSchema).max(30).default([]),
-  claims: z.array(contentClaimSchema).max(100).default([]),
-  contactIds: z.array(idSchema).max(20).default([]),
-  tags: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
-});
+export const publicationVariantPayloadSchema = z
+  .object({
+    editorialProfile: editorialProfileSchema.optional(),
+    title: z.string().trim().min(1).max(200),
+    summary: z.string().trim().min(1).max(500),
+    bodyMarkdown: z.string().trim().min(1).max(100_000),
+    titleBlocks: z.array(canonicalInlineBlockSchema).min(1).max(50).optional(),
+    summaryBlocks: z.array(canonicalInlineBlockSchema).min(1).max(100).optional(),
+    bodyBlocks: z.array(canonicalBodyBlockSchema).min(1).max(500).optional(),
+    tagTemplateIds: z.array(contentTemplateIdSchema).max(20).optional(),
+    canonicalUrl: z.string().url().optional(),
+    media: z.array(mediaReferenceSchema).max(30).default([]),
+    claims: z.array(contentClaimSchema).max(100).default([]),
+    contactIds: z.array(idSchema).max(20).default([]),
+    tags: z.array(z.string().trim().min(1).max(50)).max(20).default([]),
+  })
+  .superRefine((value, context) => {
+    const mediaIds = new Set<string>();
+    const bindings = new Set<string>();
+    value.media.forEach((media, index) => {
+      if (mediaIds.has(media.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["media", index, "id"],
+          message: "Media IDs must be unique within a publication payload",
+        });
+      }
+      mediaIds.add(media.id);
+
+      const binding = `${media.platform}:${media.role}`;
+      if (bindings.has(binding)) {
+        context.addIssue({
+          code: "custom",
+          path: ["media", index, "role"],
+          message: "Media platform-role bindings must be unique within a publication payload",
+        });
+      }
+      bindings.add(binding);
+    });
+  });
 export type PublicationVariantPayload = z.infer<typeof publicationVariantPayloadSchema>;
 
 export const auditFindingSchema = z.object({

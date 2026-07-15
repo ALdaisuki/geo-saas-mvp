@@ -47,6 +47,7 @@ describe("GEO audit policy documents", () => {
       "artifactTtlMs",
       "duplicateThreshold",
       "maxEvidenceAgeMs",
+      "media",
       "minClaims",
       "minDuplicateCharacters",
       "platformLimits",
@@ -87,6 +88,7 @@ describe("GEO audit policy documents", () => {
       version: "travel-rules-v1",
       sourceHash: policyHash,
       artifactTtlMs: document.audit.artifactTtlMs,
+      media: document.audit.media,
       platformLimits: document.audit.platformLimits,
       contentTemplates: document.contentTemplates,
     });
@@ -94,6 +96,9 @@ describe("GEO audit policy documents", () => {
     expect(Object.isFrozen(policy.platformLimits)).toBe(true);
     expect(Object.isFrozen(policy.platformLimits.sohu)).toBe(true);
     expect(Object.isFrozen(policy.prohibitedGuarantees)).toBe(true);
+    expect(Object.isFrozen(policy.media)).toBe(true);
+    expect(Object.isFrozen(policy.media.evaluatorAllowlist)).toBe(true);
+    expect(Object.isFrozen(policy.media.renditions.toutiao.allowedMimeTypes)).toBe(true);
     expect(Object.isFrozen(policy.contentTemplates)).toBe(true);
     expect(Object.isFrozen(policy.contentTemplates.tag)).toBe(true);
   });
@@ -135,6 +140,13 @@ describe("GEO audit policy documents", () => {
     const candidates: unknown[] = [
       { ...document, unknownRoot: true },
       { ...document, audit: { ...document.audit, unknownAudit: true } },
+      {
+        ...document,
+        audit: {
+          ...document.audit,
+          media: { ...document.audit.media, unknownMediaRule: true },
+        },
+      },
       {
         ...document,
         audit: {
@@ -198,12 +210,19 @@ describe("GEO audit policy documents", () => {
       ctrip_community: document.audit.platformLimits.ctrip_community,
     };
     const candidates: unknown[] = [
-      { ...document, schemaVersion: "geo.audit-policy.v2" },
+      { ...document, schemaVersion: "geo.audit-policy.v3" },
       {
         ...document,
         audit: { ...document.audit, platformLimits: incompletePlatformLimits },
       },
       { ...document, audit: { ...document.audit, duplicateThreshold: 0 } },
+      {
+        ...document,
+        audit: {
+          ...document.audit,
+          media: { ...document.audit.media, evaluatorAllowlist: [] },
+        },
+      },
       {
         ...document,
         audit: {

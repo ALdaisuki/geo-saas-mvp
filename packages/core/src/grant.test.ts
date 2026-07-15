@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { PublicationVariantPayload, TenantContact } from "@geo/contracts";
+import type { MediaReference, PublicationVariantPayload, TenantContact } from "@geo/contracts";
 
 import {
   auditPublicationVariant,
   DEFAULT_AUDIT_POLICY,
   type AuditPolicy,
   type FactSnapshot,
+  verifyAuditArtifactIntegrity,
 } from "./audit.js";
+import { sha256Canonical, sha256Text } from "./canonical.js";
 import { renderCanonicalContent } from "./content-renderer.js";
 import { CoreInvariantError } from "./errors.js";
+import { buildVisualBrief, mediaSnapshotHash } from "./media-production.js";
 import {
   consumePublicationGrant,
   issuePublicationGrant,
@@ -78,6 +81,7 @@ const policy: AuditPolicy = {
   minDuplicateCharacters: 20,
   prohibitedGuarantees: ["包过"],
   contentTemplates: DEFAULT_AUDIT_POLICY.contentTemplates,
+  media: DEFAULT_AUDIT_POLICY.media,
   platformLimits: { toutiao: limit, sohu: limit, ctrip_community: limit },
 };
 
@@ -130,15 +134,73 @@ const publicationPayload: PublicationVariantPayload = {
   tags: [...renderedPublicationPayload.tags],
 };
 
-function passedAudit() {
+function mediaReference(): MediaReference {
+  const visualBrief = buildVisualBrief({
+    editorialProfile: "guide",
+    platform: "toutiao",
+    role: "cover",
+    facts: snapshot.facts,
+  });
+  const sha256 = "c".repeat(64);
+  return {
+    id: "10000000-0000-4000-8000-000000000010",
+    sha256,
+    mimeType: "image/png",
+    byteLength: 256,
+    width: 1280,
+    height: 720,
+    platform: "toutiao",
+    role: "cover",
+    altText: visualBrief.altText,
+    caption: visualBrief.caption,
+    factIds: [...visualBrief.factIds],
+    visualBrief,
+    visualBriefHash: sha256Canonical(visualBrief),
+    rights: {
+      basis: "generated_terms",
+      licenseName: "Fixture generation terms",
+      licenseUrl: "https://example.test/fixture-terms",
+      verifiedAt: "2026-07-13T11:30:00.000Z",
+    },
+    provenance: {
+      kind: "generated",
+      jobId: "10000000-0000-4000-8000-000000000011",
+      attemptId: "10000000-0000-4000-8000-000000000012",
+      provider: "fixture",
+      providerMode: "fixture",
+      model: "fixture-png-v1",
+      promptHash: sha256Text(visualBrief.prompt),
+      parametersHash: "d".repeat(64),
+      generatedAt: "2026-07-13T11:30:00.000Z",
+    },
+    inspection: {
+      assetSha256: sha256,
+      status: "passed",
+      evaluator: "fixture-inspector",
+      evaluatorMode: "fixture",
+      evaluatorVersion: "1.0.0",
+      responseSha256: "e".repeat(64),
+      inspectedAt: "2026-07-13T11:31:00.000Z",
+      ocrText: "",
+      labels: ["travel-service"],
+    },
+  };
+}
+
+function passedAudit(payload: PublicationVariantPayload = publicationPayload) {
   return auditPublicationVariant({
     artifactId: "10000000-0000-4000-8000-000000000007",
     tenantId,
-    brandId,
+    brandSnapshot: {
+      id: brandId,
+      canonicalName: "zhongtong-international-travel",
+      displayName: "Zhongtong International Travel Agency",
+      aliases: ["Zhongtong Travel"],
+    },
     variantId,
     channelAccountId,
     platform: "toutiao",
-    payload: publicationPayload,
+    payload,
     contacts: [contact],
     factSnapshot: snapshot,
     policy,
@@ -264,5 +326,44 @@ describe("one-time publication grants", () => {
         issuedAt: "2026-07-13T12:01:00.000Z",
       }),
     ).toThrowError(expect.objectContaining({ code: "AUDIT_INTEGRITY_FAILED" }));
+  });
+
+  it("cannot reuse an old audit or grant after media bytes change", () => {
+    const media = mediaReference();
+    const mediaPayload: PublicationVariantPayload = {
+      ...publicationPayload,
+      editorialProfile: "guide",
+      media: [media],
+    };
+    const audit = passedAudit(mediaPayload);
+    const grant = issuePublicationGrant({
+      grantId: "10000000-0000-4000-8000-000000000013",
+      auditArtifact: audit,
+      token,
+      issuedAt: "2026-07-13T12:01:00.000Z",
+    });
+    const changedSha = "f".repeat(64);
+    const changedMedia = {
+      ...media,
+      sha256: changedSha,
+      inspection: { ...media.inspection, assetSha256: changedSha },
+    };
+    const changedPayload = { ...mediaPayload, media: [changedMedia] };
+
+    expect(mediaSnapshotHash([changedMedia])).not.toBe(audit.mediaSnapshotHash);
+    expect(
+      verifyAuditArtifactIntegrity({
+        ...audit,
+        mediaSnapshotHash: mediaSnapshotHash([changedMedia]),
+      }),
+    ).toBe(false);
+    expect(() =>
+      validatePublicationGrant({
+        grant,
+        token,
+        now: "2026-07-13T12:02:00.000Z",
+        binding: { ...binding(audit), payloadHash: sha256Canonical(changedPayload) },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "GRANT_BINDING_MISMATCH" }));
   });
 });

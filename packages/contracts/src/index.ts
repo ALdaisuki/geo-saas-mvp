@@ -825,6 +825,8 @@ export const auditArtifactSchema = z.object({
   platform: platformSchema,
   payloadHash: sha256Schema,
   factSnapshotHash: sha256Schema,
+  brandSnapshotHash: sha256Schema,
+  mediaSnapshotHash: sha256Schema,
   policyHash: sha256Schema,
   policyVersion: z.string().trim().min(1).max(100),
   auditHash: sha256Schema,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  auditArtifactSchema,
   automationBatchCreateRequestSchema,
   automationServicePrincipalCreateRequestSchema,
   automationRunStateSchema,
@@ -76,6 +77,35 @@ function mediaReference(provenance: Record<string, unknown>): Record<string, unk
 }
 
 describe("publication contracts", () => {
+  it("requires explicit brand and media snapshot hashes on audit artifacts", () => {
+    const artifact = {
+      id,
+      tenantId: id,
+      variantId: id,
+      channelAccountId: id,
+      platform: "toutiao",
+      payloadHash: hash,
+      factSnapshotHash: hash,
+      brandSnapshotHash: hash,
+      mediaSnapshotHash: hash,
+      policyHash: hash,
+      policyVersion: "audit-v2",
+      auditHash: hash,
+      status: "passed",
+      findings: [],
+      createdAt: "2026-07-15T12:00:00.000Z",
+      expiresAt: "2026-07-15T12:15:00.000Z",
+    } as const;
+
+    expect(auditArtifactSchema.parse(artifact)).toEqual(artifact);
+    expect(
+      auditArtifactSchema.safeParse({ ...artifact, mediaSnapshotHash: undefined }).success,
+    ).toBe(false);
+    expect(
+      auditArtifactSchema.safeParse({ ...artifact, brandSnapshotHash: undefined }).success,
+    ).toBe(false);
+  });
+
   it("keeps dry-run evidence visibly separate from a confirmed live publication", () => {
     const receipt = publicationReceiptSchema.parse({
       id,

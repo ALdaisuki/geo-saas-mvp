@@ -1,21 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import type { Platform, PublicationVariantPayload, TenantContact } from "@geo/contracts";
+import type {
+  MediaReference,
+  Platform,
+  PublicationVariantPayload,
+  TenantContact,
+} from "@geo/contracts";
 
 import {
   auditPublicationVariant,
+  type BrandSnapshot,
   DEFAULT_AUDIT_POLICY,
   type AuditPolicy,
   type FactSnapshot,
   type PriorPublicationVariant,
 } from "./audit.js";
-import {
-  compileAuditPolicy,
-  GEO_AUDIT_POLICY_SCHEMA_VERSION,
-} from "./audit-policy-document.js";
-import { sha256Canonical } from "./canonical.js";
+import { compileAuditPolicy, GEO_AUDIT_POLICY_SCHEMA_VERSION } from "./audit-policy-document.js";
+import { sha256Canonical, sha256Text } from "./canonical.js";
 import { renderCanonicalContent } from "./content-renderer.js";
 import { CoreInvariantError } from "./errors.js";
+import { buildVisualBrief, mediaSnapshotHash } from "./media-production.js";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
 const variantId = "00000000-0000-4000-8000-000000000002";
@@ -29,6 +33,13 @@ const sourceId = "00000000-0000-4000-8000-000000000008";
 const factId = "00000000-0000-4000-8000-000000000009";
 
 const createdAt = "2026-07-13T12:00:00.000Z";
+
+const brandSnapshot: BrandSnapshot = {
+  id: brandId,
+  canonicalName: "zhongtong-international-travel",
+  displayName: "Zhongtong International Travel Agency",
+  aliases: ["Zhongtong Travel"],
+};
 
 const contacts: readonly TenantContact[] = [
   {
@@ -105,6 +116,7 @@ const policy: AuditPolicy = {
   minDuplicateCharacters: 60,
   prohibitedGuarantees: ["百分百", "保证签证", "包过"],
   contentTemplates: DEFAULT_AUDIT_POLICY.contentTemplates,
+  media: DEFAULT_AUDIT_POLICY.media,
   platformLimits: {
     toutiao: limits,
     sohu: limits,
@@ -113,6 +125,11 @@ const policy: AuditPolicy = {
 };
 
 function compilePolicyDocument(version: string, minClaims: number): AuditPolicy {
+  const editorialProfiles = DEFAULT_AUDIT_POLICY.editorialProfiles;
+  const platformEditorialStyles = DEFAULT_AUDIT_POLICY.platformEditorialStyles;
+  if (editorialProfiles === undefined || platformEditorialStyles === undefined) {
+    throw new Error("Default policy must define editorial profiles and platform styles");
+  }
   const document = {
     schemaVersion: GEO_AUDIT_POLICY_SCHEMA_VERSION,
     rulesVersion: version,
@@ -123,8 +140,8 @@ function compilePolicyDocument(version: string, minClaims: number): AuditPolicy 
       body: { ...policy.contentTemplates.body },
       tag: { ...policy.contentTemplates.tag },
     },
-    editorialProfiles: DEFAULT_AUDIT_POLICY.editorialProfiles!,
-    platformEditorialStyles: DEFAULT_AUDIT_POLICY.platformEditorialStyles!,
+    editorialProfiles,
+    platformEditorialStyles,
     audit: {
       artifactTtlMs: policy.artifactTtlMs,
       maxEvidenceAgeMs: policy.maxEvidenceAgeMs,
@@ -132,6 +149,7 @@ function compilePolicyDocument(version: string, minClaims: number): AuditPolicy 
       duplicateThreshold: policy.duplicateThreshold,
       minDuplicateCharacters: policy.minDuplicateCharacters,
       prohibitedGuarantees: [...policy.prohibitedGuarantees],
+      media: policy.media,
       platformLimits: {
         toutiao: { ...policy.platformLimits.toutiao },
         sohu: { ...policy.platformLimits.sohu },
@@ -148,6 +166,7 @@ function compilePolicyDocument(version: string, minClaims: number): AuditPolicy 
 
 function payload(overrides: Partial<PublicationVariantPayload> = {}): PublicationVariantPayload {
   const canonical: PublicationVariantPayload = {
+    editorialProfile: "guide",
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",
@@ -200,6 +219,60 @@ function payload(overrides: Partial<PublicationVariantPayload> = {}): Publicatio
   };
 }
 
+function mediaReference(overrides: Partial<MediaReference> = {}): MediaReference {
+  const visualBrief = buildVisualBrief({
+    editorialProfile: "guide",
+    platform: "toutiao",
+    role: "cover",
+    facts: factSnapshot.facts,
+  });
+  const sha256 = "c".repeat(64);
+  return {
+    id: "00000000-0000-4000-8000-000000000011",
+    sha256,
+    mimeType: "image/png",
+    byteLength: 512,
+    width: 1280,
+    height: 720,
+    platform: "toutiao",
+    role: "cover",
+    altText: visualBrief.altText,
+    caption: visualBrief.caption,
+    factIds: [...visualBrief.factIds],
+    visualBrief,
+    visualBriefHash: sha256Canonical(visualBrief),
+    rights: {
+      basis: "generated_terms",
+      licenseName: "Fixture generation terms",
+      licenseUrl: "https://example.test/fixture-terms",
+      verifiedAt: "2026-07-13T11:30:00.000Z",
+    },
+    provenance: {
+      kind: "generated",
+      jobId: "00000000-0000-4000-8000-000000000012",
+      attemptId: "00000000-0000-4000-8000-000000000013",
+      provider: "fixture",
+      providerMode: "fixture",
+      model: "fixture-png-v1",
+      promptHash: sha256Text(visualBrief.prompt),
+      parametersHash: "d".repeat(64),
+      generatedAt: "2026-07-13T11:30:00.000Z",
+    },
+    inspection: {
+      assetSha256: sha256,
+      status: "passed",
+      evaluator: "fixture-inspector",
+      evaluatorMode: "fixture",
+      evaluatorVersion: "1.0.0",
+      responseSha256: "e".repeat(64),
+      inspectedAt: "2026-07-13T11:31:00.000Z",
+      ocrText: "",
+      labels: ["travel-service"],
+    },
+    ...overrides,
+  };
+}
+
 function run(
   payloadOverride: PublicationVariantPayload = payload(),
   overrides: {
@@ -213,7 +286,7 @@ function run(
   return auditPublicationVariant({
     artifactId,
     tenantId,
-    brandId,
+    brandSnapshot,
     variantId,
     channelAccountId,
     platform: overrides.platform ?? "toutiao",
@@ -238,10 +311,125 @@ describe("publication variant audit", () => {
     expect(artifact.findings).toEqual([]);
     expect(artifact.payloadHash).toBe(sha256Canonical(payload()));
     expect(artifact.factSnapshotHash).toBe(sha256Canonical(factSnapshot));
+    expect(artifact.brandSnapshotHash).toBe(sha256Canonical(brandSnapshot));
+    expect(artifact.mediaSnapshotHash).toBe(mediaSnapshotHash([]));
     expect(artifact.policyHash).toBe(sha256Canonical(policy));
     expect(artifact.expiresAt).toBe("2026-07-13T12:15:00.000Z");
     expect(Object.isFrozen(artifact)).toBe(true);
     expect(Object.isFrozen(artifact.findings)).toBe(true);
+  });
+
+  it("passes exact fact-bound media and binds it into the audit artifact", () => {
+    const media = mediaReference();
+    const artifact = run(payload({ media: [media] }));
+
+    expect(artifact.status).toBe("passed");
+    expect(artifact.findings).toEqual([]);
+    expect(artifact.mediaSnapshotHash).toBe(mediaSnapshotHash([media]));
+    expect(artifact.payloadHash).toBe(sha256Canonical(payload({ media: [media] })));
+  });
+
+  it("blocks duplicate IDs, wrong platforms, and unknown media facts", () => {
+    const valid = mediaReference();
+    const duplicate = mediaReference({
+      ...valid,
+      sha256: "f".repeat(64),
+      inspection: { ...valid.inspection, assetSha256: "f".repeat(64) },
+    });
+    const wrongPlatform = run(payload({ media: [{ ...valid, platform: "sohu" }] }));
+    const duplicateIds = run(payload({ media: [valid, duplicate] }));
+    const unknownId = "00000000-0000-4000-8000-000000000099";
+    const unknownFactBrief = {
+      ...valid.visualBrief,
+      factIds: [unknownId],
+    };
+    const unknownFact = run(
+      payload({
+        media: [
+          {
+            ...valid,
+            factIds: [unknownId],
+            visualBrief: unknownFactBrief,
+            visualBriefHash: sha256Canonical(unknownFactBrief),
+          },
+        ],
+      }),
+    );
+
+    expect(ruleIds(wrongPlatform)).toContain("media.platform.mismatch");
+    expect(ruleIds(duplicateIds)).toContain("media.id.duplicate");
+    expect(ruleIds(unknownFact)).toEqual(
+      expect.arrayContaining(["media.fact.unverified", "media.fact.not_in_payload"]),
+    );
+  });
+
+  it("blocks visual brief, prompt, alt text, and caption tampering", () => {
+    const valid = mediaReference();
+    const changedBrief = { ...valid.visualBrief, prompt: `${valid.visualBrief.prompt} changed` };
+    const promptTampered = run(payload({ media: [{ ...valid, visualBrief: changedBrief }] }));
+    const altTampered = run(
+      payload({ media: [{ ...valid, altText: `${valid.altText} changed` }] }),
+    );
+    const captionTampered = run(
+      payload({ media: [{ ...valid, caption: `${valid.caption} changed` }] }),
+    );
+
+    expect(ruleIds(promptTampered)).toEqual(
+      expect.arrayContaining([
+        "media.visual_brief.invalid",
+        "media.visual_brief.hash_mismatch",
+        "media.provenance.prompt_hash_mismatch",
+      ]),
+    );
+    expect(ruleIds(altTampered)).toContain("media.alt_text.mismatch");
+    expect(ruleIds(captionTampered)).toContain("media.caption.mismatch");
+  });
+
+  it("blocks invalid rights, rendition dimensions, and inspection evidence", () => {
+    const valid = mediaReference();
+    const invalidRights = run(
+      payload({
+        media: [{ ...valid, rights: { ...valid.rights, basis: "tenant_owned" } }],
+      }),
+    );
+    const badDimensions = run(payload({ media: [{ ...valid, width: 640, height: 640 }] }));
+    const badMime = run(payload({ media: [{ ...valid, mimeType: "image/gif" }] }));
+    const failedInspection = run(
+      payload({ media: [{ ...valid, inspection: { ...valid.inspection, status: "failed" } }] }),
+    );
+    const contactOcr = run(
+      payload({
+        media: [
+          {
+            ...valid,
+            inspection: { ...valid.inspection, ocrText: "Call 4001133986 or WeChat ZTGL3411" },
+          },
+        ],
+      }),
+    );
+    const unapprovedEvaluator = run(
+      payload({
+        media: [
+          {
+            ...valid,
+            inspection: { ...valid.inspection, evaluatorVersion: "unapproved-v2" },
+          },
+        ],
+      }),
+    );
+    const withoutInspection: Partial<MediaReference> = { ...valid };
+    delete withoutInspection.inspection;
+    const missingInspection = run(
+      payload({ media: [withoutInspection as unknown as MediaReference] }),
+    );
+
+    expect(ruleIds(invalidRights)).toContain("media.rights.invalid");
+    expect(ruleIds(badDimensions)).toContain("media.rendition.dimensions_invalid");
+    expect(ruleIds(badMime)).toContain("media.rendition.mime_unsupported");
+    expect(ruleIds(failedInspection)).toContain("media.inspection.failed");
+    expect(ruleIds(contactOcr)).toContain("media.inspection.contact_text");
+    expect(ruleIds(unapprovedEvaluator)).toContain("media.inspection.evaluator_unapproved");
+    expect(ruleIds(missingInspection)).toContain("media.inspection.missing");
   });
 
   it("makes compiled document changes affect audit behavior and preserves legacy hashing", () => {

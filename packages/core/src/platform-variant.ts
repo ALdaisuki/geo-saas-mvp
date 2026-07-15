@@ -1,10 +1,12 @@
 import type {
   CanonicalBodyBlock,
   EditorialProfile,
+  MediaReference,
   Platform,
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
+import { mediaReferenceSchema } from "@geo/contracts";
 
 import type {
   AuditPolicy,
@@ -43,7 +45,10 @@ function sameUniqueSet(left: readonly string[], right: readonly string[]): boole
   );
 }
 
-function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): EditorialProfile {
+function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): Readonly<{
+  editorialProfile: EditorialProfile;
+  media: readonly MediaReference[];
+}> {
   invariant(
     input.sourcePayload.editorialProfile !== undefined,
     "PLATFORM_VARIANT_SOURCE_INVALID",
@@ -84,10 +89,28 @@ function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): 
     "Canonical source contact metadata does not match rendered references",
   );
   invariant(
-    input.sourcePayload.media.length === 0 && input.sourcePayload.canonicalUrl === undefined,
+    input.sourcePayload.canonicalUrl === undefined,
     "PLATFORM_VARIANT_SOURCE_INVALID",
-    "Platform variant v1 does not support media or canonical link provenance",
+    "Platform variants do not support canonical link provenance",
   );
+  const media = input.sourcePayload.media.map((reference, index) => {
+    const parsed = mediaReferenceSchema.safeParse(reference);
+    invariant(
+      parsed.success,
+      "PLATFORM_VARIANT_SOURCE_INVALID",
+      "Platform variants require strict immutable media references",
+      {
+        index,
+        issues: parsed.success
+          ? []
+          : parsed.error.issues.map((issue) => ({
+              path: issue.path.map(String).join("."),
+              message: issue.message,
+            })),
+      },
+    );
+    return parsed.data;
+  });
   invariant(
     input.sourcePayload.titleBlocks !== undefined &&
       input.sourcePayload.summaryBlocks !== undefined &&
@@ -117,7 +140,7 @@ function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): 
     "Canonical source references do not match the declared editorial profile",
     { profile: input.sourcePayload.editorialProfile },
   );
-  return input.sourcePayload.editorialProfile;
+  return { editorialProfile: input.sourcePayload.editorialProfile, media };
 }
 
 function bodyBlocks(
@@ -144,27 +167,15 @@ function bodyBlocks(
   );
 
   const slots: Readonly<Record<EditorialPlatformBodySlot, readonly CanonicalBodyBlock[]>> = {
-    platform_opening: [
-      { type: "template", templateId: platformStyle.bodyTemplateIds.opening },
-    ],
-    profile_opening: [
-      { type: "template", templateId: sourceProfile.bodyTemplateIds.opening },
-    ],
+    platform_opening: [{ type: "template", templateId: platformStyle.bodyTemplateIds.opening }],
+    profile_opening: [{ type: "template", templateId: sourceProfile.bodyTemplateIds.opening }],
     claims,
-    profile_details: [
-      { type: "template", templateId: sourceProfile.bodyTemplateIds.details },
-    ],
+    profile_details: [{ type: "template", templateId: sourceProfile.bodyTemplateIds.details }],
     platform_scope: [{ type: "template", templateId: platformStyle.bodyTemplateIds.scope }],
-    profile_action: [
-      { type: "template", templateId: sourceProfile.bodyTemplateIds.action },
-    ],
-    platform_contact: [
-      { type: "template", templateId: platformStyle.bodyTemplateIds.contact },
-    ],
+    profile_action: [{ type: "template", templateId: sourceProfile.bodyTemplateIds.action }],
+    platform_contact: [{ type: "template", templateId: platformStyle.bodyTemplateIds.contact }],
     contacts,
-    profile_closing: [
-      { type: "template", templateId: sourceProfile.bodyTemplateIds.closing },
-    ],
+    profile_closing: [{ type: "template", templateId: sourceProfile.bodyTemplateIds.closing }],
     platform_disclosure: [
       { type: "template", templateId: platformStyle.bodyTemplateIds.disclosure },
     ],
@@ -175,7 +186,8 @@ function bodyBlocks(
 export function renderPlatformPublicationVariant(
   input: RenderPlatformPublicationVariantInput,
 ): Readonly<PublicationVariantPayload> {
-  const editorialProfile = validateCanonicalSource(input);
+  const validatedSource = validateCanonicalSource(input);
+  const editorialProfile = validatedSource.editorialProfile;
   const profile = editorialProfilePolicy(input.policy, editorialProfile);
   const platformProfile = profile.platforms[input.platform];
   const platformStyle = input.policy.platformEditorialStyles?.[input.platform];
@@ -194,7 +206,7 @@ export function renderPlatformPublicationVariant(
     summaryBlocks: [{ type: "template", templateId: platformProfile.summaryTemplateId }],
     bodyBlocks: bodyBlocks(profile.source, platformProfile, platformStyle, input.sourcePayload),
     tagTemplateIds: [...platformStyle.tagTemplateIds, ...profile.source.tagTemplateIds],
-    media: [],
+    media: validatedSource.media.filter((item) => item.platform === input.platform),
     claims: input.sourcePayload.claims.map((claim) => ({
       ...claim,
       evidenceSourceIds: [...claim.evidenceSourceIds],

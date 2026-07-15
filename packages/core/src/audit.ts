@@ -3,15 +3,20 @@ import type {
   AuditFinding,
   AuditStatus,
   EditorialProfile,
+  MediaAspectRatio,
+  MediaProviderMode,
+  MediaReference,
   Platform,
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
+import { mediaReferenceSchema } from "@geo/contracts";
 
-import { sha256Canonical } from "./canonical.js";
+import { sha256Canonical, sha256Text } from "./canonical.js";
 import { assertCompiledAuditPolicySource } from "./audit-policy-provenance.js";
 import { renderCanonicalContent } from "./content-renderer.js";
 import { invariant } from "./errors.js";
+import { mediaSnapshotHash, verifyVisualBrief } from "./media-production.js";
 import { assertSha256, assertUuid, freezeDeep, parseInstant } from "./validation.js";
 
 export interface EvidenceSource {
@@ -38,6 +43,13 @@ export interface FactSnapshot {
   readonly sources: readonly EvidenceSource[];
 }
 
+export interface BrandSnapshot {
+  readonly id: string;
+  readonly canonicalName: string;
+  readonly displayName: string;
+  readonly aliases: readonly string[];
+}
+
 export interface PlatformAuditLimits {
   readonly maxTitleCharacters: number;
   readonly maxSummaryCharacters: number;
@@ -45,6 +57,27 @@ export interface PlatformAuditLimits {
   readonly maxBodyCharacters: number;
   readonly maxTags: number;
   readonly minHeadings: number;
+}
+
+export interface PlatformMediaRenditionPolicy {
+  readonly allowedMimeTypes: readonly string[];
+  readonly aspectRatios: readonly MediaAspectRatio[];
+  readonly minWidth: number;
+  readonly minHeight: number;
+  readonly maxWidth: number;
+  readonly maxHeight: number;
+}
+
+export interface MediaInspectionEvaluatorPolicy {
+  readonly evaluator: string;
+  readonly evaluatorMode: MediaProviderMode;
+  readonly evaluatorVersion: string;
+}
+
+export interface MediaAuditPolicy {
+  readonly inspectionRequired: true;
+  readonly evaluatorAllowlist: readonly MediaInspectionEvaluatorPolicy[];
+  readonly renditions: Readonly<Record<Platform, PlatformMediaRenditionPolicy>>;
 }
 
 export interface ContentTemplates {
@@ -116,6 +149,7 @@ export interface AuditPolicy {
   readonly duplicateThreshold: number;
   readonly minDuplicateCharacters: number;
   readonly prohibitedGuarantees: readonly string[];
+  readonly media: MediaAuditPolicy;
   readonly platformLimits: Readonly<Record<Platform, PlatformAuditLimits>>;
   readonly contentTemplates: ContentTemplates;
   readonly editorialProfiles?: Readonly<Record<EditorialProfile, EditorialProfilePolicy>>;
@@ -131,7 +165,7 @@ export interface PriorPublicationVariant {
 
 export interface EvaluatePublicationVariantInput {
   readonly tenantId: string;
-  readonly brandId: string;
+  readonly brandSnapshot: BrandSnapshot;
   readonly variantId: string;
   readonly platform: Platform;
   readonly payload: PublicationVariantPayload;
@@ -145,6 +179,8 @@ export interface EvaluatePublicationVariantInput {
 export interface AuditEvaluation {
   readonly payloadHash: string;
   readonly factSnapshotHash: string;
+  readonly brandSnapshotHash: string;
+  readonly mediaSnapshotHash: string;
   readonly policyHash: string;
   readonly status: AuditStatus;
   readonly findings: readonly AuditFinding[];
@@ -235,8 +271,7 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
         "先列当前有效联系渠道，再说明可以核对的服务事实和咨询时需要准备的信息。",
       "sohu.summary.evidence-first":
         "围绕已验证事实整理服务范围与决策要点，所有联系方式均取自当前租户记录。",
-      "sohu.guide.summary":
-        "以材料来源、适用条件和确认步骤为主线，形成一份可复核的服务决策指南。",
+      "sohu.guide.summary": "以材料来源、适用条件和确认步骤为主线，形成一份可复核的服务决策指南。",
       "sohu.question_answer.summary":
         "将问题拆成事实回答、适用边界与后续核实三部分，避免把一般经验写成当前承诺。",
       "sohu.comparison.summary":
@@ -247,8 +282,7 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
         "以当前租户记录为准汇总联系入口、服务范围和咨询流程，历史页面信息不作为补充来源。",
       "ctrip.summary.evidence-first":
         "用已验证资料梳理出行服务信息，并提示在预订前复核有效期、适用条件和最终安排。",
-      "ctrip.guide.summary":
-        "围绕出行前、咨询中和预订前的关键节点，逐项核对当前有效的服务材料。",
+      "ctrip.guide.summary": "围绕出行前、咨询中和预订前的关键节点，逐项核对当前有效的服务材料。",
       "ctrip.question_answer.summary":
         "回答出行服务常见问题，并把已核实信息与需要在预订前再次确认的事项分开。",
       "ctrip.comparison.summary":
@@ -771,6 +805,42 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
       tagTemplateIds: ["ctrip.tag.evidence", "ctrip.tag.preflight"],
     },
   },
+  media: {
+    inspectionRequired: true,
+    evaluatorAllowlist: [
+      {
+        evaluator: "fixture-inspector",
+        evaluatorMode: "fixture",
+        evaluatorVersion: "1.0.0",
+      },
+    ],
+    renditions: {
+      toutiao: {
+        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp"],
+        aspectRatios: ["16:9"],
+        minWidth: 1200,
+        minHeight: 675,
+        maxWidth: 4096,
+        maxHeight: 4096,
+      },
+      sohu: {
+        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp"],
+        aspectRatios: ["16:9"],
+        minWidth: 1200,
+        minHeight: 675,
+        maxWidth: 4096,
+        maxHeight: 4096,
+      },
+      ctrip_community: {
+        allowedMimeTypes: ["image/png", "image/jpeg", "image/webp"],
+        aspectRatios: ["4:3"],
+        minWidth: 1200,
+        minHeight: 900,
+        maxWidth: 4096,
+        maxHeight: 4096,
+      },
+    },
+  },
   platformLimits: {
     toutiao: {
       maxTitleCharacters: 30,
@@ -975,6 +1045,86 @@ function validatePolicy(policy: AuditPolicy, platform: Platform): PlatformAuditL
   return limits;
 }
 
+function validateBrandSnapshot(snapshot: BrandSnapshot): void {
+  assertUuid(snapshot.id, "brandSnapshot.id");
+  for (const [field, value] of [
+    ["canonicalName", snapshot.canonicalName],
+    ["displayName", snapshot.displayName],
+  ] as const) {
+    invariant(
+      value.length > 0 && value.trim() === value,
+      "AUDIT_BRAND_SNAPSHOT_INVALID",
+      `Brand ${field} must be non-blank and canonical`,
+      { field },
+    );
+  }
+  invariant(
+    new Set(snapshot.aliases).size === snapshot.aliases.length &&
+      snapshot.aliases.every((alias) => alias.length > 0 && alias.trim() === alias),
+    "AUDIT_BRAND_SNAPSHOT_INVALID",
+    "Brand aliases must be unique, non-blank, and canonical",
+  );
+}
+
+function validateMediaPolicy(
+  policy: MediaAuditPolicy,
+  platform: Platform,
+): PlatformMediaRenditionPolicy {
+  invariant(
+    policy.inspectionRequired === true,
+    "AUDIT_POLICY_INVALID",
+    "media.inspectionRequired must remain enabled",
+  );
+  invariant(
+    policy.evaluatorAllowlist.length > 0,
+    "AUDIT_POLICY_INVALID",
+    "media.evaluatorAllowlist must not be empty",
+  );
+  const evaluatorKeys = policy.evaluatorAllowlist.map(
+    (entry) => `${entry.evaluator}\u0000${entry.evaluatorMode}\u0000${entry.evaluatorVersion}`,
+  );
+  invariant(
+    new Set(evaluatorKeys).size === evaluatorKeys.length &&
+      policy.evaluatorAllowlist.every(
+        (entry) => entry.evaluator.trim().length > 0 && entry.evaluatorVersion.trim().length > 0,
+      ),
+    "AUDIT_POLICY_INVALID",
+    "Media inspection evaluator allowlist is invalid",
+  );
+  const rendition = policy.renditions[platform];
+  invariant(rendition !== undefined, "AUDIT_POLICY_INVALID", "Platform media policy is missing");
+  invariant(
+    rendition.allowedMimeTypes.length > 0 &&
+      new Set(rendition.allowedMimeTypes).size === rendition.allowedMimeTypes.length,
+    "AUDIT_POLICY_INVALID",
+    "Platform media MIME allowlist is invalid",
+  );
+  invariant(
+    rendition.aspectRatios.length > 0 &&
+      new Set(rendition.aspectRatios).size === rendition.aspectRatios.length,
+    "AUDIT_POLICY_INVALID",
+    "Platform media aspect ratio allowlist is invalid",
+  );
+  for (const [field, value] of [
+    ["minWidth", rendition.minWidth],
+    ["minHeight", rendition.minHeight],
+    ["maxWidth", rendition.maxWidth],
+    ["maxHeight", rendition.maxHeight],
+  ] as const) {
+    invariant(
+      Number.isSafeInteger(value) && value > 0,
+      "AUDIT_POLICY_INVALID",
+      `media.renditions.${platform}.${field} must be a positive safe integer`,
+    );
+  }
+  invariant(
+    rendition.maxWidth >= rendition.minWidth && rendition.maxHeight >= rendition.minHeight,
+    "AUDIT_POLICY_INVALID",
+    "Maximum media dimensions must cover minimum dimensions",
+  );
+  return rendition;
+}
+
 function validatePayload(payload: PublicationVariantPayload): void {
   invariant(typeof payload.title === "string", "AUDIT_PAYLOAD_INVALID", "title must be a string");
   invariant(
@@ -1043,14 +1193,355 @@ function sortFindings(findings: AuditFinding[]): AuditFinding[] {
   });
 }
 
+function aspectRatioMatches(width: number, height: number, aspectRatio: MediaAspectRatio): boolean {
+  if (aspectRatio === "1:1") return width === height;
+  if (aspectRatio === "4:3") return width * 3 === height * 4;
+  return width * 9 === height * 16;
+}
+
+function isHttpsUrl(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function mediaRightsAreValid(media: MediaReference, now: number): boolean {
+  const verifiedAt = Date.parse(media.rights.verifiedAt);
+  if (
+    !Number.isFinite(verifiedAt) ||
+    verifiedAt > now ||
+    media.rights.licenseName.trim().length === 0 ||
+    (media.rights.licenseUrl !== undefined && !isHttpsUrl(media.rights.licenseUrl))
+  ) {
+    return false;
+  }
+  if (media.provenance.kind === "generated") {
+    return (
+      media.rights.basis === "generated_terms" &&
+      media.provenance.provider.trim().length > 0 &&
+      media.provenance.model.trim().length > 0
+    );
+  }
+  if (media.provenance.kind === "licensed_stock") {
+    return (
+      (media.rights.basis === "commercial_license" || media.rights.basis === "editorial_license") &&
+      isHttpsUrl(media.rights.licenseUrl) &&
+      isHttpsUrl(media.provenance.sourceUrl)
+    );
+  }
+  return (
+    media.rights.basis === "tenant_owned" && media.provenance.ownershipAssertion.trim().length > 0
+  );
+}
+
+function stableMediaHashForAudit(media: readonly MediaReference[]): string {
+  try {
+    return mediaSnapshotHash(media);
+  } catch {
+    const roleOrder = { cover: 0, inline: 1 } as const;
+    return sha256Canonical(
+      [...media].sort((left, right) => {
+        const leftKey = `${left.platform}\u0000${roleOrder[left.role]}\u0000${left.id}\u0000${left.sha256}`;
+        const rightKey = `${right.platform}\u0000${roleOrder[right.role]}\u0000${right.id}\u0000${right.sha256}`;
+        return leftKey.localeCompare(rightKey, "en");
+      }),
+    );
+  }
+}
+
+function auditMediaReferences(input: {
+  readonly payload: PublicationVariantPayload;
+  readonly platform: Platform;
+  readonly policy: AuditPolicy;
+  readonly factById: ReadonlyMap<string, VerifiedFact>;
+  readonly activeContacts: readonly TenantContact[];
+  readonly rendition: PlatformMediaRenditionPolicy;
+  readonly now: number;
+  readonly findings: AuditFinding[];
+}): void {
+  const mediaIds = new Set<string>();
+  const claimIds = new Set(input.payload.claims.map((claim) => claim.id));
+
+  for (const [index, media] of input.payload.media.entries()) {
+    const path = `payload.media[${index}]`;
+    const parsed = mediaReferenceSchema.safeParse(media);
+    if (!parsed.success) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.schema.invalid",
+          "Media reference does not satisfy the immutable media contract",
+          path,
+          parsed.error.issues
+            .slice(0, 20)
+            .map((issue) => `${issue.path.map(String).join(".")}: ${issue.message}`),
+        ),
+      );
+    }
+
+    if (mediaIds.has(media.id)) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.id.duplicate",
+          "Media IDs must be unique in the final payload",
+          `${path}.id`,
+          [media.id],
+        ),
+      );
+    }
+    mediaIds.add(media.id);
+
+    if (media.platform !== input.platform) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.platform.mismatch",
+          "Media rendition targets a different platform",
+          `${path}.platform`,
+          [media.platform, input.platform],
+        ),
+      );
+    }
+    if (
+      input.payload.editorialProfile === undefined ||
+      media.visualBrief.editorialProfile !== input.payload.editorialProfile
+    ) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.visual_brief.profile_mismatch",
+          "Media visual brief must match the final payload editorial profile",
+          `${path}.visualBrief.editorialProfile`,
+          [media.visualBrief.editorialProfile, input.payload.editorialProfile ?? "missing"],
+        ),
+      );
+    }
+    if (!input.rendition.allowedMimeTypes.includes(media.mimeType)) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.rendition.mime_unsupported",
+          "Media MIME type is not allowed for this platform",
+          `${path}.mimeType`,
+          [media.mimeType],
+        ),
+      );
+    }
+    const dimensionsValid =
+      Number.isSafeInteger(media.width) &&
+      Number.isSafeInteger(media.height) &&
+      media.width >= input.rendition.minWidth &&
+      media.width <= input.rendition.maxWidth &&
+      media.height >= input.rendition.minHeight &&
+      media.height <= input.rendition.maxHeight &&
+      input.rendition.aspectRatios.includes(media.visualBrief.aspectRatio) &&
+      aspectRatioMatches(media.width, media.height, media.visualBrief.aspectRatio);
+    if (!dimensionsValid) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.rendition.dimensions_invalid",
+          "Media dimensions or aspect ratio are invalid for this platform",
+          path,
+          [`width=${media.width}`, `height=${media.height}`, media.visualBrief.aspectRatio],
+        ),
+      );
+    }
+
+    const referencedFacts: VerifiedFact[] = [];
+    for (const factId of media.factIds) {
+      const fact = input.factById.get(factId);
+      if (fact === undefined) {
+        input.findings.push(
+          makeFinding(
+            input.policy,
+            "media.fact.unverified",
+            "Media references a fact outside the captured verified snapshot",
+            `${path}.factIds`,
+            [factId],
+          ),
+        );
+      } else {
+        referencedFacts.push(fact);
+      }
+      if (!claimIds.has(factId)) {
+        input.findings.push(
+          makeFinding(
+            input.policy,
+            "media.fact.not_in_payload",
+            "Media fact must also be present in final payload claims",
+            `${path}.factIds`,
+            [factId],
+          ),
+        );
+      }
+    }
+
+    let briefIssues: readonly string[];
+    try {
+      briefIssues = verifyVisualBrief({ brief: media.visualBrief, facts: referencedFacts });
+    } catch {
+      briefIssues = ["visual_brief.invalid"];
+    }
+    if (briefIssues.length > 0) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.visual_brief.invalid",
+          "Visual brief does not deterministically match its verified facts",
+          `${path}.visualBrief`,
+          briefIssues,
+        ),
+      );
+    }
+    if (media.visualBriefHash !== sha256Canonical(media.visualBrief)) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.visual_brief.hash_mismatch",
+          "Visual brief hash does not bind the complete visual brief",
+          `${path}.visualBriefHash`,
+        ),
+      );
+    }
+    if (media.altText !== media.visualBrief.altText) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.alt_text.mismatch",
+          "Media alt text differs from the deterministic visual brief",
+          `${path}.altText`,
+        ),
+      );
+    }
+    if (media.caption !== media.visualBrief.caption) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.caption.mismatch",
+          "Media caption differs from the deterministic visual brief",
+          `${path}.caption`,
+        ),
+      );
+    }
+    if (
+      media.provenance.kind === "generated" &&
+      media.provenance.promptHash !== sha256Text(media.visualBrief.prompt)
+    ) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.provenance.prompt_hash_mismatch",
+          "Generated media prompt hash does not match the visual brief",
+          `${path}.provenance.promptHash`,
+        ),
+      );
+    }
+    if (!mediaRightsAreValid(media, input.now)) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.rights.invalid",
+          "Media rights or source provenance is incomplete, stale, or incompatible",
+          `${path}.rights`,
+        ),
+      );
+    }
+
+    const inspection = (media as Partial<MediaReference>).inspection;
+    if (inspection === undefined) {
+      if (input.policy.media.inspectionRequired) {
+        input.findings.push(
+          makeFinding(
+            input.policy,
+            "media.inspection.missing",
+            "Current inspection evidence is required for this media asset",
+            `${path}.inspection`,
+          ),
+        );
+      }
+      continue;
+    }
+    if (inspection.assetSha256 !== media.sha256) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.inspection.asset_mismatch",
+          "Inspection evidence belongs to different media bytes",
+          `${path}.inspection.assetSha256`,
+        ),
+      );
+    }
+    if (inspection.status !== "passed") {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.inspection.failed",
+          "Media inspection did not pass",
+          `${path}.inspection.status`,
+        ),
+      );
+    }
+    const evaluatorApproved = input.policy.media.evaluatorAllowlist.some(
+      (entry) =>
+        entry.evaluator === inspection.evaluator &&
+        entry.evaluatorMode === inspection.evaluatorMode &&
+        entry.evaluatorVersion === inspection.evaluatorVersion,
+    );
+    if (!evaluatorApproved) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.inspection.evaluator_unapproved",
+          "Media inspection evaluator or version is not allowlisted",
+          `${path}.inspection`,
+        ),
+      );
+    }
+    const inspectedAt = Date.parse(inspection.inspectedAt);
+    if (!Number.isFinite(inspectedAt) || inspectedAt > input.now) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.inspection.time_invalid",
+          "Media inspection timestamp is invalid or in the future",
+          `${path}.inspection.inspectedAt`,
+        ),
+      );
+    }
+    const ocrText = inspection.ocrText.normalize("NFKC");
+    const ocrPhones = new Set(extractPhoneCandidates(ocrText));
+    const containsContact = input.activeContacts.some((contact) =>
+      contact.type === "phone"
+        ? ocrPhones.has(normalizePhone(contact.value))
+        : ocrText.toLocaleLowerCase("en").includes(contact.value.toLocaleLowerCase("en")),
+    );
+    if (containsContact || extractWechatCandidates(ocrText).length > 0) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.inspection.contact_text",
+          "Generated pixels must not contain phone or contact-handle text",
+          `${path}.inspection.ocrText`,
+        ),
+      );
+    }
+  }
+}
+
 export function evaluatePublicationVariant(
   input: EvaluatePublicationVariantInput,
 ): Readonly<AuditEvaluation> {
   assertUuid(input.tenantId, "tenantId");
-  assertUuid(input.brandId, "brandId");
+  validateBrandSnapshot(input.brandSnapshot);
   assertUuid(input.variantId, "variantId");
   validatePayload(input.payload);
   const limits = validatePolicy(input.policy, input.platform);
+  const mediaRendition = validateMediaPolicy(input.policy.media, input.platform);
   const now = parseInstant(input.createdAt, "createdAt");
   const findings: AuditFinding[] = [];
 
@@ -1301,16 +1792,16 @@ export function evaluatePublicationVariant(
       ),
     );
   }
-  if (input.payload.media.length > 0) {
-    findings.push(
-      makeFinding(
-        input.policy,
-        "content.media.unsupported",
-        "Canonical content v1 does not support media provenance",
-        "payload.media",
-      ),
-    );
-  }
+  auditMediaReferences({
+    payload: input.payload,
+    platform: input.platform,
+    policy: input.policy,
+    factById,
+    activeContacts,
+    rendition: mediaRendition,
+    now,
+    findings,
+  });
   if (input.payload.canonicalUrl !== undefined) {
     findings.push(
       makeFinding(
@@ -1347,14 +1838,14 @@ export function evaluatePublicationVariant(
         ),
       );
     } else {
-      if (verifiedFact.brandId !== input.brandId) {
+      if (verifiedFact.brandId !== input.brandSnapshot.id) {
         findings.push(
           makeFinding(
             input.policy,
             "evidence.claim.brand_mismatch",
             "Verified fact belongs to a different brand",
             `${claimPath}.id`,
-            [claim.id, verifiedFact.brandId, input.brandId],
+            [claim.id, verifiedFact.brandId, input.brandSnapshot.id],
           ),
         );
       }
@@ -1653,6 +2144,8 @@ export function evaluatePublicationVariant(
   return freezeDeep({
     payloadHash,
     factSnapshotHash: sha256Canonical(input.factSnapshot),
+    brandSnapshotHash: sha256Canonical(input.brandSnapshot),
+    mediaSnapshotHash: stableMediaHashForAudit(input.payload.media),
     policyHash: input.policy.sourceHash ?? sha256Canonical(input.policy),
     status,
     findings,
@@ -1661,7 +2154,7 @@ export function evaluatePublicationVariant(
 
 function unsignedAuditArtifact(artifact: Omit<AuditArtifact, "auditHash">): unknown {
   return {
-    schema: "geo.audit-artifact.v1",
+    schema: "geo.audit-artifact.v2",
     id: artifact.id,
     tenantId: artifact.tenantId,
     variantId: artifact.variantId,
@@ -1669,6 +2162,8 @@ function unsignedAuditArtifact(artifact: Omit<AuditArtifact, "auditHash">): unkn
     platform: artifact.platform,
     payloadHash: artifact.payloadHash,
     factSnapshotHash: artifact.factSnapshotHash,
+    brandSnapshotHash: artifact.brandSnapshotHash,
+    mediaSnapshotHash: artifact.mediaSnapshotHash,
     policyHash: artifact.policyHash,
     policyVersion: artifact.policyVersion,
     status: artifact.status,
@@ -1685,6 +2180,11 @@ export function computeAuditHash(artifact: Omit<AuditArtifact, "auditHash">): st
 export function verifyAuditArtifactIntegrity(artifact: Readonly<AuditArtifact>): boolean {
   try {
     assertSha256(artifact.auditHash, "auditHash");
+    assertSha256(artifact.payloadHash, "payloadHash");
+    assertSha256(artifact.factSnapshotHash, "factSnapshotHash");
+    assertSha256(artifact.brandSnapshotHash, "brandSnapshotHash");
+    assertSha256(artifact.mediaSnapshotHash, "mediaSnapshotHash");
+    assertSha256(artifact.policyHash, "policyHash");
     const expectedStatus: AuditStatus = artifact.findings.some(
       (finding) => finding.severity === "blocking",
     )
@@ -1721,6 +2221,8 @@ export function buildAuditArtifact(input: BuildAuditArtifactInput): Readonly<Aud
     platform: input.platform,
     payloadHash: input.evaluation.payloadHash,
     factSnapshotHash: input.evaluation.factSnapshotHash,
+    brandSnapshotHash: input.evaluation.brandSnapshotHash,
+    mediaSnapshotHash: input.evaluation.mediaSnapshotHash,
     policyHash: input.evaluation.policyHash,
     policyVersion: input.policyVersion,
     status: input.evaluation.status,

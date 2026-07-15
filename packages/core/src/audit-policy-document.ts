@@ -6,7 +6,7 @@ import { sha256Canonical } from "./canonical.js";
 import { CoreInvariantError, invariant } from "./errors.js";
 import { freezeDeep } from "./validation.js";
 
-export const GEO_AUDIT_POLICY_SCHEMA_VERSION = "geo.audit-policy.v1" as const;
+export const GEO_AUDIT_POLICY_SCHEMA_VERSION = "geo.audit-policy.v2" as const;
 
 const nonBlankIdentifierSchema = z
   .string()
@@ -143,6 +143,56 @@ export const platformAuditLimitsSchema = z
     path: ["maxBodyCharacters"],
   });
 
+const platformMediaRenditionPolicySchema = z
+  .strictObject({
+    allowedMimeTypes: z
+      .array(z.string().regex(/^image\/[a-z0-9.+-]+$/u))
+      .min(1)
+      .max(20)
+      .refine((values) => new Set(values).size === values.length, "MIME types must be unique"),
+    aspectRatios: z
+      .array(z.enum(["1:1", "4:3", "16:9"]))
+      .min(1)
+      .max(3)
+      .refine((values) => new Set(values).size === values.length, "Aspect ratios must be unique"),
+    minWidth: positiveSafeIntegerSchema,
+    minHeight: positiveSafeIntegerSchema,
+    maxWidth: positiveSafeIntegerSchema,
+    maxHeight: positiveSafeIntegerSchema,
+  })
+  .refine((value) => value.maxWidth >= value.minWidth && value.maxHeight >= value.minHeight, {
+    message: "Maximum media dimensions must cover minimum dimensions",
+  });
+
+const mediaInspectionEvaluatorPolicySchema = z.strictObject({
+  evaluator: nonBlankIdentifierSchema,
+  evaluatorMode: z.enum(["fixture", "live"]),
+  evaluatorVersion: nonBlankIdentifierSchema,
+});
+
+export const mediaAuditPolicySchema = z.strictObject({
+  inspectionRequired: z.literal(true),
+  evaluatorAllowlist: z
+    .array(mediaInspectionEvaluatorPolicySchema)
+    .min(1)
+    .max(50)
+    .refine(
+      (values) =>
+        new Set(
+          values.map(
+            (value) =>
+              `${value.evaluator}\u0000${value.evaluatorMode}\u0000${value.evaluatorVersion}`,
+          ),
+        ).size === values.length,
+      "Inspection evaluator entries must be unique",
+    ),
+  renditions: z.strictObject({
+    toutiao: platformMediaRenditionPolicySchema,
+    sohu: platformMediaRenditionPolicySchema,
+    ctrip_community: platformMediaRenditionPolicySchema,
+  }),
+});
+
 export const auditPolicyRulesSchema = z.strictObject({
   artifactTtlMs: positiveSafeIntegerSchema,
   maxEvidenceAgeMs: positiveSafeIntegerSchema,
@@ -150,6 +200,7 @@ export const auditPolicyRulesSchema = z.strictObject({
   duplicateThreshold: z.number().gt(0).max(1),
   minDuplicateCharacters: nonNegativeSafeIntegerSchema,
   prohibitedGuarantees: z.array(prohibitedGuaranteeSchema).max(100),
+  media: mediaAuditPolicySchema,
   platformLimits: z.strictObject({
     toutiao: platformAuditLimitsSchema,
     sohu: platformAuditLimitsSchema,
@@ -216,6 +267,34 @@ function copyPlatformLimits() {
   };
 }
 
+function copyMediaPolicy() {
+  return {
+    inspectionRequired: DEFAULT_AUDIT_POLICY.media.inspectionRequired,
+    evaluatorAllowlist: DEFAULT_AUDIT_POLICY.media.evaluatorAllowlist.map((entry) => ({
+      ...entry,
+    })),
+    renditions: {
+      toutiao: {
+        ...DEFAULT_AUDIT_POLICY.media.renditions.toutiao,
+        allowedMimeTypes: [...DEFAULT_AUDIT_POLICY.media.renditions.toutiao.allowedMimeTypes],
+        aspectRatios: [...DEFAULT_AUDIT_POLICY.media.renditions.toutiao.aspectRatios],
+      },
+      sohu: {
+        ...DEFAULT_AUDIT_POLICY.media.renditions.sohu,
+        allowedMimeTypes: [...DEFAULT_AUDIT_POLICY.media.renditions.sohu.allowedMimeTypes],
+        aspectRatios: [...DEFAULT_AUDIT_POLICY.media.renditions.sohu.aspectRatios],
+      },
+      ctrip_community: {
+        ...DEFAULT_AUDIT_POLICY.media.renditions.ctrip_community,
+        allowedMimeTypes: [
+          ...DEFAULT_AUDIT_POLICY.media.renditions.ctrip_community.allowedMimeTypes,
+        ],
+        aspectRatios: [...DEFAULT_AUDIT_POLICY.media.renditions.ctrip_community.aspectRatios],
+      },
+    },
+  };
+}
+
 export function buildBaselineAuditPolicyDocument(
   input: BuildBaselineAuditPolicyDocumentInput,
 ): Readonly<GeoAuditPolicyDocument> {
@@ -247,6 +326,7 @@ export function buildBaselineAuditPolicyDocument(
       duplicateThreshold: DEFAULT_AUDIT_POLICY.duplicateThreshold,
       minDuplicateCharacters: DEFAULT_AUDIT_POLICY.minDuplicateCharacters,
       prohibitedGuarantees: [...GENERAL_PROHIBITED_GUARANTEES],
+      media: copyMediaPolicy(),
       platformLimits: copyPlatformLimits(),
     },
   };
@@ -306,6 +386,17 @@ export function compileAuditPolicy(input: CompileAuditPolicyInput): Readonly<Aud
     duplicateThreshold: parsedDocument.data.audit.duplicateThreshold,
     minDuplicateCharacters: parsedDocument.data.audit.minDuplicateCharacters,
     prohibitedGuarantees: [...parsedDocument.data.audit.prohibitedGuarantees],
+    media: {
+      inspectionRequired: parsedDocument.data.audit.media.inspectionRequired,
+      evaluatorAllowlist: parsedDocument.data.audit.media.evaluatorAllowlist.map((entry) => ({
+        ...entry,
+      })),
+      renditions: {
+        toutiao: { ...parsedDocument.data.audit.media.renditions.toutiao },
+        sohu: { ...parsedDocument.data.audit.media.renditions.sohu },
+        ctrip_community: { ...parsedDocument.data.audit.media.renditions.ctrip_community },
+      },
+    },
     contentTemplates: {
       title: { ...parsedDocument.data.contentTemplates.title },
       summary: { ...parsedDocument.data.contentTemplates.summary },

@@ -1,5 +1,6 @@
 import type {
   EditorialProfile,
+  MediaReference,
   Platform,
   PublicationVariantPayload,
   TenantContact,
@@ -8,9 +9,10 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_AUDIT_POLICY, type FactSnapshot } from "./audit.js";
 import { buildBaselineAuditPolicyDocument, compileAuditPolicy } from "./audit-policy-document.js";
-import { sha256Canonical } from "./canonical.js";
+import { sha256Canonical, sha256Text } from "./canonical.js";
 import { EDITORIAL_PROFILES, renderEditorialSourcePayload } from "./editorial-profile.js";
 import { CoreInvariantError } from "./errors.js";
+import { buildVisualBrief } from "./media-production.js";
 import { renderPlatformPublicationVariant } from "./platform-variant.js";
 
 const tenantId = "30000000-0000-4000-8000-000000000001";
@@ -67,6 +69,59 @@ function sourcePayload(profile: EditorialProfile = "guide"): PublicationVariantP
     factSnapshot: snapshot,
     contacts,
   });
+}
+
+function mediaReference(platform: Platform, suffix: number, role: "cover" | "inline" = "cover") {
+  const visualBrief = buildVisualBrief({
+    editorialProfile: "guide",
+    platform,
+    role,
+    facts: snapshot.facts,
+  });
+  const sha256 = suffix.toString(16).repeat(64).slice(0, 64);
+  return {
+    id: `30000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`,
+    sha256,
+    mimeType: "image/png",
+    byteLength: 256,
+    width: platform === "ctrip_community" ? 1200 : 1280,
+    height: platform === "ctrip_community" ? 900 : 720,
+    platform,
+    role,
+    altText: visualBrief.altText,
+    caption: visualBrief.caption,
+    factIds: [...visualBrief.factIds],
+    visualBrief,
+    visualBriefHash: sha256Canonical(visualBrief),
+    rights: {
+      basis: "generated_terms",
+      licenseName: "Fixture generation terms",
+      licenseUrl: "https://example.test/fixture-terms",
+      verifiedAt: "2026-07-14T00:00:00.000Z",
+    },
+    provenance: {
+      kind: "generated",
+      jobId: `31000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`,
+      attemptId: `32000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`,
+      provider: "fixture",
+      providerMode: "fixture",
+      model: "fixture-png-v1",
+      promptHash: sha256Text(visualBrief.prompt),
+      parametersHash: "d".repeat(64),
+      generatedAt: "2026-07-14T00:00:00.000Z",
+    },
+    inspection: {
+      assetSha256: sha256,
+      status: "passed",
+      evaluator: "fixture-inspector",
+      evaluatorMode: "fixture",
+      evaluatorVersion: "1.0.0",
+      responseSha256: "e".repeat(64),
+      inspectedAt: "2026-07-14T00:01:00.000Z",
+      ocrText: "",
+      labels: ["travel-service"],
+    },
+  } satisfies MediaReference;
 }
 
 describe("platform publication variant rendering", () => {
@@ -181,5 +236,50 @@ describe("platform publication variant rendering", () => {
         contacts,
       }),
     ).toThrowError(expect.objectContaining({ code: "PLATFORM_VARIANT_PROFILE_INVALID" }));
+  });
+
+  it("selects only exact-platform media and preserves multiple inline placements", () => {
+    const source = {
+      ...sourcePayload(),
+      media: [
+        mediaReference("toutiao", 1),
+        mediaReference("toutiao", 2, "inline"),
+        mediaReference("toutiao", 3, "inline"),
+        mediaReference("sohu", 4),
+        mediaReference("ctrip_community", 5),
+      ],
+    };
+
+    for (const platform of ["toutiao", "sohu", "ctrip_community"] as const) {
+      const variant = renderPlatformPublicationVariant({
+        sourcePayload: source,
+        platform,
+        policy: policy(),
+        factSnapshot: snapshot,
+        contacts,
+      });
+      expect(variant.media).toEqual(source.media.filter((item) => item.platform === platform));
+      expect(variant.media.every((item) => item.platform === platform)).toBe(true);
+      expect(Object.isFrozen(variant.media)).toBe(true);
+      expect(variant.media.every((item) => Object.isFrozen(item))).toBe(true);
+    }
+  });
+
+  it("rejects a media reference tampered after canonical source production", () => {
+    const reference = mediaReference("toutiao", 6);
+    const source = {
+      ...sourcePayload(),
+      media: [{ ...reference, altText: `${reference.altText} tampered` }],
+    };
+
+    expect(() =>
+      renderPlatformPublicationVariant({
+        sourcePayload: source,
+        platform: "toutiao",
+        policy: policy(),
+        factSnapshot: snapshot,
+        contacts,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "PLATFORM_VARIANT_SOURCE_INVALID" }));
   });
 });

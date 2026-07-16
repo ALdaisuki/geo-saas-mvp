@@ -12,6 +12,7 @@ import {
   type EvidenceSource,
   type GeoApi,
   type PublicationJob,
+  type PublicationAssistedHandoff,
   type PublicationReceipt,
   type PolicyBundle,
   type QuerySet,
@@ -54,6 +55,7 @@ export interface LiveDashboard {
   readonly content: ApiResource<readonly ContentItem[]>;
   readonly audits: ApiResource<readonly AuditArtifact[]>;
   readonly publicationJobs: ApiResource<readonly PublicationJob[]>;
+  readonly publicationAssistedHandoffs: ApiResource<readonly PublicationAssistedHandoff[]>;
   readonly receipts: ApiResource<readonly PublicationReceipt[]>;
   readonly visibility: ApiResource<readonly VisibilityProviderSummary[]>;
   readonly automation: ApiResource<AutomationSnapshot | null>;
@@ -83,6 +85,7 @@ export function createLoadingDashboard(): LiveDashboard {
     content: loading("GET /api/content", []),
     audits: loading("GET /api/audits", []),
     publicationJobs: loading("GET /api/publication-jobs", []),
+    publicationAssistedHandoffs: loading("GET /api/publication-assisted-handoffs", []),
     receipts: loading("GET /api/receipts", []),
     visibility: loading("GET /api/visibility/summary", []),
     automation: loading("GET /api/automation", null),
@@ -136,6 +139,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     api.getServicePrincipals(),
     api.getArticleTemplates(),
     api.getBrandAgentProfiles(),
+    api.getPublicationAssistedHandoffs(),
   ] as const);
 
   return {
@@ -159,6 +163,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     servicePrincipals: settled("GET /api/service-principals", results[17], []),
     articleTemplates: settled("GET /api/article-templates", results[18], null),
     brandAgentProfiles: settled("GET /api/brand-agent-profiles", results[19], []),
+    publicationAssistedHandoffs: settled("GET /api/publication-assisted-handoffs", results[20], []),
     loadedAt: new Date().toISOString(),
   };
 }

@@ -859,6 +859,61 @@ export interface PublicationReadbackView {
   readonly updatedAt: string;
 }
 
+export type PublicationAssistedHandoffState =
+  | "handoff_pending"
+  | "session_required"
+  | "challenge_required"
+  | "draft_prepared"
+  | "awaiting_operator_submit"
+  | "submitted_unconfirmed"
+  | "readback_pending"
+  | "confirmed"
+  | "needs_review"
+  | "cancelled"
+  | "expired"
+  | "failed";
+
+export interface PublicationAssistedHandoffView {
+  readonly id: string;
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly channelAccountId: string;
+  readonly variantId: string;
+  readonly platform: "ctrip_community";
+  readonly state: PublicationAssistedHandoffState;
+  readonly payloadHash: string;
+  readonly auditHash: string;
+  readonly previewHash: string;
+  readonly adapterVersion: string;
+  readonly leaseOwnerActorId: string | null;
+  readonly leaseExpiresAt: string | null;
+  readonly heartbeatAt: string | null;
+  readonly sessionEvidenceHash: string | null;
+  readonly draftEvidenceHash: string | null;
+  readonly submitEvidenceHash: string | null;
+  readonly submitPermitIssued: boolean;
+  readonly submitPermitExpiresAt: string | null;
+  readonly submitPermitConsumedAt: string | null;
+  readonly externalId: string | null;
+  readonly externalUrl: string | null;
+  readonly expiresAt: string;
+  readonly cancellationReason: string | null;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorMessage: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface PublicationAssistedHandoffLeaseInput {
+  readonly handoffId: string;
+  readonly leaseSeconds: number;
+}
+
+export interface CancelPublicationAssistedHandoffInput {
+  readonly handoffId: string;
+  readonly reason: string;
+}
+
 export interface VisibilityProviderSummary {
   readonly provider: "doubao" | "qwen";
   readonly productSurface: string;
@@ -1160,6 +1215,25 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
     context: RequestContext,
     jobId?: string,
   ): Promise<readonly PublicationReadbackView[]>;
+  listPublicationAssistedHandoffs(
+    context: RequestContext,
+  ): Promise<readonly PublicationAssistedHandoffView[]>;
+  getPublicationAssistedHandoff(
+    context: RequestContext,
+    handoffId: string,
+  ): Promise<PublicationAssistedHandoffView | null>;
+  claimPublicationAssistedHandoff(
+    context: RequestContext,
+    input: PublicationAssistedHandoffLeaseInput,
+  ): Promise<PublicationAssistedHandoffView>;
+  heartbeatPublicationAssistedHandoff(
+    context: RequestContext,
+    input: PublicationAssistedHandoffLeaseInput,
+  ): Promise<PublicationAssistedHandoffView>;
+  cancelPublicationAssistedHandoff(
+    context: RequestContext,
+    input: CancelPublicationAssistedHandoffInput,
+  ): Promise<{ readonly handoff: PublicationAssistedHandoffView; readonly wasChanged: boolean }>;
   findVisibilityRunByIdempotency(
     context: RequestContext,
     idempotencyKey: string,

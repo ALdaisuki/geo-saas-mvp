@@ -87,6 +87,11 @@ The API is tenant-scoped after login. `DATABASE_IDENTITY_URL` uses `geo_identity
 | `GET /api/receipts`                                             | `receipt:read`                       | Immutable publication receipts                                                                 |
 | `GET /api/receipts/:receiptId`                                  | `receipt:read`                       | Full receipt hashes, external references, and readback declaration                             |
 | `GET /api/readbacks`                                            | `receipt:read`                       | Tenant readback queue/history                                                                  |
+| `GET /api/publication-assisted-handoffs`                        | `content:read`                       | List tenant-scoped Ctrip assisted handoffs without permit or credential material               |
+| `GET /api/publication-assisted-handoffs/:handoffId`             | `content:read`                       | Read one tenant-scoped Ctrip assisted handoff and its evidence hashes                          |
+| `POST /api/publication-assisted-handoffs/:handoffId/claim`      | `publish:request` + CSRF             | Claim an eligible handoff for 30-300 seconds; defaults to a 120-second operator lease          |
+| `POST /api/publication-assisted-handoffs/:handoffId/heartbeat`  | `publish:request` + CSRF             | Renew only the current operator's unexpired lease for 30-300 seconds                           |
+| `POST /api/publication-assisted-handoffs/:handoffId/cancel`     | `publish:cancel` + CSRF              | Cancel an unconsumed pre-submit handoff with an audited reason                                 |
 | `POST /api/visibility-runs`                                     | `visibility:run`                     | Run fixture Doubao/Qwen samples only                                                           |
 | `POST /api/visibility-runs/import`                              | `visibility:run`                     | Import explicitly manual observations                                                          |
 | `GET /api/visibility-runs`                                      | `visibility:read`                    | Filter and paginate stored fixture/manual visibility runs                                      |
@@ -140,13 +145,40 @@ Publication governance is evaluated twice. The agent-side `pre_authorization` ac
 
 Queueing before expiry is not sufficient authorization to execute later. `geo.acquire_publication_execution` re-joins the consumed grant and passed audit artifact on every initial attempt and lease recovery, then rechecks both expiry timestamps plus grant/job/artifact tenant, variant, account, platform, payload hash and audit hash bindings. `authorization_expired` and `authorization_binding_mismatch` are terminal authorization failures: the worker does not call a connector, dead-letters the attempt, and moves the job to `needs_review` so a new audit/grant is required.
 
+## Ctrip assisted handoff control plane
+
+Migration `0017_ctrip_assisted_handoffs.sql` adds a tenant-RLS control plane for a
+future authenticated Ctrip publisher bridge. Every row is immutably bound to one
+job, attempt, account, variant, payload hash, audit hash, preview hash and reviewed
+adapter version. Its explicit state machine distinguishes `draft_prepared`,
+`awaiting_operator_submit`, `submitted_unconfirmed`, `readback_pending` and
+`confirmed`; only independent external readback may supply the external ID/URL and
+reach `confirmed`.
+
+The browser-facing API can list, inspect, claim, heartbeat and cancel handoffs. It
+cannot create a handoff, prepare a draft, issue or consume a submit permit, record a
+submit observation, or promote a row to confirmed. The raw one-time permit is
+returned only by the database security-definer function to the future bridge; only
+its SHA-256 hash is stored, it expires within five minutes, and consumption repeats
+the current operator-lease, audit, account-capability, Kill Switch, scoped-control
+and circuit checks. Claim and heartbeat perform the same governance recheck, and no
+lease or permit may outlive its handoff. The table is read-only to `geo_runtime`;
+security-definer functions own all writes. Cookies, authorization headers, QR/SMS
+values and raw screenshots are not persisted.
+
+This control plane is currently dormant in normal product flow. The publication API
+still rejects assisted requests before job creation and the Worker does not yet call
+`geo.create_publication_assisted_handoff`. No authenticated Ctrip bridge or
+independent public readback adapter is deployed, so these endpoints cannot by
+themselves publish or prove publication.
+
 ## Important absences
 
 - No email invitation, password reset, or member self-enrollment workflow. Tenant managers can create and update members through the authenticated API; a privileged one-shot owner bootstrap CLI remains for initial/recovery bootstrap.
 - No live Doubao/Qwen provider route; `/api/visibility-runs` is fixture by implementation.
 - No live image-generation provider. Media production defaults to disabled, and fixture output proves only pipeline integrity, not production image quality or external provider availability.
-- No Toutiao/Sohu/Ctrip public/partner API connector. `assisted` and `unattended` publication requests fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before governance evaluation, grant consumption, job creation, or outbox insertion.
-- `browser_assisted`, live publication, ambiguous-result reconciliation, and external platform readback are future capability models, not hidden or configuration-gated MVP paths. Current readback records only declare that dry-run Preview readback is not required.
+- No Toutiao/Sohu public/partner API connector and no authenticated Ctrip publisher bridge. `assisted` and `unattended` publication requests still fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before governance evaluation, grant consumption, job creation, outbox insertion, or handoff creation.
+- Ctrip `browser_assisted` now has connector and durable handoff contracts, but live publication, Worker handoff creation, browser-session operation, ambiguous-result reconciliation, and external platform readback remain undeployed capabilities. Current publication readback records still only declare that Dry-run Preview readback is not required.
 - The generated OpenAPI document is a route/security inventory, not yet a complete generated payload contract or a multi-version compatibility promise.
 
 These are product gaps, not hidden endpoints.

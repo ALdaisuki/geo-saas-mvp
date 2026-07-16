@@ -61,7 +61,8 @@ kept in an encrypted local profile or secret store and is never returned to GEO.
 
 ### API and database handoff
 
-A future migration introduces `publication_assisted_handoffs` with tenant RLS:
+Migration `0017_ctrip_assisted_handoffs.sql` implements
+`publication_assisted_handoffs` with tenant RLS:
 
 ```text
 id, tenant_id, job_id, attempt_id, channel_account_id, variant_id
@@ -168,11 +169,25 @@ current Ctrip limits until authenticated evidence confirms them.
   are injected.
 - Test wrong tenant/account, payload mutation, challenge and uncertain outcomes.
 
-### Increment 2: durable handoff
+### Increment 2: durable handoff control plane
 
-- Add the RLS table, state transitions, worker handoff creation and API views.
-- Add operator claim/heartbeat/cancel endpoints and a dense Publishing view.
-- Prove Kill Switch and cross-tenant denial on real PostgreSQL.
+Implemented:
+
+- RLS table, immutable request bindings and guarded state transitions;
+- database handoff creation and one-time submit-permit functions;
+- operator list/get/claim/heartbeat/cancel endpoints and Publishing queue;
+- real PostgreSQL coverage for Kill Switch denial, tenant isolation, lease ownership,
+  current-operator-only permit consumption, bounded expiry and consumed-but-unobserved
+  `uncertain` recovery.
+
+Still required before Increment 2 is operational:
+
+- wire the Worker to create a handoff after an authorized assisted attempt;
+- enable assisted publication requests only after that Worker path and its recovery
+  contract are verified.
+
+Until those items exist, the table and API are a dormant control plane and cannot
+cause a Ctrip network write.
 
 ### Increment 3: authenticated canary adapter
 

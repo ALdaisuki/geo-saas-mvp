@@ -43,6 +43,7 @@ import {
   type PersistAuditInput,
   type PublicationGovernanceAuditInput,
   type PublicationGovernanceContext,
+  type PublicationAssistedHandoffView,
   type PublicationJobView,
   type PublicationRequestInput,
   type RequestContext,
@@ -70,6 +71,7 @@ const ids = {
   automationBatch: "10000000-0000-4000-8000-000000000711",
   automationRun: "10000000-0000-4000-8000-000000000712",
   automationTarget: "10000000-0000-4000-8000-000000000713",
+  assistedHandoff: "10000000-0000-4000-8000-000000000714",
   policy: "10000000-0000-4000-8000-000000000801",
   brand: "10000000-0000-4000-8000-000000000901",
 };
@@ -184,6 +186,15 @@ class FakeRepository implements ApiRepository {
     [];
   readonly publicationRevocations: Parameters<ApiRepository["revokePublicationGrant"]>[1][] = [];
   readonly publicationCancellations: Parameters<ApiRepository["cancelPublicationJob"]>[1][] = [];
+  readonly assistedHandoffClaims: Parameters<
+    ApiRepository["claimPublicationAssistedHandoff"]
+  >[1][] = [];
+  readonly assistedHandoffHeartbeats: Parameters<
+    ApiRepository["heartbeatPublicationAssistedHandoff"]
+  >[1][] = [];
+  readonly assistedHandoffCancellations: Parameters<
+    ApiRepository["cancelPublicationAssistedHandoff"]
+  >[1][] = [];
   readonly governanceDecisions: PublicationGovernanceAuditInput[] = [];
   readonly manualPublicationPackageExports: RecordManualPublicationPackageExportInput[] = [];
   readonly evidenceSourceInputs: Parameters<ApiRepository["createEvidenceSource"]>[1][] = [];
@@ -255,6 +266,8 @@ class FakeRepository implements ApiRepository {
   auditPolicyHash = travelPolicyHash;
   auditPolicyDocument: unknown = travelPolicyDocument;
   publicationJobState: PublicationJobView["state"] = "queued";
+  assistedHandoffState: PublicationAssistedHandoffView["state"] = "handoff_pending";
+  assistedHandoffLeaseOwner: string | null = null;
   publicationRequestError: (Error & { code?: string }) | null = null;
   publicationReplayResult: Awaited<ReturnType<ApiRepository["resolvePublicationReplay"]>> = null;
   automationBatchState: AutomationBatchView["state"] = "scheduled";
@@ -1659,6 +1672,41 @@ class FakeRepository implements ApiRepository {
     return jobId === undefined || jobId === readback.jobId ? [readback] : [];
   }
 
+  async listPublicationAssistedHandoffs() {
+    return [this.publicationAssistedHandoff()];
+  }
+
+  async getPublicationAssistedHandoff(_context: RequestContext, handoffId: string) {
+    return handoffId === ids.assistedHandoff ? this.publicationAssistedHandoff() : null;
+  }
+
+  async claimPublicationAssistedHandoff(
+    context: RequestContext,
+    input: Parameters<ApiRepository["claimPublicationAssistedHandoff"]>[1],
+  ) {
+    this.assistedHandoffClaims.push(input);
+    this.assistedHandoffLeaseOwner = context.actorId;
+    return this.publicationAssistedHandoff();
+  }
+
+  async heartbeatPublicationAssistedHandoff(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["heartbeatPublicationAssistedHandoff"]>[1],
+  ) {
+    this.assistedHandoffHeartbeats.push(input);
+    return this.publicationAssistedHandoff();
+  }
+
+  async cancelPublicationAssistedHandoff(
+    _context: RequestContext,
+    input: Parameters<ApiRepository["cancelPublicationAssistedHandoff"]>[1],
+  ) {
+    this.assistedHandoffCancellations.push(input);
+    this.assistedHandoffState = "cancelled";
+    this.assistedHandoffLeaseOwner = null;
+    return { handoff: this.publicationAssistedHandoff(), wasChanged: true };
+  }
+
   private publicationJob(): PublicationJobView {
     return {
       id: "10000000-0000-4000-8000-000000000991",
@@ -1695,6 +1743,40 @@ class FakeRepository implements ApiRepository {
       confirmed: false,
       payload: { readback: { required: false, reason: "dry_run_preview_only" } },
       recordedAt: fixedNow.toISOString(),
+    };
+  }
+
+  private publicationAssistedHandoff(): PublicationAssistedHandoffView {
+    return {
+      id: ids.assistedHandoff,
+      jobId: this.publicationJob().id,
+      attemptId: "10000000-0000-4000-8000-000000000993",
+      channelAccountId: ids.account,
+      variantId: ids.variant,
+      platform: "ctrip_community",
+      state: this.assistedHandoffState,
+      payloadHash: "a".repeat(64),
+      auditHash: "d".repeat(64),
+      previewHash: "e".repeat(64),
+      adapterVersion: "ctrip-community-web-v1",
+      leaseOwnerActorId: this.assistedHandoffLeaseOwner,
+      leaseExpiresAt: this.assistedHandoffLeaseOwner === null ? null : "2026-07-14T01:02:00.000Z",
+      heartbeatAt: this.assistedHandoffLeaseOwner === null ? null : fixedNow.toISOString(),
+      sessionEvidenceHash: null,
+      draftEvidenceHash: null,
+      submitEvidenceHash: null,
+      submitPermitIssued: false,
+      submitPermitExpiresAt: null,
+      submitPermitConsumedAt: null,
+      externalId: null,
+      externalUrl: null,
+      expiresAt: "2026-07-14T01:30:00.000Z",
+      cancellationReason:
+        this.assistedHandoffState === "cancelled" ? "operator cancelled handoff" : null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
     };
   }
 
@@ -3672,6 +3754,96 @@ describe("Fastify API security and vertical publication flow", () => {
         },
       ],
     });
+  });
+
+  it("exposes tenant assisted handoffs without permit material and audits operator leases", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const readHeaders = { cookie: authenticated.cookie };
+    const writeHeaders = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/publication-assisted-handoffs",
+      headers: readHeaders,
+    });
+    const missingCsrf = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/claim`,
+      headers: readHeaders,
+      payload: { leaseSeconds: 120 },
+    });
+    const claimed = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/claim`,
+      headers: writeHeaders,
+      payload: { leaseSeconds: 120 },
+    });
+    const heartbeat = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/heartbeat`,
+      headers: writeHeaders,
+      payload: { leaseSeconds: 180 },
+    });
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/cancel`,
+      headers: writeHeaders,
+      payload: { reason: "Operator cancelled before any submit permit was consumed" },
+    });
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}`,
+      headers: readHeaders,
+    });
+
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toMatchObject({
+      items: [
+        {
+          id: ids.assistedHandoff,
+          platform: "ctrip_community",
+          state: "handoff_pending",
+          submitPermitIssued: false,
+          externalId: null,
+          externalUrl: null,
+        },
+      ],
+    });
+    expect(JSON.stringify(list.json())).not.toContain("submitPermitHash");
+    expect(JSON.stringify(list.json())).not.toContain("submit_permit");
+    expect(missingCsrf.statusCode).toBe(403);
+    expect(claimed.statusCode).toBe(200);
+    expect(claimed.json()).toMatchObject({
+      handoff: { leaseOwnerActorId: ids.actor, state: "handoff_pending" },
+    });
+    expect(heartbeat.statusCode).toBe(200);
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({
+      handoff: { state: "cancelled", leaseOwnerActorId: null },
+      wasChanged: true,
+    });
+    expect(detail.json()).toMatchObject({
+      id: ids.assistedHandoff,
+      state: "cancelled",
+      cancellationReason: "operator cancelled handoff",
+    });
+    expect(repository.assistedHandoffClaims).toEqual([
+      { handoffId: ids.assistedHandoff, leaseSeconds: 120 },
+    ]);
+    expect(repository.assistedHandoffHeartbeats).toEqual([
+      { handoffId: ids.assistedHandoff, leaseSeconds: 180 },
+    ]);
+    expect(repository.assistedHandoffCancellations).toEqual([
+      {
+        handoffId: ids.assistedHandoff,
+        reason: "Operator cancelled before any submit permit was consumed",
+      },
+    ]);
   });
 
   it("rejects publication schedules outside the bounded window before governance evaluation", async () => {

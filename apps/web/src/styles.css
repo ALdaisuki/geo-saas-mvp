@@ -1616,6 +1616,43 @@ tbody tr:hover td {
   font-size: 8px;
 }
 
+.handoff-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.handoff-cancel-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--border);
+}
+
+.handoff-cancel-form > label {
+  display: grid;
+  flex: 1 1 260px;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.handoff-cancel-form input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font: inherit;
+}
+
 .policy-strip {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }

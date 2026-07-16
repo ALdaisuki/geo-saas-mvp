@@ -423,6 +423,13 @@ function stateLabel(state: string): string {
     retry_wait: "等待重试",
     uncertain: "结果不确定",
     reconciling: "核对中",
+    handoff_pending: "待交接",
+    session_required: "需登录",
+    challenge_required: "需人工验证",
+    draft_prepared: "草稿已准备",
+    awaiting_operator_submit: "等待最终提交",
+    submitted_unconfirmed: "已提交待确认",
+    readback_pending: "等待公开回读",
     confirmed: "已确认",
     needs_review: "需复核",
     permanent_failure: "永久失败",
@@ -1543,6 +1550,7 @@ function PublishingView({
   mode,
   api,
   tenantId,
+  actorId,
   capabilities,
   accounts,
   rows,
@@ -1551,10 +1559,12 @@ function PublishingView({
   killSwitchWritable,
   killSwitchPending,
   onToggleKillSwitch,
+  onChanged,
 }: {
   mode: ConsoleMode;
   api: GeoApi;
   tenantId: string;
+  actorId: string | null;
   capabilities: readonly string[];
   accounts: AccountRow[];
   rows: PublicationRow[];
@@ -1563,13 +1573,44 @@ function PublishingView({
   killSwitchWritable: boolean;
   killSwitchPending: boolean;
   onToggleKillSwitch: () => void;
+  onChanged: () => void;
 }) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [cancelledJobs, setCancelledJobs] = useState<ReadonlySet<string>>(new Set());
+  const [handoffBusyId, setHandoffBusyId] = useState<string | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [cancelHandoffId, setCancelHandoffId] = useState<string | null>(null);
+  const [cancelHandoffReason, setCancelHandoffReason] = useState("");
   useEffect(() => {
     setSelectedJobId(null);
     setCancelledJobs(new Set());
+    setHandoffBusyId(null);
+    setHandoffError(null);
+    setCancelHandoffId(null);
+    setCancelHandoffReason("");
   }, [tenantId]);
+  async function runHandoffAction(handoffId: string, action: "claim" | "heartbeat" | "cancel") {
+    setHandoffBusyId(handoffId);
+    setHandoffError(null);
+    try {
+      if (action === "claim") {
+        await api.claimPublicationAssistedHandoff(handoffId);
+      } else if (action === "heartbeat") {
+        await api.heartbeatPublicationAssistedHandoff(handoffId);
+      } else {
+        await api.cancelPublicationAssistedHandoff(handoffId, cancelHandoffReason);
+        setCancelHandoffId(null);
+        setCancelHandoffReason("");
+      }
+      onChanged();
+    } catch (error) {
+      setHandoffError(
+        error instanceof GeoApiError ? `${error.code}: ${error.message}` : "携程交接操作失败",
+      );
+    } finally {
+      setHandoffBusyId(null);
+    }
+  }
   return (
     <div className="view-stack">
       {mode === "live" ? (
@@ -1712,6 +1753,194 @@ function PublishingView({
             setCancelledJobs((current) => new Set([...current, job.id]));
           }}
         />
+      ) : null}
+      {mode === "live" ? (
+        <section className="panel">
+          <PanelHeading title="携程人工交接" meta="实时 assisted handoff" />
+          <ResourceState
+            resource={dashboard.publicationAssistedHandoffs}
+            empty={dashboard.publicationAssistedHandoffs.data.length === 0}
+            emptyLabel="暂无携程交接单"
+          />
+          {handoffError === null ? null : (
+            <div className="ops-inline-error" role="alert">
+              <AlertTriangle size={16} />
+              <span>{handoffError}</span>
+            </div>
+          )}
+          {dashboard.publicationAssistedHandoffs.data.length === 0 ? null : (
+            <div className="table-scroll">
+              <table className="publishing-table">
+                <thead>
+                  <tr>
+                    <th>交接单 / 作业</th>
+                    <th>状态</th>
+                    <th>适配器</th>
+                    <th>租约</th>
+                    <th>截止时间</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboard.publicationAssistedHandoffs.data.map((handoff) => {
+                    const leaseExpiry =
+                      handoff.leaseExpiresAt === null
+                        ? Number.NaN
+                        : Date.parse(handoff.leaseExpiresAt);
+                    const leaseActive = Number.isFinite(leaseExpiry) && leaseExpiry > Date.now();
+                    const owned =
+                      leaseActive && actorId !== null && handoff.leaseOwnerActorId === actorId;
+                    const terminal = [
+                      "submitted_unconfirmed",
+                      "readback_pending",
+                      "confirmed",
+                      "needs_review",
+                      "cancelled",
+                      "expired",
+                      "failed",
+                    ].includes(handoff.state);
+                    return (
+                      <tr key={handoff.id}>
+                        <td>
+                          <div className="primary-cell">
+                            <strong>{shortId(handoff.id)}</strong>
+                            <span>{shortId(handoff.jobId)}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <StatusBadge
+                            tone={
+                              handoff.state === "cancelled" || handoff.state === "failed"
+                                ? "danger"
+                                : handoff.state === "draft_prepared"
+                                  ? "success"
+                                  : "warning"
+                            }
+                          >
+                            {stateLabel(handoff.state)}
+                          </StatusBadge>
+                        </td>
+                        <td className="mono">{handoff.adapterVersion}</td>
+                        <td>
+                          {owned
+                            ? "当前操作员"
+                            : !leaseActive || handoff.leaseOwnerActorId === null
+                              ? "未认领"
+                              : "其他操作员"}
+                        </td>
+                        <td>{formatDateTime(handoff.expiresAt)}</td>
+                        <td>
+                          <div className="handoff-actions">
+                            {owned ? (
+                              <button
+                                className="icon-button"
+                                title="续期交接租约"
+                                aria-label={`续期交接单 ${handoff.id}`}
+                                disabled={handoffBusyId !== null || terminal}
+                                onClick={() => void runHandoffAction(handoff.id, "heartbeat")}
+                              >
+                                {handoffBusyId === handoff.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <RefreshCw size={16} />
+                                )}
+                              </button>
+                            ) : (
+                              <button
+                                className="icon-button"
+                                title="认领交接单"
+                                aria-label={`认领交接单 ${handoff.id}`}
+                                disabled={
+                                  handoffBusyId !== null ||
+                                  terminal ||
+                                  !capabilities.includes("publish:request")
+                                }
+                                onClick={() => void runHandoffAction(handoff.id, "claim")}
+                              >
+                                {handoffBusyId === handoff.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <CheckCircle2 size={16} />
+                                )}
+                              </button>
+                            )}
+                            <button
+                              className="icon-button"
+                              title="取消交接单"
+                              aria-label={`取消交接单 ${handoff.id}`}
+                              disabled={
+                                handoffBusyId !== null ||
+                                terminal ||
+                                !capabilities.includes("publish:cancel")
+                              }
+                              onClick={() => {
+                                setCancelHandoffId(handoff.id);
+                                setCancelHandoffReason("");
+                              }}
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {cancelHandoffId === null ? null : (
+            <form
+              className="handoff-cancel-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (cancelHandoffReason.trim().length >= 5) {
+                  void runHandoffAction(cancelHandoffId, "cancel");
+                }
+              }}
+            >
+              <label>
+                取消原因
+                <input
+                  value={cancelHandoffReason}
+                  minLength={5}
+                  maxLength={1000}
+                  required
+                  autoFocus
+                  onChange={(event) => setCancelHandoffReason(event.target.value)}
+                />
+              </label>
+              <div className="ops-form-actions">
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => {
+                    setCancelHandoffId(null);
+                    setCancelHandoffReason("");
+                  }}
+                >
+                  返回
+                </button>
+                <button
+                  type="submit"
+                  className="button-danger"
+                  disabled={handoffBusyId !== null || cancelHandoffReason.trim().length < 5}
+                >
+                  {handoffBusyId === cancelHandoffId ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : (
+                    <X size={16} />
+                  )}
+                  确认取消
+                </button>
+              </div>
+            </form>
+          )}
+          <SourceCaption
+            endpoint="GET /api/publication-assisted-handoffs"
+            loadedAt={dashboard.loadedAt}
+          />
+        </section>
       ) : null}
       <section className="policy-strip">
         <div>
@@ -4067,6 +4296,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                   mode={mode}
                   api={api}
                   tenantId={currentTenantId}
+                  actorId={session?.actor.id ?? null}
                   capabilities={session?.actor.capabilities ?? []}
                   accounts={accountRows}
                   rows={publicationRows}
@@ -4078,6 +4308,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
                     if (mode === "demo") setDemoKillSwitch((value) => !value);
                     else if (killSwitch !== null) setKillSwitchIntent(!killSwitch);
                   }}
+                  onChanged={() => setRefreshVersion((version) => version + 1)}
                 />
               }
             />

@@ -46,6 +46,8 @@ GRANT SELECT, INSERT ON geo.media_generation_attempts, geo.media_assets,
 REVOKE ALL ON TABLE geo.publication_readbacks FROM geo_runtime;
 GRANT SELECT ON geo.publication_readbacks TO geo_runtime;
 GRANT UPDATE (status, completed_at, last_error) ON geo.publication_readbacks TO geo_runtime;
+REVOKE ALL ON TABLE geo.publication_assisted_handoffs FROM geo_runtime;
+GRANT SELECT ON geo.publication_assisted_handoffs TO geo_runtime;
 
 GRANT EXECUTE ON FUNCTION geo.current_tenant_id() TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.current_actor_id() TO geo_runtime;
@@ -74,6 +76,20 @@ GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, te
 GRANT EXECUTE ON FUNCTION geo.list_tenant_member_identities() TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.research_allowed_hosts_valid(text[]) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.publication_assisted_block_reason(uuid) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(
+  uuid, uuid, uuid, geo.sha256_hex, text, text, timestamptz
+) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_publication_assisted_handoff(uuid, integer) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.heartbeat_publication_assisted_handoff(uuid, integer)
+  TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(
+  uuid, geo.sha256_hex, geo.sha256_hex
+) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.issue_publication_assisted_submit_permit(uuid) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)
+  TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.cancel_publication_assisted_handoff(uuid, text) TO geo_runtime;
 
 GRANT EXECUTE ON FUNCTION geo.claim_outbox_events(text, integer, integer) TO geo_dispatcher;
 GRANT EXECUTE ON FUNCTION geo.ack_outbox_event(uuid, text) TO geo_dispatcher;
@@ -98,6 +114,18 @@ BEGIN
      OR NOT has_table_privilege('geo_runtime', 'geo.publication_readbacks', 'SELECT')
      OR NOT has_column_privilege('geo_runtime', 'geo.publication_readbacks', 'status', 'UPDATE')
      OR has_table_privilege('geo_runtime', 'geo.publication_readbacks', 'INSERT')
+     OR NOT has_table_privilege(
+       'geo_runtime', 'geo.publication_assisted_handoffs', 'SELECT'
+     )
+     OR has_table_privilege(
+       'geo_runtime', 'geo.publication_assisted_handoffs', 'INSERT'
+     )
+     OR has_table_privilege(
+       'geo_runtime', 'geo.publication_assisted_handoffs', 'UPDATE'
+     )
+     OR has_table_privilege(
+       'geo_runtime', 'geo.publication_assisted_handoffs', 'DELETE'
+     )
      OR has_table_privilege('geo_runtime', 'geo.tenant_provisioning_receipts', 'SELECT')
      OR NOT has_table_privilege('geo_runtime', 'geo.automation_runs', 'SELECT')
      OR NOT has_table_privilege('geo_runtime', 'geo.automation_runs', 'INSERT')
@@ -147,6 +175,16 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime', 'geo.research_allowed_hosts_valid(text[])', 'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.create_publication_assisted_handoff(uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.consume_publication_assisted_submit_permit(uuid,text)',
+       'EXECUTE'
      )
      OR NOT has_function_privilege(
        'geo_runtime',

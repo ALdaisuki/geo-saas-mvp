@@ -512,6 +512,10 @@ const publicationCommandSchema = z.object({
   reason: z.string().trim().min(5).max(1_000),
 });
 
+const publicationAssistedHandoffLeaseSchema = z.strictObject({
+  leaseSeconds: z.number().int().min(30).max(300).default(120),
+});
+
 const visibilityRunSchema = z.object({
   querySetVersionId: idSchema,
   provider: z.enum(["doubao", "qwen"]),
@@ -2593,6 +2597,65 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get("/api/readbacks", { preHandler: guard("receipt:read") }, async (request) => ({
     items: await repository.listPublicationReadbacks(requestContext(request)),
   }));
+  app.get(
+    "/api/publication-assisted-handoffs",
+    { preHandler: guard("content:read") },
+    async (request) => ({
+      items: await repository.listPublicationAssistedHandoffs(requestContext(request)),
+    }),
+  );
+  app.get(
+    "/api/publication-assisted-handoffs/:handoffId",
+    { preHandler: guard("content:read") },
+    async (request) => {
+      const handoff = await repository.getPublicationAssistedHandoff(
+        requestContext(request),
+        parseIdParams(request.params, "handoffId"),
+      );
+      if (handoff === null) {
+        throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+      }
+      return handoff;
+    },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/claim",
+    { preHandler: guard("publish:request", true) },
+    async (request) => {
+      const body = publicationAssistedHandoffLeaseSchema.parse(request.body);
+      return {
+        handoff: await repository.claimPublicationAssistedHandoff(requestContext(request), {
+          handoffId: parseIdParams(request.params, "handoffId"),
+          leaseSeconds: body.leaseSeconds,
+        }),
+      };
+    },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/heartbeat",
+    { preHandler: guard("publish:request", true) },
+    async (request) => {
+      const body = publicationAssistedHandoffLeaseSchema.parse(request.body);
+      return {
+        handoff: await repository.heartbeatPublicationAssistedHandoff(requestContext(request), {
+          handoffId: parseIdParams(request.params, "handoffId"),
+          leaseSeconds: body.leaseSeconds,
+        }),
+      };
+    },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/cancel",
+    { preHandler: guard("publish:cancel", true) },
+    async (request) => {
+      const handoffId = parseIdParams(request.params, "handoffId");
+      const body = publicationCommandSchema.parse(request.body);
+      return repository.cancelPublicationAssistedHandoff(requestContext(request), {
+        handoffId,
+        reason: body.reason,
+      });
+    },
+  );
   app.post(
     "/api/visibility-runs",
     { preHandler: guard("visibility:run", true) },

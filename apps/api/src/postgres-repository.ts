@@ -52,6 +52,7 @@ import {
   type PersistAuditResult,
   type PersistVisibilityRunInput,
   type PublicationAttemptView,
+  type PublicationAssistedHandoffView,
   type PublicationGovernanceContext,
   type PublicationJobView,
   type PublicationReadbackView,
@@ -486,6 +487,72 @@ function publicationReceiptView(row: PublicationReceiptRow): PublicationReceiptV
   };
 }
 
+interface PublicationAssistedHandoffRow {
+  readonly id: string;
+  readonly job_id: string;
+  readonly attempt_id: string;
+  readonly channel_account_id: string;
+  readonly variant_id: string;
+  readonly platform: "ctrip_community";
+  readonly state: PublicationAssistedHandoffView["state"];
+  readonly payload_hash: string;
+  readonly audit_hash: string;
+  readonly preview_hash: string;
+  readonly adapter_version: string;
+  readonly lease_owner_actor_id: string | null;
+  readonly lease_expires_at: Date | null;
+  readonly heartbeat_at: Date | null;
+  readonly session_evidence_hash: string | null;
+  readonly draft_evidence_hash: string | null;
+  readonly submit_evidence_hash: string | null;
+  readonly submit_permit_issued: boolean;
+  readonly submit_permit_expires_at: Date | null;
+  readonly submit_permit_consumed_at: Date | null;
+  readonly external_id: string | null;
+  readonly external_url: string | null;
+  readonly expires_at: Date;
+  readonly cancellation_reason: string | null;
+  readonly last_error_code: string | null;
+  readonly last_error_message: string | null;
+  readonly created_at: Date;
+  readonly updated_at: Date;
+}
+
+function publicationAssistedHandoffView(
+  row: PublicationAssistedHandoffRow,
+): PublicationAssistedHandoffView {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    attemptId: row.attempt_id,
+    channelAccountId: row.channel_account_id,
+    variantId: row.variant_id,
+    platform: row.platform,
+    state: row.state,
+    payloadHash: row.payload_hash,
+    auditHash: row.audit_hash,
+    previewHash: row.preview_hash,
+    adapterVersion: row.adapter_version,
+    leaseOwnerActorId: row.lease_owner_actor_id,
+    leaseExpiresAt: toNullableIso(row.lease_expires_at),
+    heartbeatAt: toNullableIso(row.heartbeat_at),
+    sessionEvidenceHash: row.session_evidence_hash,
+    draftEvidenceHash: row.draft_evidence_hash,
+    submitEvidenceHash: row.submit_evidence_hash,
+    submitPermitIssued: row.submit_permit_issued,
+    submitPermitExpiresAt: toNullableIso(row.submit_permit_expires_at),
+    submitPermitConsumedAt: toNullableIso(row.submit_permit_consumed_at),
+    externalId: row.external_id,
+    externalUrl: row.external_url,
+    expiresAt: toIso(row.expires_at),
+    cancellationReason: row.cancellation_reason,
+    lastErrorCode: row.last_error_code,
+    lastErrorMessage: row.last_error_message,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
 interface LoginIdentityRow {
   readonly user_id: string;
   readonly email: string;
@@ -771,6 +838,31 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
     `.execute(transaction);
     const row = result.rows[0];
     return row === undefined ? null : publicationJobView(row);
+  }
+
+  async function selectPublicationAssistedHandoff(
+    transaction: TenantTransaction,
+    handoffId: string,
+  ): Promise<PublicationAssistedHandoffView | null> {
+    const result = await sql<PublicationAssistedHandoffRow>`
+      select handoff.id, handoff.job_id, handoff.attempt_id,
+             handoff.channel_account_id, handoff.variant_id, handoff.platform,
+             handoff.state, handoff.payload_hash, handoff.audit_hash,
+             handoff.preview_hash, handoff.adapter_version,
+             handoff.lease_owner_actor_id, handoff.lease_expires_at,
+             handoff.heartbeat_at, handoff.session_evidence_hash,
+             handoff.draft_evidence_hash, handoff.submit_evidence_hash,
+             (handoff.submit_permit_hash is not null) as submit_permit_issued,
+             handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
+             handoff.external_id, handoff.external_url, handoff.expires_at,
+             handoff.cancellation_reason, handoff.last_error_code,
+             handoff.last_error_message, handoff.created_at, handoff.updated_at
+      from geo.publication_assisted_handoffs as handoff
+      where handoff.id = ${handoffId}::uuid
+      limit 1
+    `.execute(transaction);
+    const row = result.rows[0];
+    return row === undefined ? null : publicationAssistedHandoffView(row);
   }
 
   return {
@@ -4040,6 +4132,134 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           createdAt: toIso(row.created_at),
           updatedAt: toIso(row.updated_at),
         }));
+      });
+    },
+
+    async listPublicationAssistedHandoffs(
+      context: RequestContext,
+    ): Promise<readonly PublicationAssistedHandoffView[]> {
+      return tenant(context, async (transaction) => {
+        const result = await sql<PublicationAssistedHandoffRow>`
+          select handoff.id, handoff.job_id, handoff.attempt_id,
+                 handoff.channel_account_id, handoff.variant_id, handoff.platform,
+                 handoff.state, handoff.payload_hash, handoff.audit_hash,
+                 handoff.preview_hash, handoff.adapter_version,
+                 handoff.lease_owner_actor_id, handoff.lease_expires_at,
+                 handoff.heartbeat_at, handoff.session_evidence_hash,
+                 handoff.draft_evidence_hash, handoff.submit_evidence_hash,
+                 (handoff.submit_permit_hash is not null) as submit_permit_issued,
+                 handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
+                 handoff.external_id, handoff.external_url, handoff.expires_at,
+                 handoff.cancellation_reason, handoff.last_error_code,
+                 handoff.last_error_message, handoff.created_at, handoff.updated_at
+          from geo.publication_assisted_handoffs as handoff
+          order by handoff.created_at desc, handoff.id
+          limit 200
+        `.execute(transaction);
+        return result.rows.map(publicationAssistedHandoffView);
+      });
+    },
+
+    async getPublicationAssistedHandoff(context, handoffId) {
+      return tenant(context, (transaction) =>
+        selectPublicationAssistedHandoff(transaction, handoffId),
+      );
+    },
+
+    async claimPublicationAssistedHandoff(context, input) {
+      return tenant(context, async (transaction) => {
+        try {
+          await sql`
+            select geo.claim_publication_assisted_handoff(
+              ${input.handoffId}::uuid,
+              ${input.leaseSeconds}::integer
+            )
+          `.execute(transaction);
+        } catch (error) {
+          if (sqlState(error) === "P0002") {
+            throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+          }
+          if (
+            sqlState(error) === "42501" ||
+            sqlState(error) === "55006" ||
+            sqlState(error) === "55000"
+          ) {
+            throw new RepositoryConflictError("Publication assisted handoff cannot be claimed");
+          }
+          throw error;
+        }
+        const handoff = await selectPublicationAssistedHandoff(transaction, input.handoffId);
+        if (handoff === null) {
+          throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+        }
+        return handoff;
+      });
+    },
+
+    async heartbeatPublicationAssistedHandoff(context, input) {
+      return tenant(context, async (transaction) => {
+        try {
+          await sql`
+            select geo.heartbeat_publication_assisted_handoff(
+              ${input.handoffId}::uuid,
+              ${input.leaseSeconds}::integer
+            )
+          `.execute(transaction);
+        } catch (error) {
+          if (sqlState(error) === "P0002") {
+            throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+          }
+          if (
+            sqlState(error) === "42501" ||
+            sqlState(error) === "55006" ||
+            sqlState(error) === "55000"
+          ) {
+            throw new RepositoryConflictError(
+              "Publication assisted handoff heartbeat was rejected",
+            );
+          }
+          throw error;
+        }
+        const handoff = await selectPublicationAssistedHandoff(transaction, input.handoffId);
+        if (handoff === null) {
+          throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+        }
+        return handoff;
+      });
+    },
+
+    async cancelPublicationAssistedHandoff(context, input) {
+      return tenant(context, async (transaction) => {
+        let wasChanged: boolean;
+        try {
+          const result = await sql<{ value: boolean }>`
+            select geo.cancel_publication_assisted_handoff(
+              ${input.handoffId}::uuid,
+              ${input.reason}
+            ) as value
+          `.execute(transaction);
+          const row = result.rows[0];
+          if (row === undefined) {
+            throw new RepositoryConflictError(
+              "Publication assisted handoff cancellation returned no state",
+            );
+          }
+          wasChanged = row.value;
+        } catch (error) {
+          if (error instanceof RepositoryConflictError) throw error;
+          if (sqlState(error) === "P0002") {
+            throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+          }
+          if (sqlState(error) === "55006" || sqlState(error) === "55000") {
+            throw new RepositoryConflictError("Publication assisted handoff cannot be cancelled");
+          }
+          throw error;
+        }
+        const handoff = await selectPublicationAssistedHandoff(transaction, input.handoffId);
+        if (handoff === null) {
+          throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+        }
+        return { handoff, wasChanged };
       });
     },
 

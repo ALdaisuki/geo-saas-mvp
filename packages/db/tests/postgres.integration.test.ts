@@ -142,6 +142,17 @@ const ids = {
   mediaReplayJob: "30000000-0000-4000-8000-000000000094",
   mediaVariant: "30000000-0000-4000-8000-000000000095",
   mediaTamperedVariant: "30000000-0000-4000-8000-000000000096",
+  ctripAssistedVariant: "30000000-0000-4000-8000-000000000097",
+  ctripAssistedAuditRun: "30000000-0000-4000-8000-000000000098",
+  ctripAssistedAuditArtifact: "30000000-0000-4000-8000-000000000099",
+  ctripAssistedGrant: "30000000-0000-4000-8000-000000000100",
+  ctripAssistedJob: "30000000-0000-4000-8000-000000000101",
+  ctripAssistedAttempt: "30000000-0000-4000-8000-000000000102",
+  ctripAssistedHandoff: "30000000-0000-4000-8000-000000000103",
+  ctripAssistedCampaign: "30000000-0000-4000-8000-000000000104",
+  ctripAssistedContentItem: "30000000-0000-4000-8000-000000000105",
+  ctripAssistedContentVersion: "30000000-0000-4000-8000-000000000106",
+  ctripAssistedOtherActor: "30000000-0000-4000-8000-000000000107",
 };
 
 const payloadHash = "a".repeat(64);
@@ -906,6 +917,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0014_media_production_governance",
       "0015_tenant_member_identity_reader",
       "0016_brand_agent_profiles",
+      "0017_ctrip_assisted_handoffs",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2274,6 +2286,364 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     } finally {
       await database.destroy();
     }
+  });
+
+  it("isolates leased Ctrip handoffs and consumes one permit only after fresh governance", async () => {
+    if (adminClient === undefined) {
+      throw new Error("PostgreSQL test client is not initialized");
+    }
+    const assistedRequestHash = "4".repeat(64);
+    const previewHash = "5".repeat(64);
+    const sessionEvidenceHash = "6".repeat(64);
+    const draftEvidenceHash = "7".repeat(64);
+    const ctripAuditHash = "3".repeat(64);
+
+    await adminClient.query("BEGIN");
+    try {
+      await adminClient.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.actor_id', $2, true)",
+        [tenantId, actorId],
+      );
+      await adminClient.query(
+        `UPDATE geo.channel_accounts
+         SET capability = 'browser_assisted',
+             supported_execution_levels = ARRAY['dry_run', 'assisted']::text[],
+             capability_evidence_type = 'browser_screenshot',
+             capability_evidence_refs = '["evidence://ctrip/authorized-review"]'::jsonb,
+             status = 'active',
+             last_verified_at = clock_timestamp()
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, SEED_IDS.zhongtong.ctrip],
+      );
+      await adminClient.query(
+        `UPDATE geo.automation_controls
+         SET mode = 'supervised', kill_switch_enabled = false
+         WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+        [tenantId],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.campaigns
+           (tenant_id, id, brand_id, name, objective, industry, topic_key)
+         VALUES ($1, $2, $3, 'Ctrip assisted handoff',
+                 'Verify supervised handoff governance', 'travel',
+                 'ctrip-assisted-handoff')`,
+        [tenantId, ids.ctripAssistedCampaign, SEED_IDS.zhongtong.brand],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.content_items
+           (tenant_id, id, campaign_id, brand_id, title, content_type, state, topic_key)
+         VALUES ($1, $2, $3, $4, 'Ctrip assisted article', 'evidence',
+                 'audited', 'ctrip-assisted-handoff')`,
+        [
+          tenantId,
+          ids.ctripAssistedContentItem,
+          ids.ctripAssistedCampaign,
+          SEED_IDS.zhongtong.brand,
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.content_versions
+           (tenant_id, id, content_item_id, version, summary, body_markdown,
+            payload, payload_hash, created_by_actor_id, frozen_at)
+         VALUES ($1, $2, $3, 1, 'Ctrip assisted summary',
+                 '# Ctrip assisted article', '{}'::jsonb, $4, $5,
+                 clock_timestamp())`,
+        [
+          tenantId,
+          ids.ctripAssistedContentVersion,
+          ids.ctripAssistedContentItem,
+          payloadHash,
+          actorId,
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.publication_variants
+           (tenant_id, id, content_version_id, channel_account_id, platform,
+            variant_version, payload, payload_hash, state, frozen_at)
+         VALUES ($1, $2, $3, $4, 'ctrip_community', 1, '{}'::jsonb, $5,
+                 'frozen', clock_timestamp())`,
+        [
+          tenantId,
+          ids.ctripAssistedVariant,
+          ids.ctripAssistedContentVersion,
+          SEED_IDS.zhongtong.ctrip,
+          payloadHash,
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.audit_runs
+           (tenant_id, id, variant_id, policy_bundle_id, status,
+            requested_by_actor_id, completed_at)
+         VALUES ($1, $2, $3, $4, 'passed', $5, clock_timestamp())`,
+        [
+          tenantId,
+          ids.ctripAssistedAuditRun,
+          ids.ctripAssistedVariant,
+          SEED_IDS.zhongtong.policy,
+          actorId,
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.audit_artifacts
+           (tenant_id, id, audit_run_id, variant_id, channel_account_id, platform,
+            payload_hash, fact_snapshot_hash, policy_hash, policy_version, audit_hash,
+            brand_snapshot_hash, media_snapshot_hash, status, findings, expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'ctrip_community', $6, $7, $8, 'travel-v1',
+                 $9, $10, $11, 'passed', '[]'::jsonb,
+                 clock_timestamp() + interval '20 minutes')`,
+        [
+          tenantId,
+          ids.ctripAssistedAuditArtifact,
+          ids.ctripAssistedAuditRun,
+          ids.ctripAssistedVariant,
+          SEED_IDS.zhongtong.ctrip,
+          payloadHash,
+          factHash,
+          policyHash,
+          ctripAuditHash,
+          "8".repeat(64),
+          "9".repeat(64),
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.publication_grants
+           (tenant_id, id, audit_artifact_id, variant_id, channel_account_id, platform,
+            payload_hash, audit_hash, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5, 'ctrip_community', $6, $7, $8,
+                 clock_timestamp() + interval '15 minutes')`,
+        [
+          tenantId,
+          ids.ctripAssistedGrant,
+          ids.ctripAssistedAuditArtifact,
+          ids.ctripAssistedVariant,
+          SEED_IDS.zhongtong.ctrip,
+          payloadHash,
+          ctripAuditHash,
+          "0".repeat(64),
+        ],
+      );
+      await adminClient.query(
+        `UPDATE geo.publication_grants
+         SET status = 'consumed', consumed_at = clock_timestamp(),
+             consumed_by_actor_id = $3
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, ids.ctripAssistedGrant, actorId],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.publication_jobs
+           (tenant_id, id, grant_id, audit_artifact_id, variant_id,
+            channel_account_id, platform, execution_level, state, idempotency_key,
+            request_hash, payload_hash, scheduled_for, lease_owner, lease_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'ctrip_community', 'assisted',
+                 'dispatching', 'ctrip-assisted-integration', $7, $8,
+                 clock_timestamp(), 'ctrip-integration-worker',
+                 clock_timestamp() + interval '10 minutes')`,
+        [
+          tenantId,
+          ids.ctripAssistedJob,
+          ids.ctripAssistedGrant,
+          ids.ctripAssistedAuditArtifact,
+          ids.ctripAssistedVariant,
+          SEED_IDS.zhongtong.ctrip,
+          assistedRequestHash,
+          payloadHash,
+        ],
+      );
+      await adminClient.query(
+        `INSERT INTO geo.publication_attempts
+           (tenant_id, id, job_id, attempt_no, state, worker_id, request_hash)
+         VALUES ($1, $2, $3, 1, 'started', 'ctrip-integration-worker', $4)`,
+        [tenantId, ids.ctripAssistedAttempt, ids.ctripAssistedJob, assistedRequestHash],
+      );
+      await adminClient.query("COMMIT");
+    } catch (error) {
+      await adminClient.query("ROLLBACK");
+      throw error;
+    }
+
+    const functionPrivilege = await adminClient.query<{ allowed: boolean }>(
+      `SELECT has_function_privilege(
+         'geo_runtime',
+         'geo.create_publication_assisted_handoff(uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+         'EXECUTE'
+       ) AS allowed`,
+    );
+    expect(functionPrivilege.rows[0]?.allowed).toBe(true);
+
+    const created = await runtimeTransaction((client) =>
+      client.query<{ publication_assisted_handoff_id: string; was_created: boolean }>(
+        `SELECT * FROM geo.create_publication_assisted_handoff(
+           $1::uuid, $2::uuid, $3::uuid, $4::geo.sha256_hex, $5, $6,
+           clock_timestamp() + interval '30 minutes'
+         )`,
+        [
+          ids.ctripAssistedHandoff,
+          ids.ctripAssistedJob,
+          ids.ctripAssistedAttempt,
+          previewHash,
+          "ctrip-community-web-v1",
+          "ctrip-handoff-integration",
+        ],
+      ),
+    );
+    expect(created.rows[0]).toEqual({
+      publication_assisted_handoff_id: ids.ctripAssistedHandoff,
+      was_created: true,
+    });
+
+    const hidden = await runtimeTransaction(
+      (client) =>
+        client.query("SELECT id FROM geo.publication_assisted_handoffs WHERE id = $1", [
+          ids.ctripAssistedHandoff,
+        ]),
+      { tenant: syntheticTenantId, actor: SEED_IDS.synthetic.actor },
+    );
+    expect(hidden.rowCount).toBe(0);
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.claim_publication_assisted_handoff($1, 120)", [
+            ids.ctripAssistedHandoff,
+          ]),
+        { tenant: syntheticTenantId, actor: SEED_IDS.synthetic.actor },
+      ),
+    ).rejects.toMatchObject({ code: "P0002" });
+
+    await adminClient.query(
+      `UPDATE geo.automation_controls
+       SET kill_switch_enabled = true
+       WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+      [tenantId],
+    );
+    await expect(
+      runtimeTransaction((client) =>
+        client.query("SELECT geo.claim_publication_assisted_handoff($1, 300)", [
+          ids.ctripAssistedHandoff,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await adminClient.query(
+      `UPDATE geo.automation_controls
+       SET kill_switch_enabled = false
+       WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+      [tenantId],
+    );
+
+    await runtimeTransaction(async (client) => {
+      await client.query("SELECT geo.claim_publication_assisted_handoff($1, 300)", [
+        ids.ctripAssistedHandoff,
+      ]);
+      await client.query("SELECT geo.heartbeat_publication_assisted_handoff($1, 180)", [
+        ids.ctripAssistedHandoff,
+      ]);
+      await client.query(
+        "SELECT geo.record_publication_assisted_draft($1, $2::geo.sha256_hex, $3::geo.sha256_hex)",
+        [ids.ctripAssistedHandoff, sessionEvidenceHash, draftEvidenceHash],
+      );
+    });
+
+    const boundedLease = await adminClient.query<{ bounded: boolean }>(
+      `SELECT lease_expires_at <= expires_at AS bounded
+       FROM geo.publication_assisted_handoffs
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(boundedLease.rows[0]?.bounded).toBe(true);
+
+    await adminClient.query(
+      `UPDATE geo.automation_controls
+       SET kill_switch_enabled = true
+       WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+      [tenantId],
+    );
+    await expect(
+      runtimeTransaction((client) =>
+        client.query("SELECT * FROM geo.issue_publication_assisted_submit_permit($1)", [
+          ids.ctripAssistedHandoff,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await adminClient.query(
+      `UPDATE geo.automation_controls
+       SET kill_switch_enabled = false
+       WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+      [tenantId],
+    );
+
+    const issued = await runtimeTransaction((client) =>
+      client.query<{ submit_permit: string; submit_permit_expires_at: Date }>(
+        "SELECT * FROM geo.issue_publication_assisted_submit_permit($1)",
+        [ids.ctripAssistedHandoff],
+      ),
+    );
+    const permit = issued.rows[0]?.submit_permit;
+    expect(permit).toMatch(/^[0-9a-f]{64}$/u);
+    if (permit === undefined) throw new Error("Submit permit was not returned");
+
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+            ids.ctripAssistedHandoff,
+            permit,
+          ]),
+        { actor: ids.ctripAssistedOtherActor },
+      ),
+    ).rejects.toMatchObject({ code: "55006" });
+
+    const consumed = await runtimeTransaction((client) =>
+      client.query<{ value: boolean }>(
+        "SELECT geo.consume_publication_assisted_submit_permit($1, $2) AS value",
+        [ids.ctripAssistedHandoff, permit],
+      ),
+    );
+    expect(consumed.rows[0]?.value).toBe(true);
+    await expect(
+      runtimeTransaction((client) =>
+        client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+          ids.ctripAssistedHandoff,
+          permit,
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      runtimeTransaction((client) =>
+        client.query("SELECT geo.cancel_publication_assisted_handoff($1, $2)", [
+          ids.ctripAssistedHandoff,
+          "cannot cancel after permit consumption",
+        ]),
+      ),
+    ).rejects.toMatchObject({ code: "55000" });
+
+    const persisted = await adminClient.query<{
+      state: string;
+      submit_permit_hash: string;
+      submit_permit_consumed_at: Date | null;
+      external_id: string | null;
+      external_url: string | null;
+    }>(
+      `SELECT state, submit_permit_hash, submit_permit_consumed_at,
+              external_id, external_url
+       FROM geo.publication_assisted_handoffs
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(persisted.rows[0]).toMatchObject({
+      state: "awaiting_operator_submit",
+      submit_permit_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      submit_permit_consumed_at: expect.any(Date),
+      external_id: null,
+      external_url: null,
+    });
+    expect(persisted.rows[0]?.submit_permit_hash).not.toBe(permit);
+
+    const finished = await runtimeTransaction((client) =>
+      client.query<{ circuits_opened: number; circuits_closed: number }>(
+        "SELECT * FROM geo.finish_publication_execution($1, $2, 'uncertain'::text, $3)",
+        [ids.ctripAssistedJob, ids.ctripAssistedAttempt, "ASSISTED_SUBMIT_PERMIT_CONSUMED"],
+      ),
+    );
+    expect(finished.rows[0]).toEqual({ circuits_opened: 0, circuits_closed: 0 });
   });
 
   it("persists tenant-scoped media production as immutable successor content", async () => {

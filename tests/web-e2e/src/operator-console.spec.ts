@@ -506,6 +506,7 @@ async function installAutomationApiFixture(page: Page): Promise<{
       ],
       ["/api/audits", items([])],
       ["/api/publication-jobs", items([])],
+      ["/api/publication-assisted-handoffs", items([])],
       ["/api/receipts", items([])],
       ["/api/visibility/summary", items([])],
       [

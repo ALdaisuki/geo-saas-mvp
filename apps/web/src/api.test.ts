@@ -1190,6 +1190,97 @@ describe("HttpGeoApi", () => {
     expect(new Headers(calls[2]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
   });
 
+  it("parses assisted handoffs and protects every operator mutation with CSRF", async () => {
+    const calls: { input: string; init: RequestInit | undefined }[] = [];
+    const handoff = {
+      id: "10000000-0000-4000-8000-000000001401",
+      jobId: "10000000-0000-4000-8000-000000001402",
+      attemptId: "10000000-0000-4000-8000-000000001403",
+      channelAccountId: "10000000-0000-4000-8000-000000000703",
+      variantId: "10000000-0000-4000-8000-000000001404",
+      platform: "ctrip_community",
+      state: "handoff_pending",
+      payloadHash: "a".repeat(64),
+      auditHash: "b".repeat(64),
+      previewHash: "c".repeat(64),
+      adapterVersion: "ctrip-community-web-v1",
+      leaseOwnerActorId: null,
+      leaseExpiresAt: null,
+      heartbeatAt: null,
+      sessionEvidenceHash: null,
+      draftEvidenceHash: null,
+      submitEvidenceHash: null,
+      submitPermitIssued: false,
+      submitPermitExpiresAt: null,
+      submitPermitConsumedAt: null,
+      externalId: null,
+      externalUrl: null,
+      expiresAt: "2026-07-15T03:00:00.000Z",
+      cancellationReason: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      createdAt: "2026-07-15T02:00:00.000Z",
+      updatedAt: "2026-07-15T02:00:00.000Z",
+    };
+    const claimed = {
+      ...handoff,
+      leaseOwnerActorId: loginBody.actor.id,
+      leaseExpiresAt: "2026-07-15T02:02:00.000Z",
+      heartbeatAt: "2026-07-15T02:00:00.000Z",
+    };
+    const cancelled = {
+      ...handoff,
+      state: "cancelled",
+      cancellationReason: "operator cancelled before submit",
+    };
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({ items: [handoff] }),
+      jsonResponse({ handoff: claimed }),
+      jsonResponse({ handoff: claimed }),
+      jsonResponse({ handoff: cancelled, wasChanged: true }),
+      jsonResponse(cancelled),
+    ];
+    const api = new HttpGeoApi("", async (input, init) => {
+      calls.push({ input: String(input), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    const listed = await api.getPublicationAssistedHandoffs();
+    await api.claimPublicationAssistedHandoff(handoff.id, 120);
+    await api.heartbeatPublicationAssistedHandoff(handoff.id, 180);
+    const cancellation = await api.cancelPublicationAssistedHandoff(
+      handoff.id,
+      "operator cancelled before submit",
+    );
+    const detail = await api.getPublicationAssistedHandoff(handoff.id);
+
+    expect(listed[0]).toMatchObject({
+      platform: "ctrip_community",
+      state: "handoff_pending",
+      submitPermitIssued: false,
+    });
+    expect(cancellation).toMatchObject({
+      handoff: { state: "cancelled" },
+      wasChanged: true,
+    });
+    expect(detail.state).toBe("cancelled");
+    expect(calls.map((call) => call.input)).toEqual([
+      "/api/auth/login",
+      "/api/publication-assisted-handoffs",
+      `/api/publication-assisted-handoffs/${handoff.id}/claim`,
+      `/api/publication-assisted-handoffs/${handoff.id}/heartbeat`,
+      `/api/publication-assisted-handoffs/${handoff.id}/cancel`,
+      `/api/publication-assisted-handoffs/${handoff.id}`,
+    ]);
+    for (const call of calls.slice(2, 5)) {
+      expect(new Headers(call.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    }
+  });
+
   it("uses CSRF-protected tenant governance routes and parses service-principal truth", async () => {
     const calls: { input: string; init: RequestInit | undefined }[] = [];
     const contactId = "10000000-0000-4000-8000-000000000401";

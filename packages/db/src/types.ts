@@ -583,6 +583,50 @@ export interface PublicationReadbacksTable extends TenantRow, MutableRow {
   last_error: string | null;
 }
 
+export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow {
+  job_id: string;
+  attempt_id: string;
+  channel_account_id: string;
+  variant_id: string;
+  platform: "ctrip_community";
+  state:
+    | "handoff_pending"
+    | "session_required"
+    | "challenge_required"
+    | "draft_prepared"
+    | "awaiting_operator_submit"
+    | "submitted_unconfirmed"
+    | "readback_pending"
+    | "confirmed"
+    | "needs_review"
+    | "cancelled"
+    | "expired"
+    | "failed";
+  payload_hash: string;
+  audit_hash: string;
+  preview_hash: string;
+  adapter_version: string;
+  idempotency_key: string;
+  lease_owner_actor_id: string | null;
+  lease_expires_at: NullableDbTimestamp;
+  heartbeat_at: NullableDbTimestamp;
+  session_evidence_hash: string | null;
+  draft_evidence_hash: string | null;
+  submit_evidence_hash: string | null;
+  submit_permit_hash: string | null;
+  submit_permit_expires_at: NullableDbTimestamp;
+  submit_permit_consumed_at: NullableDbTimestamp;
+  external_id: string | null;
+  external_url: string | null;
+  expires_at: RequiredDbTimestamp;
+  cancelled_at: NullableDbTimestamp;
+  cancelled_by_actor_id: string | null;
+  cancellation_reason: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  created_by_actor_id: string;
+}
+
 export interface OutboxEventsTable extends TenantRow {
   aggregate_type: string;
   aggregate_id: string;
@@ -765,6 +809,7 @@ export interface Database {
   publication_attempts: PublicationAttemptsTable;
   publication_receipts: PublicationReceiptsTable;
   publication_readbacks: PublicationReadbacksTable;
+  publication_assisted_handoffs: PublicationAssistedHandoffsTable;
   outbox_events: OutboxEventsTable;
   inbox_events: InboxEventsTable;
   idempotency_records: IdempotencyRecordsTable;
@@ -813,6 +858,7 @@ export const TENANT_TABLES = [
   "publication_attempts",
   "publication_receipts",
   "publication_readbacks",
+  "publication_assisted_handoffs",
   "outbox_events",
   "inbox_events",
   "idempotency_records",

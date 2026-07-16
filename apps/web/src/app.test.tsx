@@ -8,6 +8,7 @@ import {
   type BrandAgentProfile,
   type GeoApi,
   GeoApiError,
+  type PublicationAssistedHandoff,
   type SessionSnapshot,
 } from "./api.js";
 import { App } from "./app.js";
@@ -106,6 +107,36 @@ function liveApi(): GeoApi {
     confirmed: false,
     payload: { readback: { required: false, reason: "dry_run_preview_only" } },
     recordedAt: "2026-07-14T08:01:00.000Z",
+  };
+  let assistedHandoff: PublicationAssistedHandoff = {
+    id: "10000000-0000-4000-8000-000000001301",
+    jobId: publicationJob.id,
+    attemptId: publicationReceipt.attemptId,
+    channelAccountId: publicationJob.channelAccountId,
+    variantId: publicationJob.variantId,
+    platform: "ctrip_community",
+    state: "handoff_pending",
+    payloadHash: publicationJob.payloadHash,
+    auditHash: "c".repeat(64),
+    previewHash: "d".repeat(64),
+    adapterVersion: "ctrip-community-web-v1",
+    leaseOwnerActorId: session.actor.id,
+    leaseExpiresAt: "2000-01-01T00:00:00.000Z",
+    heartbeatAt: "1999-12-31T23:59:00.000Z",
+    sessionEvidenceHash: null,
+    draftEvidenceHash: null,
+    submitEvidenceHash: null,
+    submitPermitIssued: false,
+    submitPermitExpiresAt: null,
+    submitPermitConsumedAt: null,
+    externalId: null,
+    externalUrl: null,
+    expiresAt: "2026-07-14T08:30:00.000Z",
+    cancellationReason: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    createdAt: "2026-07-14T08:00:00.000Z",
+    updatedAt: "2026-07-14T08:00:00.000Z",
   };
   const visibilityRun = {
     id: "10000000-0000-4000-8000-000000001501",
@@ -446,6 +477,29 @@ function liveApi(): GeoApi {
     getPublicationAttempts: async () => [],
     getPublicationReceipts: async () => [publicationReceipt],
     getPublicationReadbacks: async () => [],
+    getPublicationAssistedHandoffs: async () => [assistedHandoff],
+    getPublicationAssistedHandoff: async () => assistedHandoff,
+    claimPublicationAssistedHandoff: async () => {
+      assistedHandoff = {
+        ...assistedHandoff,
+        leaseOwnerActorId: session.actor.id,
+        leaseExpiresAt: "2026-07-14T08:02:00.000Z",
+        heartbeatAt: "2026-07-14T08:00:00.000Z",
+      };
+      return assistedHandoff;
+    },
+    heartbeatPublicationAssistedHandoff: async () => assistedHandoff,
+    cancelPublicationAssistedHandoff: async (_handoffId, reason) => {
+      assistedHandoff = {
+        ...assistedHandoff,
+        state: "cancelled",
+        leaseOwnerActorId: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        cancellationReason: reason,
+      };
+      return { handoff: assistedHandoff, wasChanged: true };
+    },
     getReceipts: async () => [publicationReceipt],
     getReceipt: async () => publicationReceipt,
     getVisibilitySummary: async () => [
@@ -1112,6 +1166,19 @@ describe("GEO operator console", () => {
 
     await screen.findByText("当前租户投放已暂停");
     expect(screen.getByRole("button", { name: "恢复 Shadow" })).toBeInTheDocument();
+  });
+
+  it("shows Ctrip assisted handoffs without exposing submit permit material", async () => {
+    renderApp({ path: "/publishing", api: liveApi() });
+
+    expect(await screen.findByText("携程人工交接")).toBeInTheDocument();
+    expect(await screen.findByText("待交接")).toBeInTheDocument();
+    expect(screen.getByText("未认领")).toBeInTheDocument();
+    expect(screen.getByText("ctrip-community-web-v1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /认领交接单/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /取消交接单/ })).toBeDisabled();
+    expect(document.body.textContent).not.toContain("submitPermitHash");
+    expect(document.body.textContent).not.toContain("submit_permit");
   });
 
   it("clears the selected publication job when the tenant changes", async () => {

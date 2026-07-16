@@ -438,6 +438,37 @@ export interface PublicationReadback {
   readonly updatedAt: string;
 }
 
+export interface PublicationAssistedHandoff {
+  readonly id: string;
+  readonly jobId: string;
+  readonly attemptId: string;
+  readonly channelAccountId: string;
+  readonly variantId: string;
+  readonly platform: "ctrip_community";
+  readonly state: string;
+  readonly payloadHash: string;
+  readonly auditHash: string;
+  readonly previewHash: string;
+  readonly adapterVersion: string;
+  readonly leaseOwnerActorId: string | null;
+  readonly leaseExpiresAt: string | null;
+  readonly heartbeatAt: string | null;
+  readonly sessionEvidenceHash: string | null;
+  readonly draftEvidenceHash: string | null;
+  readonly submitEvidenceHash: string | null;
+  readonly submitPermitIssued: boolean;
+  readonly submitPermitExpiresAt: string | null;
+  readonly submitPermitConsumedAt: string | null;
+  readonly externalId: string | null;
+  readonly externalUrl: string | null;
+  readonly expiresAt: string;
+  readonly cancellationReason: string | null;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorMessage: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
 export interface AuditFinding {
   readonly ruleId: string;
   readonly ruleVersion: string;
@@ -1023,6 +1054,23 @@ export interface GeoApi {
   getPublicationAttempts(jobId: string): Promise<readonly PublicationAttempt[]>;
   getPublicationReceipts(jobId: string): Promise<readonly PublicationReceipt[]>;
   getPublicationReadbacks(jobId: string): Promise<readonly PublicationReadback[]>;
+  getPublicationAssistedHandoffs(): Promise<readonly PublicationAssistedHandoff[]>;
+  getPublicationAssistedHandoff(handoffId: string): Promise<PublicationAssistedHandoff>;
+  claimPublicationAssistedHandoff(
+    handoffId: string,
+    leaseSeconds?: number,
+  ): Promise<PublicationAssistedHandoff>;
+  heartbeatPublicationAssistedHandoff(
+    handoffId: string,
+    leaseSeconds?: number,
+  ): Promise<PublicationAssistedHandoff>;
+  cancelPublicationAssistedHandoff(
+    handoffId: string,
+    reason: string,
+  ): Promise<{
+    readonly handoff: PublicationAssistedHandoff;
+    readonly wasChanged: boolean;
+  }>;
   getReceipts(): Promise<readonly PublicationReceipt[]>;
   getReceipt(receiptId: string): Promise<PublicationReceipt>;
   getVisibilitySummary(): Promise<readonly VisibilityProviderSummary[]>;
@@ -1826,6 +1874,44 @@ function parsePublicationReadback(value: unknown): PublicationReadback {
     scheduledFor: stringValue(item, "scheduledFor"),
     completedAt: nullableStringValue(item, "completedAt"),
     lastError: nullableStringValue(item, "lastError"),
+    createdAt: stringValue(item, "createdAt"),
+    updatedAt: stringValue(item, "updatedAt"),
+  };
+}
+
+function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHandoff {
+  const item = recordValue(value, "publication assisted handoff");
+  const platform = stringValue(item, "platform");
+  if (platform !== "ctrip_community") {
+    throw protocolError(`unsupported assisted handoff platform: ${platform}`);
+  }
+  return {
+    id: stringValue(item, "id"),
+    jobId: stringValue(item, "jobId"),
+    attemptId: stringValue(item, "attemptId"),
+    channelAccountId: stringValue(item, "channelAccountId"),
+    variantId: stringValue(item, "variantId"),
+    platform,
+    state: stringValue(item, "state"),
+    payloadHash: stringValue(item, "payloadHash"),
+    auditHash: stringValue(item, "auditHash"),
+    previewHash: stringValue(item, "previewHash"),
+    adapterVersion: stringValue(item, "adapterVersion"),
+    leaseOwnerActorId: nullableStringValue(item, "leaseOwnerActorId"),
+    leaseExpiresAt: nullableStringValue(item, "leaseExpiresAt"),
+    heartbeatAt: nullableStringValue(item, "heartbeatAt"),
+    sessionEvidenceHash: nullableStringValue(item, "sessionEvidenceHash"),
+    draftEvidenceHash: nullableStringValue(item, "draftEvidenceHash"),
+    submitEvidenceHash: nullableStringValue(item, "submitEvidenceHash"),
+    submitPermitIssued: booleanValue(item, "submitPermitIssued"),
+    submitPermitExpiresAt: nullableStringValue(item, "submitPermitExpiresAt"),
+    submitPermitConsumedAt: nullableStringValue(item, "submitPermitConsumedAt"),
+    externalId: nullableStringValue(item, "externalId"),
+    externalUrl: nullableStringValue(item, "externalUrl"),
+    expiresAt: stringValue(item, "expiresAt"),
+    cancellationReason: nullableStringValue(item, "cancellationReason"),
+    lastErrorCode: nullableStringValue(item, "lastErrorCode"),
+    lastErrorMessage: nullableStringValue(item, "lastErrorMessage"),
     createdAt: stringValue(item, "createdAt"),
     updatedAt: stringValue(item, "updatedAt"),
   };
@@ -2862,6 +2948,67 @@ export class HttpGeoApi implements GeoApi {
       await this.request(`/api/publication-jobs/${encodeURIComponent(jobId)}/readbacks`),
       parsePublicationReadback,
     );
+  }
+
+  async getPublicationAssistedHandoffs(): Promise<readonly PublicationAssistedHandoff[]> {
+    return itemsValue(
+      await this.request("/api/publication-assisted-handoffs"),
+      parsePublicationAssistedHandoff,
+    );
+  }
+
+  async getPublicationAssistedHandoff(handoffId: string): Promise<PublicationAssistedHandoff> {
+    return parsePublicationAssistedHandoff(
+      await this.request(`/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}`),
+    );
+  }
+
+  async claimPublicationAssistedHandoff(
+    handoffId: string,
+    leaseSeconds = 120,
+  ): Promise<PublicationAssistedHandoff> {
+    const item = recordValue(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/claim`,
+        { method: "POST", body: JSON.stringify({ leaseSeconds }) },
+        true,
+      ),
+      "assisted handoff claim",
+    );
+    return parsePublicationAssistedHandoff(item.handoff);
+  }
+
+  async heartbeatPublicationAssistedHandoff(
+    handoffId: string,
+    leaseSeconds = 120,
+  ): Promise<PublicationAssistedHandoff> {
+    const item = recordValue(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/heartbeat`,
+        { method: "POST", body: JSON.stringify({ leaseSeconds }) },
+        true,
+      ),
+      "assisted handoff heartbeat",
+    );
+    return parsePublicationAssistedHandoff(item.handoff);
+  }
+
+  async cancelPublicationAssistedHandoff(
+    handoffId: string,
+    reason: string,
+  ): Promise<{ readonly handoff: PublicationAssistedHandoff; readonly wasChanged: boolean }> {
+    const item = recordValue(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/cancel`,
+        { method: "POST", body: JSON.stringify({ reason }) },
+        true,
+      ),
+      "assisted handoff cancellation",
+    );
+    return {
+      handoff: parsePublicationAssistedHandoff(item.handoff),
+      wasChanged: booleanValue(item, "wasChanged"),
+    };
   }
 
   async getReceipts(): Promise<readonly PublicationReceipt[]> {

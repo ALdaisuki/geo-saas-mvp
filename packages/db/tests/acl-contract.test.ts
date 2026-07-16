@@ -47,6 +47,10 @@ describe("replayable application ACL contract", () => {
       "GRANT UPDATE (status, completed_at, last_error) ON geo.publication_readbacks TO geo_runtime",
     );
     expect(aclSql).toContain(
+      "REVOKE ALL ON TABLE geo.publication_assisted_handoffs FROM geo_runtime",
+    );
+    expect(aclSql).toContain("GRANT SELECT ON geo.publication_assisted_handoffs TO geo_runtime");
+    expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.claim_outbox_events(text, integer, integer) TO geo_dispatcher",
     );
     expect(aclSql).toContain(
@@ -76,6 +80,10 @@ describe("replayable application ACL contract", () => {
     );
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime",
+    );
+    expect(aclSql).toContain("GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(");
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)",
     );
     expect(aclSql).toContain(
       "REVOKE ALL ON geo.media_generation_jobs, geo.media_generation_attempts",

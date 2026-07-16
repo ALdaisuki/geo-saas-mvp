@@ -43,6 +43,7 @@ const expectedTables = [
   "publication_attempts",
   "publication_receipts",
   "publication_readbacks",
+  "publication_assisted_handoffs",
   "outbox_events",
   "inbox_events",
   "idempotency_records",
@@ -145,6 +146,7 @@ describe("PostgreSQL migration contract", () => {
         name !== "brand_competitors" &&
         name !== "brand_agent_profiles" &&
         name !== "publication_readbacks" &&
+        name !== "publication_assisted_handoffs" &&
         name !== "automation_batches" &&
         name !== "automation_runs" &&
         name !== "automation_run_targets" &&
@@ -164,6 +166,15 @@ describe("PostgreSQL migration contract", () => {
       "ALTER TABLE geo.publication_readbacks FORCE ROW LEVEL SECURITY",
     );
     expect(migrationSql).toContain("CREATE POLICY tenant_isolation ON geo.publication_readbacks");
+    expect(migrationSql).toContain(
+      "ALTER TABLE geo.publication_assisted_handoffs ENABLE ROW LEVEL SECURITY",
+    );
+    expect(migrationSql).toContain(
+      "ALTER TABLE geo.publication_assisted_handoffs FORCE ROW LEVEL SECURITY",
+    );
+    expect(migrationSql).toContain(
+      "CREATE POLICY tenant_isolation ON geo.publication_assisted_handoffs",
+    );
     for (const tableName of ["automation_batches", "automation_runs", "automation_run_targets"]) {
       expect(migrationSql).toContain(`ALTER TABLE geo.${tableName} ENABLE ROW LEVEL SECURITY`);
       expect(migrationSql).toContain(`ALTER TABLE geo.${tableName} FORCE ROW LEVEL SECURITY`);
@@ -631,6 +642,78 @@ describe("PostgreSQL migration contract", () => {
     );
     expect(migrationSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.cancel_automation_batch(uuid, text) TO geo_runtime",
+    );
+  });
+
+  it("persists tenant-scoped assisted handoffs with leased operators and one-time permits", () => {
+    const handoffs = tableDefinition("publication_assisted_handoffs");
+    const blockReason = functionDefinition("publication_assisted_block_reason");
+    const create = functionDefinition("create_publication_assisted_handoff");
+    const claim = functionDefinition("claim_publication_assisted_handoff");
+    const heartbeat = functionDefinition("heartbeat_publication_assisted_handoff");
+    const cancel = functionDefinition("cancel_publication_assisted_handoff");
+    const issuePermit = functionDefinition("issue_publication_assisted_submit_permit");
+    const consumePermit = functionDefinition("consume_publication_assisted_submit_permit");
+
+    expect(handoffs).toContain("job_id uuid NOT NULL");
+    expect(handoffs).toContain("attempt_id uuid NOT NULL");
+    expect(handoffs).toContain("platform text NOT NULL DEFAULT 'ctrip_community'");
+    expect(handoffs).toContain("payload_hash geo.sha256_hex NOT NULL");
+    expect(handoffs).toContain("audit_hash geo.sha256_hex NOT NULL");
+    expect(handoffs).toContain("preview_hash geo.sha256_hex NOT NULL");
+    expect(handoffs).toContain("adapter_version text NOT NULL");
+    expect(handoffs).toContain("lease_owner_actor_id uuid");
+    expect(handoffs).toContain("lease_expires_at timestamptz");
+    expect(handoffs).toContain("submit_permit_hash geo.sha256_hex");
+    expect(handoffs).toContain("submit_permit_expires_at timestamptz");
+    expect(handoffs).toContain("submit_permit_consumed_at timestamptz");
+    expect(handoffs).toContain("'draft_prepared'");
+    expect(handoffs).toContain("'submitted_unconfirmed'");
+    expect(handoffs).toContain("'confirmed'");
+    expect(handoffs).toContain("UNIQUE (tenant_id, job_id)");
+    expect(handoffs).toContain("UNIQUE (tenant_id, attempt_id)");
+
+    expect(blockReason).toContain("job.execution_level <> 'assisted'");
+    expect(blockReason).toContain("job.platform <> 'ctrip_community'");
+    expect(blockReason).toContain("artifact.status <> 'passed'");
+    expect(blockReason).toContain("control.kill_switch_enabled");
+    expect(blockReason).toContain("control.mode IN ('shadow', 'paused', 'stopped')");
+    expect(blockReason).toContain("circuit.state IN ('open', 'half_open')");
+    expect(blockReason).toContain("account.capability <> 'browser_assisted'");
+
+    expect(create).toContain("SECURITY DEFINER");
+    expect(create).toContain("geo.publication_assisted_block_reason");
+    expect(create).toContain("attempt.state <> 'started'");
+    expect(create).toContain("INSERT INTO geo.publication_assisted_handoffs");
+    expect(create).toContain("publication_assisted_handoff.created");
+
+    expect(claim).toContain("FOR UPDATE");
+    expect(claim).toContain("lease_expires_at >= statement_timestamp()");
+    expect(claim).toContain("lease_owner_actor_id = actor_value");
+    expect(claim).toContain("geo.publication_assisted_block_reason");
+    expect(claim).toContain("LEAST(");
+    expect(claim).toContain("publication_assisted_handoff.claimed");
+    expect(heartbeat).toContain("lease_owner_actor_id <> actor_value");
+    expect(heartbeat).toContain("lease_expires_at < statement_timestamp()");
+    expect(heartbeat).toContain("geo.publication_assisted_block_reason");
+    expect(cancel).toContain("state = 'cancelled'");
+    expect(cancel).toContain("submit_permit_consumed_at IS NOT NULL");
+    expect(cancel).toContain("publication_assisted_handoff.cancelled");
+
+    expect(issuePermit).toContain("state <> 'draft_prepared'");
+    expect(issuePermit).toContain("geo.publication_assisted_block_reason");
+    expect(issuePermit).toContain("public.gen_random_bytes(32)");
+    expect(issuePermit).toContain("submit_permit_hash");
+    expect(issuePermit).toContain("interval '5 minutes'");
+    expect(issuePermit).toContain("handoff.lease_expires_at");
+    expect(consumePermit).toContain("public.digest(p_submit_permit, 'sha256')");
+    expect(consumePermit).toContain("submit_permit_consumed_at IS NOT NULL");
+    expect(consumePermit).toContain("geo.publication_assisted_block_reason");
+    expect(consumePermit).toContain("lease_owner_actor_id <> actor_value");
+
+    expect(migrationSql).toContain("CREATE TRIGGER publication_assisted_handoffs_transition_only");
+    expect(migrationSql).toMatch(
+      /REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER\s+ON TABLE geo\.publication_assisted_handoffs/u,
     );
   });
 });

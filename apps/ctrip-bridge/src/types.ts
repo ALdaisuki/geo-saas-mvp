@@ -1,4 +1,8 @@
-import type { CtripBridgeEvidenceKind, PublicationVariantPayload } from "@geo/contracts";
+import type {
+  CtripBridgeEvidenceKind,
+  MediaReference,
+  PublicationVariantPayload,
+} from "@geo/contracts";
 import type { RenderedDraft } from "@geo/connectors";
 
 export const CTRIP_SIMULATOR_ADAPTER_VERSION = "ctrip-community-simulator-v1";
@@ -14,6 +18,7 @@ export interface CtripBridgeHandoffDraft {
   readonly tenantId: string;
   readonly channelAccountId: string;
   readonly variantId: string;
+  readonly contentVersionId: string;
   readonly platform: "ctrip_community";
   readonly state:
     | "handoff_pending"
@@ -44,8 +49,26 @@ export interface CtripBridgePreparedEvidence {
   readonly sessionEvidenceHash: string;
   readonly draftEvidenceHash: string;
   readonly evidenceHash: string;
+  readonly mediaManifestHash: string;
   readonly observedAt: string;
   readonly evidenceKind: "simulation" | "browser";
+}
+
+export interface CtripBridgeMediaAsset {
+  readonly contentVersionId: string;
+  readonly position: number;
+  readonly bindingPlatform: "ctrip_community";
+  readonly bindingRole: "cover" | "inline";
+  readonly bindingAltText: string;
+  readonly bindingCaption: string;
+  readonly storageKey: string;
+  readonly reference: MediaReference;
+}
+
+export interface CtripTrustedMediaAttachment {
+  readonly position: number;
+  readonly reference: MediaReference;
+  readonly bytes: Uint8Array;
 }
 
 export interface CtripBridgeSubmitObservation {
@@ -70,6 +93,10 @@ export interface CtripBridgeControlPlane {
     context: CtripBridgeExecutionContext,
     handoffId: string,
   ): Promise<CtripBridgeHandoffDraft>;
+  loadPreparedMediaAssets(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+  ): Promise<readonly CtripBridgeMediaAsset[]>;
   recordPrepared(
     context: CtripBridgeExecutionContext,
     handoff: CtripBridgeHandoffDraft,
@@ -107,6 +134,7 @@ export interface CtripFixedAdapter {
   prepare(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,
+    media: readonly CtripTrustedMediaAttachment[],
   ): Promise<CtripBridgePreparedEvidence>;
   submit(
     handoff: CtripBridgeHandoffDraft,

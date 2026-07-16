@@ -14,6 +14,7 @@ const handoffId = "10000000-0000-4000-8000-000000000002";
 const bridgePrincipalId = "10000000-0000-4000-8000-000000000003";
 const channelAccountId = "10000000-0000-4000-8000-000000000004";
 const variantId = "10000000-0000-4000-8000-000000000005";
+const contentVersionId = "10000000-0000-4000-8000-000000000008";
 const now = "2026-07-16T12:00:00.000Z";
 const payload = {
   title: "北京出发日本旅行证据指南",
@@ -38,6 +39,7 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     tenantId,
     channelAccountId,
     variantId,
+    contentVersionId,
     platform: "ctrip_community",
     state,
     previewHash,
@@ -55,6 +57,7 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
 function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeControlPlane {
   return {
     loadHandoff: vi.fn(async () => current.value),
+    loadPreparedMediaAssets: vi.fn(async () => []),
     recordPrepared: vi.fn(async () => {
       current.value = handoff("draft_prepared");
     }),
@@ -87,6 +90,10 @@ function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeC
   };
 }
 
+function emptyMediaObjectStore() {
+  return { get: vi.fn(async () => new Uint8Array()) };
+}
+
 function command(commandName: "prepare" | "readback") {
   return {
     schemaVersion: "geo.ctrip-bridge.command.v1",
@@ -105,6 +112,7 @@ describe("CtripBridgeCommandService", () => {
       tenantId,
       bridgePrincipalId,
       controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
       adapter: new CtripCommunitySimulator({ now: () => new Date(now) }),
     });
 
@@ -143,6 +151,7 @@ describe("CtripBridgeCommandService", () => {
       tenantId,
       bridgePrincipalId,
       controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
       adapter: simulator,
     });
     await service.execute(command("prepare"));
@@ -172,6 +181,7 @@ describe("CtripBridgeCommandService", () => {
       tenantId,
       bridgePrincipalId,
       controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
       adapter: new CtripCommunitySimulator({
         now: () => new Date(now),
         nextSubmitOutcome: () => "uncertain",
@@ -201,6 +211,7 @@ describe("CtripBridgeCommandService", () => {
       tenantId,
       bridgePrincipalId,
       controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
       adapter: new CtripCommunitySimulator({ now: () => new Date(now) }),
     });
     await service.execute(command("prepare"));
@@ -237,6 +248,7 @@ describe("CtripBridgeCommandService", () => {
       tenantId,
       bridgePrincipalId,
       controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
       adapter: simulator,
     });
 
@@ -262,6 +274,7 @@ describe("CtripBridgeCommandService", () => {
         tenantId,
         bridgePrincipalId,
         controlPlane: controlPlane({ value }),
+        mediaObjectStore: emptyMediaObjectStore(),
         adapter: new CtripCommunitySimulator(),
       });
       await expect(service.execute(command("prepare"))).rejects.toThrow();

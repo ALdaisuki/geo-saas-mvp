@@ -8,6 +8,7 @@ import {
   type CtripBridgeReadbackObservation,
   type CtripBridgeSubmitObservation,
   type CtripFixedAdapter,
+  type CtripTrustedMediaAttachment,
 } from "./types.js";
 
 interface SimulatorDraft {
@@ -15,6 +16,8 @@ interface SimulatorDraft {
   readonly draft: RenderedDraft;
   readonly externalDraftId: string;
   readonly preparedAt: string;
+  readonly media: readonly CtripTrustedMediaAttachment[];
+  readonly mediaManifestHash: string;
   submittedAt: string | null;
   submitOutcome: CtripBridgeSubmitObservation["outcome"] | null;
 }
@@ -39,9 +42,18 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
   async prepare(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,
+    media: readonly CtripTrustedMediaAttachment[],
   ): Promise<CtripBridgePreparedEvidence> {
     const preparedAt = this.#now().toISOString();
     const externalDraftId = `sim-draft-${handoff.id}`;
+    const mediaManifestHash = sha256Canonical({
+      schemaVersion: "geo.ctrip-media-manifest.v1",
+      payloadHash: handoff.payloadHash,
+      entries: media.map((attachment) => ({
+        position: attachment.position,
+        reference: attachment.reference,
+      })),
+    });
     const material = {
       kind: "ctrip_simulator_draft",
       adapterVersion: this.version,
@@ -49,11 +61,16 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
       handoffId: handoff.id,
       previewHash: draft.previewHash,
       externalDraftId,
+      mediaManifestHash,
       preparedAt,
     };
     const evidenceHash = sha256Canonical(material);
     const existing = this.#drafts.get(handoff.id);
-    if (existing !== undefined && existing.draft.previewHash !== draft.previewHash) {
+    if (
+      existing !== undefined &&
+      (existing.draft.previewHash !== draft.previewHash ||
+        existing.mediaManifestHash !== mediaManifestHash)
+    ) {
       throw new Error("Simulator handoff was already prepared with another preview");
     }
     if (existing === undefined) {
@@ -62,6 +79,12 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
         draft,
         externalDraftId,
         preparedAt,
+        media: Object.freeze(
+          media.map((attachment) =>
+            Object.freeze({ ...attachment, bytes: Uint8Array.from(attachment.bytes) }),
+          ),
+        ),
+        mediaManifestHash,
         submittedAt: null,
         submitOutcome: null,
       });
@@ -71,6 +94,7 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
       sessionEvidenceHash: sha256Canonical({ ...material, evidence: "session" }),
       draftEvidenceHash: sha256Canonical({ ...material, evidence: "draft" }),
       evidenceHash,
+      mediaManifestHash,
       observedAt: preparedAt,
       evidenceKind: "simulation",
     };
@@ -84,9 +108,12 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
     if (prepared === undefined) {
       if (
         handoff.externalDraftId === null ||
-        !["awaiting_operator_submit", "submitted_unconfirmed", "readback_pending"].includes(
-          handoff.state,
-        )
+        ![
+          "draft_prepared",
+          "awaiting_operator_submit",
+          "submitted_unconfirmed",
+          "readback_pending",
+        ].includes(handoff.state)
       ) {
         throw new Error("Simulator draft is not prepared");
       }
@@ -95,6 +122,12 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
         draft,
         externalDraftId: handoff.externalDraftId,
         preparedAt: this.#now().toISOString(),
+        media: [],
+        mediaManifestHash: sha256Canonical({
+          schemaVersion: "geo.ctrip-media-manifest.v1",
+          payloadHash: handoff.payloadHash,
+          entries: [],
+        }),
         submittedAt: null,
         submitOutcome: null,
       });
@@ -159,9 +192,12 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
     const rows = [...this.#drafts.values()]
       .filter((item) => item.handoff.tenantId === tenantId)
       .map(
-        (item) => `<article data-handoff-id="${escapeHtml(item.handoff.id)}">
+        (
+          item,
+        ) => `<article data-handoff-id="${escapeHtml(item.handoff.id)}" data-media-manifest-hash="${item.mediaManifestHash}">
   <h2>${escapeHtml(item.draft.payload.title)}</h2>
   <p>${escapeHtml(item.draft.payload.summary)}</p>
+  ${renderMedia(item.media)}
   <pre>${escapeHtml(item.draft.payload.bodyMarkdown)}</pre>
   <output data-state>${item.submittedAt === null ? "draft_prepared" : "submitted_simulation"}</output>
 </article>`,
@@ -173,6 +209,17 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
 <body><main><h1>Ctrip Community Simulator</h1>${rows}</main></body>
 </html>`;
   }
+}
+
+function renderMedia(media: readonly CtripTrustedMediaAttachment[]): string {
+  return media
+    .map(
+      (attachment) => `<figure data-media-position="${attachment.position}">
+    <img src="data:${escapeHtml(attachment.reference.mimeType)};base64,${Buffer.from(attachment.bytes).toString("base64")}" alt="${escapeHtml(attachment.reference.altText)}" width="${attachment.reference.width}" height="${attachment.reference.height}">
+    <figcaption>${escapeHtml(attachment.reference.caption)}</figcaption>
+  </figure>`,
+    )
+    .join("\n  ");
 }
 
 function escapeHtml(value: string): string {

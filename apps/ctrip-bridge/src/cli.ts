@@ -1,4 +1,5 @@
 import { createDatabase } from "@geo/db";
+import { ContentAddressedMediaStore } from "@geo/media";
 
 import { parseCtripBridgeTenantConfigs, requireSimulatorHost } from "./config.js";
 import { createCtripBridgeHttpServer, listenCtripBridgeHttpServer } from "./http-server.js";
@@ -11,8 +12,9 @@ if (process.env.CTRIP_BRIDGE_MODE !== "simulator") {
 }
 const databaseUrl = process.env.DATABASE_URL;
 const tenantJson = process.env.CTRIP_BRIDGE_TENANTS_JSON;
-if (databaseUrl === undefined || tenantJson === undefined) {
-  throw new Error("DATABASE_URL and CTRIP_BRIDGE_TENANTS_JSON are required");
+const mediaObjectRoot = process.env.GEO_MEDIA_OBJECT_ROOT;
+if (databaseUrl === undefined || tenantJson === undefined || mediaObjectRoot === undefined) {
+  throw new Error("DATABASE_URL, CTRIP_BRIDGE_TENANTS_JSON and GEO_MEDIA_OBJECT_ROOT are required");
 }
 const host = requireSimulatorHost(process.env.CTRIP_BRIDGE_HOST ?? "127.0.0.1");
 const port = Number(process.env.CTRIP_BRIDGE_PORT ?? "9030");
@@ -26,6 +28,7 @@ const database = createDatabase({
   maxConnections: 4,
 });
 const controlPlane = new PostgresCtripBridgeControlPlane(database);
+const mediaObjectStore = new ContentAddressedMediaStore(mediaObjectRoot);
 const tenants = parseCtripBridgeTenantConfigs(tenantJson).map((config) => {
   const simulator = new CtripCommunitySimulator();
   return {
@@ -35,6 +38,7 @@ const tenants = parseCtripBridgeTenantConfigs(tenantJson).map((config) => {
       tenantId: config.tenantId,
       bridgePrincipalId: config.bridgePrincipalId,
       controlPlane,
+      mediaObjectStore,
       adapter: simulator,
     }),
   };

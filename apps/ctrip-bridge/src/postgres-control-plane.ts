@@ -1,4 +1,4 @@
-import { publicationVariantPayloadSchema } from "@geo/contracts";
+import { mediaReferenceSchema, publicationVariantPayloadSchema } from "@geo/contracts";
 import { withTenantTransaction, type Database, type TenantTransaction } from "@geo/db";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
@@ -7,6 +7,7 @@ import type {
   CtripBridgeControlPlane,
   CtripBridgeExecutionContext,
   CtripBridgeHandoffDraft,
+  CtripBridgeMediaAsset,
   CtripBridgePreparedEvidence,
   CtripBridgeReadbackObservation,
   CtripBridgeSubmitObservation,
@@ -17,6 +18,7 @@ const handoffRowSchema = z.strictObject({
   tenant_id: z.string().uuid(),
   channel_account_id: z.string().uuid(),
   variant_id: z.string().uuid(),
+  content_version_id: z.string().uuid(),
   platform: z.literal("ctrip_community"),
   state: z.enum([
     "handoff_pending",
@@ -50,6 +52,7 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     tenantId: parsed.tenant_id,
     channelAccountId: parsed.channel_account_id,
     variantId: parsed.variant_id,
+    contentVersionId: parsed.content_version_id,
     platform: parsed.platform,
     state: parsed.state,
     previewHash: parsed.preview_hash,
@@ -61,6 +64,81 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     submitEvidenceKind: parsed.submit_evidence_kind,
     submitPermitConsumedAt: parsed.submit_permit_consumed_at?.toISOString() ?? null,
     payload: parsed.payload,
+  };
+}
+
+const mediaAssetRowSchema = z.strictObject({
+  content_version_id: z.string().uuid(),
+  position: z.coerce.number().int().nonnegative(),
+  binding_platform: z.literal("ctrip_community"),
+  binding_role: z.enum(["cover", "inline"]),
+  binding_alt_text: z.string(),
+  binding_caption: z.string(),
+  storage_key: z.string().trim().min(1),
+  id: z.string().uuid(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  mime_type: z.string(),
+  byte_length: z.coerce.number().int().positive().safe(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  platform: z.literal("ctrip_community"),
+  role: z.enum(["cover", "inline"]),
+  alt_text: z.string(),
+  caption: z.string(),
+  fact_ids: z.array(z.string().uuid()),
+  visual_brief: z.unknown(),
+  visual_brief_hash: z.string().regex(/^[a-f0-9]{64}$/u),
+  rights: z.unknown(),
+  provenance: z.unknown(),
+  inspection_asset_sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  inspection_status: z.enum(["passed", "failed"]),
+  evaluator: z.string(),
+  evaluator_mode: z.enum(["fixture", "live"]),
+  evaluator_version: z.string(),
+  response_sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  inspected_at: z.coerce.date(),
+  ocr_text: z.string(),
+  labels: z.unknown(),
+});
+
+function mediaAssetView(row: unknown): CtripBridgeMediaAsset {
+  const parsed = mediaAssetRowSchema.parse(row);
+  return {
+    contentVersionId: parsed.content_version_id,
+    position: parsed.position,
+    bindingPlatform: parsed.binding_platform,
+    bindingRole: parsed.binding_role,
+    bindingAltText: parsed.binding_alt_text,
+    bindingCaption: parsed.binding_caption,
+    storageKey: parsed.storage_key,
+    reference: mediaReferenceSchema.parse({
+      id: parsed.id,
+      sha256: parsed.sha256,
+      mimeType: parsed.mime_type,
+      byteLength: parsed.byte_length,
+      width: parsed.width,
+      height: parsed.height,
+      platform: parsed.platform,
+      role: parsed.role,
+      altText: parsed.alt_text,
+      caption: parsed.caption,
+      factIds: parsed.fact_ids,
+      visualBrief: parsed.visual_brief,
+      visualBriefHash: parsed.visual_brief_hash,
+      rights: parsed.rights,
+      provenance: parsed.provenance,
+      inspection: {
+        assetSha256: parsed.inspection_asset_sha256,
+        status: parsed.inspection_status,
+        evaluator: parsed.evaluator,
+        evaluatorMode: parsed.evaluator_mode,
+        evaluatorVersion: parsed.evaluator_version,
+        responseSha256: parsed.response_sha256,
+        inspectedAt: parsed.inspected_at.toISOString(),
+        ocrText: parsed.ocr_text,
+        labels: z.array(z.string()).parse(parsed.labels),
+      },
+    }),
   };
 }
 
@@ -97,7 +175,7 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
                handoff.preview_hash, handoff.payload_hash, handoff.adapter_version,
                handoff.bridge_service_principal_id, handoff.external_draft_id,
                handoff.submit_outcome, handoff.submit_evidence_kind,
-               handoff.submit_permit_consumed_at,
+               handoff.submit_permit_consumed_at, variant.content_version_id,
                variant.payload
         from geo.publication_assisted_handoffs as handoff
         join geo.publication_variants as variant
@@ -108,6 +186,60 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
       const row = result.rows[0];
       if (row === undefined) throw new Error("Ctrip assisted handoff was not found");
       return handoffView(row);
+    });
+  }
+
+  loadPreparedMediaAssets(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+  ): Promise<readonly CtripBridgeMediaAsset[]> {
+    return this.#transaction(context, async (transaction) => {
+      const result = await sql<z.input<typeof mediaAssetRowSchema>>`
+        select variant.content_version_id, binding.position,
+               binding.platform as binding_platform, binding.role as binding_role,
+               binding.alt_text as binding_alt_text,
+               binding.caption as binding_caption, asset.storage_key,
+               asset.id, asset.sha256, asset.mime_type, asset.byte_length::text,
+               asset.width, asset.height, asset.platform, asset.role,
+               asset.alt_text, asset.caption, asset.fact_ids, asset.visual_brief,
+               asset.visual_brief_hash, asset.rights, asset.provenance,
+               inspection.asset_sha256 as inspection_asset_sha256,
+               inspection.status as inspection_status, inspection.evaluator,
+               inspection.evaluator_mode, inspection.evaluator_version,
+               inspection.response_sha256, inspection.inspected_at,
+               inspection.ocr_text, inspection.labels
+        from geo.publication_variants as variant
+        cross join lateral jsonb_array_elements(
+          coalesce(variant.payload -> 'media', '[]'::jsonb)
+        ) with ordinality as payload_media(reference, ordinal)
+        join geo.media_assets as asset
+          on asset.tenant_id = variant.tenant_id
+         and asset.id = (payload_media.reference ->> 'id')::uuid
+         and asset.content_version_id = variant.content_version_id
+        join geo.content_media_bindings as binding
+          on binding.tenant_id = variant.tenant_id
+         and binding.content_version_id = variant.content_version_id
+         and binding.media_asset_id = asset.id
+        join lateral (
+          select inspected.asset_sha256, inspected.status, inspected.evaluator,
+                 inspected.evaluator_mode, inspected.evaluator_version,
+                 inspected.response_sha256, inspected.inspected_at,
+                 inspected.ocr_text, inspected.labels
+          from geo.media_inspections as inspected
+          where inspected.tenant_id = asset.tenant_id
+            and inspected.media_asset_id = asset.id
+            and inspected.asset_sha256 = asset.sha256
+          order by inspected.inspected_at desc, inspected.id desc
+          limit 1
+        ) as inspection on true
+        where variant.tenant_id = ${context.tenantId}::uuid
+          and variant.id = ${handoff.variantId}::uuid
+          and variant.content_version_id = ${handoff.contentVersionId}::uuid
+          and variant.platform = 'ctrip_community'
+          and asset.source_class <> 'legacy'
+        order by payload_media.ordinal
+      `.execute(transaction);
+      return result.rows.map(mediaAssetView);
     });
   }
 

@@ -136,7 +136,7 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
           "cache-control": "no-store",
           "x-content-type-options": "nosniff",
           "content-security-policy":
-            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
         });
         response.end(html);
         return;

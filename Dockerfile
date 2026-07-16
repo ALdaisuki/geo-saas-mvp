@@ -24,6 +24,8 @@ COPY packages/connectors/package.json packages/connectors/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/db/package.json packages/db/package.json
+COPY packages/media/package.json packages/media/package.json
+COPY packages/research/package.json packages/research/package.json
 COPY packages/visibility/package.json packages/visibility/package.json
 COPY tests/e2e/package.json tests/e2e/package.json
 

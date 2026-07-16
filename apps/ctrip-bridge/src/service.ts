@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { renderCtripCommunityAssistedDraft } from "@geo/connectors";
 import {
   ctripBridgeCommandSchema,
@@ -5,12 +7,15 @@ import {
   type CtripBridgeCommand,
   type CtripBridgeResult,
 } from "@geo/contracts";
+import { sha256Canonical } from "@geo/core";
+import type { MediaObjectStore } from "@geo/media";
 
 import type {
   CtripBridgeControlPlane,
   CtripBridgeExecutionContext,
   CtripBridgeHandoffDraft,
   CtripFixedAdapter,
+  CtripTrustedMediaAttachment,
 } from "./types.js";
 
 export class CtripBridgeServiceError extends Error {
@@ -28,12 +33,14 @@ export class CtripBridgeCommandService {
   readonly #context: Omit<CtripBridgeExecutionContext, "requestId">;
   readonly #controlPlane: CtripBridgeControlPlane;
   readonly #adapter: CtripFixedAdapter;
+  readonly #mediaObjectStore: Pick<MediaObjectStore, "get">;
 
   constructor(options: {
     readonly tenantId: string;
     readonly bridgePrincipalId: string;
     readonly controlPlane: CtripBridgeControlPlane;
     readonly adapter: CtripFixedAdapter;
+    readonly mediaObjectStore: Pick<MediaObjectStore, "get">;
   }) {
     this.#context = {
       tenantId: options.tenantId,
@@ -41,6 +48,7 @@ export class CtripBridgeCommandService {
     };
     this.#controlPlane = options.controlPlane;
     this.#adapter = options.adapter;
+    this.#mediaObjectStore = options.mediaObjectStore;
   }
 
   async #load(command: CtripBridgeCommand): Promise<{
@@ -89,12 +97,81 @@ export class CtripBridgeCommandService {
     return { context, handoff, draft };
   }
 
+  async #loadTrustedMedia(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+  ): Promise<readonly CtripTrustedMediaAttachment[]> {
+    const expected = handoff.payload.media;
+    const assets = await this.#controlPlane.loadPreparedMediaAssets(context, handoff);
+    if (assets.length !== expected.length) {
+      throw new CtripBridgeServiceError(
+        409,
+        "CTRIP_MEDIA_PAYLOAD_INVALID",
+        "Audited media asset set is incomplete",
+      );
+    }
+
+    const attachments: CtripTrustedMediaAttachment[] = [];
+    for (const [position, reference] of expected.entries()) {
+      const asset = assets[position];
+      if (
+        asset === undefined ||
+        asset.contentVersionId !== handoff.contentVersionId ||
+        asset.position !== position ||
+        asset.bindingPlatform !== "ctrip_community" ||
+        asset.bindingRole !== reference.role ||
+        asset.bindingAltText !== reference.altText ||
+        asset.bindingCaption !== reference.caption ||
+        reference.platform !== handoff.platform ||
+        asset.reference.inspection.status !== "passed" ||
+        sha256Canonical(asset.reference) !== sha256Canonical(reference)
+      ) {
+        throw new CtripBridgeServiceError(
+          409,
+          "CTRIP_MEDIA_PAYLOAD_INVALID",
+          "Audited media metadata or binding no longer matches",
+        );
+      }
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await this.#mediaObjectStore.get({
+          tenantId: context.tenantId,
+          storageKey: asset.storageKey,
+        });
+      } catch {
+        throw new CtripBridgeServiceError(
+          409,
+          "CTRIP_MEDIA_PAYLOAD_INVALID",
+          "Audited media bytes are unavailable or invalid",
+        );
+      }
+      const actualSha256 = createHash("sha256").update(bytes).digest("hex");
+      if (bytes.byteLength !== reference.byteLength || actualSha256 !== reference.sha256) {
+        throw new CtripBridgeServiceError(
+          409,
+          "CTRIP_MEDIA_PAYLOAD_INVALID",
+          "Audited media bytes no longer match",
+        );
+      }
+      attachments.push(
+        Object.freeze({
+          position,
+          reference,
+          bytes: Uint8Array.from(bytes),
+        }),
+      );
+    }
+    return Object.freeze(attachments);
+  }
+
   async execute(input: unknown): Promise<CtripBridgeResult> {
     const command = ctripBridgeCommandSchema.parse(input);
     const loaded = await this.#load(command);
     switch (command.command) {
       case "prepare": {
-        const evidence = await this.#adapter.prepare(loaded.handoff, loaded.draft);
+        const media = await this.#loadTrustedMedia(loaded.context, loaded.handoff);
+        const evidence = await this.#adapter.prepare(loaded.handoff, loaded.draft, media);
         await this.#controlPlane.recordPrepared(loaded.context, loaded.handoff, evidence);
         return ctripBridgeResultSchema.parse({
           schemaVersion: "geo.ctrip-bridge.result.v1",

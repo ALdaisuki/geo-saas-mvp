@@ -16,6 +16,7 @@ const handoffId = "10000000-0000-4000-8000-000000000002";
 const bridgePrincipalId = "10000000-0000-4000-8000-000000000003";
 const channelAccountId = "10000000-0000-4000-8000-000000000004";
 const variantId = "10000000-0000-4000-8000-000000000005";
+const contentVersionId = "10000000-0000-4000-8000-000000000008";
 const accessToken = "ctrip-bridge-http-test-token-with-safe-length";
 
 async function availablePort(): Promise<number> {
@@ -51,6 +52,7 @@ function runtime() {
     tenantId,
     channelAccountId,
     variantId,
+    contentVersionId,
     platform: "ctrip_community",
     state: "handoff_pending",
     previewHash: "",
@@ -69,6 +71,7 @@ function runtime() {
   const current = { value: handoff };
   const port: CtripBridgeControlPlane = {
     loadHandoff: vi.fn(async () => current.value),
+    loadPreparedMediaAssets: vi.fn(async () => []),
     recordPrepared: vi.fn(async () => {
       current.value = { ...current.value, state: "draft_prepared" };
     }),
@@ -107,6 +110,7 @@ async function startedServer() {
     tenantId,
     bridgePrincipalId,
     controlPlane: state.port,
+    mediaObjectStore: { get: vi.fn(async () => new Uint8Array()) },
     adapter: state.simulator,
   });
   const port = await availablePort();

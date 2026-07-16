@@ -380,7 +380,10 @@ services:
       CTRIP_BRIDGE_HOST: 127.0.0.1
       CTRIP_BRIDGE_PORT: "9030"
       CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:-[]}
+      GEO_MEDIA_OBJECT_ROOT: /var/lib/geo/media
       DATABASE_URL: postgresql://${GEO_API_DB_USER:-geo_api}:${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+    volumes:
+      - media-data:/var/lib/geo/media:ro
     healthcheck:
       test:
         - CMD

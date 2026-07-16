@@ -6,7 +6,8 @@
       "@geo/connectors": ["../../packages/connectors/src/index.ts"],
       "@geo/contracts": ["../../packages/contracts/src/index.ts"],
       "@geo/core": ["../../packages/core/src/index.ts"],
-      "@geo/db": ["../../packages/db/src/index.ts"]
+      "@geo/db": ["../../packages/db/src/index.ts"],
+      "@geo/media": ["../../packages/media/src/index.ts"]
     },
     "rootDir": "../.."
   },

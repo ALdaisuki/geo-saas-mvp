@@ -1,0 +1,103 @@
+import type { CtripBridgeEvidenceKind, PublicationVariantPayload } from "@geo/contracts";
+import type { RenderedDraft } from "@geo/connectors";
+
+export const CTRIP_SIMULATOR_ADAPTER_VERSION = "ctrip-community-simulator-v1";
+
+export interface CtripBridgeExecutionContext {
+  readonly tenantId: string;
+  readonly bridgePrincipalId: string;
+  readonly requestId: string;
+}
+
+export interface CtripBridgeHandoffDraft {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly channelAccountId: string;
+  readonly variantId: string;
+  readonly platform: "ctrip_community";
+  readonly state:
+    | "handoff_pending"
+    | "session_required"
+    | "challenge_required"
+    | "draft_prepared"
+    | "awaiting_operator_submit"
+    | "readback_pending";
+  readonly previewHash: string;
+  readonly payloadHash: string;
+  readonly adapterVersion: string;
+  readonly bridgePrincipalId: string;
+  readonly payload: PublicationVariantPayload;
+}
+
+export interface CtripBridgePreparedEvidence {
+  readonly externalDraftId: string;
+  readonly sessionEvidenceHash: string;
+  readonly draftEvidenceHash: string;
+  readonly evidenceHash: string;
+  readonly observedAt: string;
+  readonly evidenceKind: "simulation" | "browser";
+}
+
+export interface CtripBridgeSubmitObservation {
+  readonly outcome: "accepted" | "uncertain" | "rejected";
+  readonly evidenceHash: string;
+  readonly observedAt: string;
+  readonly evidenceKind: "simulation" | "browser";
+}
+
+export interface CtripBridgeReadbackObservation {
+  readonly outcome: "confirmed" | "not_found" | "mismatch" | "unavailable" | "simulation_only";
+  readonly evidenceHash: string;
+  readonly observedAt: string;
+  readonly evidenceKind: CtripBridgeEvidenceKind;
+  readonly observedPayloadHash: string | null;
+  readonly externalId: string | null;
+  readonly externalUrl: string | null;
+}
+
+export interface CtripBridgeControlPlane {
+  loadHandoff(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+  ): Promise<CtripBridgeHandoffDraft>;
+  recordPrepared(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    evidence: CtripBridgePreparedEvidence,
+  ): Promise<void>;
+  consumeSubmitPermit(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+    submitPermit: string,
+  ): Promise<void>;
+  recordSubmitObservation(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    observation: CtripBridgeSubmitObservation,
+  ): Promise<{ readonly receiptId: string; readonly readbackId: string }>;
+  recordReadback(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    observation: CtripBridgeReadbackObservation,
+  ): Promise<{
+    readonly state: "readback_pending" | "confirmed" | "needs_review";
+    readonly externalId: string | null;
+    readonly externalUrl: string | null;
+  }>;
+}
+
+export interface CtripFixedAdapter {
+  readonly version: string;
+  prepare(
+    handoff: CtripBridgeHandoffDraft,
+    draft: RenderedDraft,
+  ): Promise<CtripBridgePreparedEvidence>;
+  submit(
+    handoff: CtripBridgeHandoffDraft,
+    draft: RenderedDraft,
+  ): Promise<CtripBridgeSubmitObservation>;
+  readback(
+    handoff: CtripBridgeHandoffDraft,
+    draft: RenderedDraft,
+  ): Promise<CtripBridgeReadbackObservation>;
+}

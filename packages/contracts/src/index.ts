@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export * from "./article-templates.js";
+export * from "./ctrip-bridge.js";
 
 export const idSchema = z.string().uuid();
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);

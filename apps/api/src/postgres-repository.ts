@@ -3746,16 +3746,25 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
       input: PublicationRequestInput,
     ): Promise<PublicationRequestResult> {
       return tenant(context, async (transaction) => {
-        const result = await sql<{
+        type ConsumptionRow = {
           publication_job_id: string;
           publication_outbox_event_id: string;
           was_created: boolean;
-        }>`
-          select * from geo.consume_publication_grant(
-            ${input.grantId}, ${input.tokenHash}, ${input.idempotencyKey},
-            ${input.requestHash}, ${input.executionLevel}, ${input.scheduledFor}
-          )
-        `.execute(transaction);
+        };
+        const result =
+          input.executionLevel === "assisted"
+            ? await sql<ConsumptionRow>`
+                select * from geo.consume_ctrip_assisted_publication_grant(
+                  ${input.grantId}, ${input.tokenHash}, ${input.idempotencyKey},
+                  ${input.requestHash}, ${input.executionLevel}, ${input.scheduledFor}
+                )
+              `.execute(transaction)
+            : await sql<ConsumptionRow>`
+                select * from geo.consume_publication_grant(
+                  ${input.grantId}, ${input.tokenHash}, ${input.idempotencyKey},
+                  ${input.requestHash}, ${input.executionLevel}, ${input.scheduledFor}
+                )
+              `.execute(transaction);
         const row = result.rows[0];
         if (row === undefined) {
           throw new RepositoryConflictError("Publication grant was not consumed");

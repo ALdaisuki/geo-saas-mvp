@@ -136,4 +136,18 @@ describe("PostgreSQL repository contracts", () => {
     expect(recordBlock).toContain("manual_publication_package.exported");
     expect(recordBlock).toContain('publicationStatus: "not_published"');
   });
+
+  it("routes only assisted grant consumption through the narrow Ctrip admission function", () => {
+    const consumeBlock = repositorySource.slice(
+      repositorySource.indexOf("async consumePublicationGrant"),
+      repositorySource.indexOf("async resolvePublicationReplay"),
+    );
+
+    expect(consumeBlock).toContain('input.executionLevel === "assisted"');
+    expect(consumeBlock).toContain("geo.consume_ctrip_assisted_publication_grant");
+    expect(consumeBlock).toContain("geo.consume_publication_grant");
+    expect(consumeBlock.indexOf("geo.consume_ctrip_assisted_publication_grant")).toBeLessThan(
+      consumeBlock.indexOf("geo.consume_publication_grant"),
+    );
+  });
 });

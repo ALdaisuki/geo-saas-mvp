@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { stableSha256, type PlatformConnector, type ReconcileResult } from "@geo/connectors";
+import {
+  renderCtripCommunityAssistedDraft,
+  stableSha256,
+  type PlatformConnector,
+  type ReconcileResult,
+} from "@geo/connectors";
 import { publicationReceiptSchema } from "@geo/contracts";
 
 import {
@@ -11,6 +16,7 @@ import {
   type WorkerError,
 } from "./errors.js";
 import { parsePublicationRequestedPayload } from "./event.js";
+import type { CtripAssistedAccountConfig } from "./ctrip-assisted-config.js";
 import type {
   ClaimedOutboxEvent,
   ConnectorResolver,
@@ -34,6 +40,7 @@ export interface OutboxWorkerOptions {
   maxAttempts?: number;
   retryBaseSeconds?: number;
   retryMaxSeconds?: number;
+  ctripAssistedAccounts?: readonly CtripAssistedAccountConfig[];
   now?: () => Date;
   idGenerator?: () => string;
 }
@@ -41,6 +48,7 @@ export interface OutboxWorkerOptions {
 type EventOutcome = Omit<RunSummary, "claimed">;
 
 const EMPTY_OUTCOME: EventOutcome = {
+  handedOff: 0,
   completed: 0,
   acknowledged: 0,
   retried: 0,
@@ -49,6 +57,7 @@ const EMPTY_OUTCOME: EventOutcome = {
 };
 
 function addOutcome(target: RunSummary, outcome: EventOutcome): void {
+  target.handedOff += outcome.handedOff;
   target.completed += outcome.completed;
   target.acknowledged += outcome.acknowledged;
   target.retried += outcome.retried;
@@ -72,6 +81,7 @@ export class OutboxWorker {
   readonly #maxAttempts: number;
   readonly #retryBaseSeconds: number;
   readonly #retryMaxSeconds: number;
+  readonly #ctripAssistedAccounts: ReadonlyMap<string, CtripAssistedAccountConfig>;
   readonly #now: () => Date;
   readonly #idGenerator: () => string;
 
@@ -87,6 +97,12 @@ export class OutboxWorker {
     this.#maxAttempts = options.maxAttempts ?? 5;
     this.#retryBaseSeconds = options.retryBaseSeconds ?? 15;
     this.#retryMaxSeconds = options.retryMaxSeconds ?? 900;
+    this.#ctripAssistedAccounts = new Map(
+      (options.ctripAssistedAccounts ?? []).map((config) => [
+        `${config.tenantId}:${config.channelAccountId}`,
+        config,
+      ]),
+    );
     this.#now = options.now ?? (() => new Date());
     this.#idGenerator = options.idGenerator ?? randomUUID;
 
@@ -98,7 +114,8 @@ export class OutboxWorker {
       this.#leaseSeconds < 5 ||
       this.#leaseSeconds > 600 ||
       this.#maxAttempts < 1 ||
-      this.#actorIdsByTenant.size < 1
+      this.#actorIdsByTenant.size < 1 ||
+      this.#ctripAssistedAccounts.size !== (options.ctripAssistedAccounts ?? []).length
     ) {
       throw new TypeError("Invalid outbox worker limits");
     }
@@ -167,6 +184,12 @@ export class OutboxWorker {
       this.#assertWorkMatchesEvent(work, payload);
       connector = this.#getConnector(payload.platform);
 
+      if (this.#isCtripAssisted(work) && work.assistedHandoff !== null) {
+        this.#assertExistingAssistedHandoff(work);
+        const acknowledged = await this.#dispatcher.acknowledge(event.eventId, this.#workerId);
+        return { ...EMPTY_OUTCOME, acknowledged: acknowledged ? 1 : 0 };
+      }
+
       if (work.job.state === "confirmed" || work.job.state === "preview_completed") {
         if (work.existingReceipt === null) {
           throw new PermanentWorkerError(
@@ -210,7 +233,7 @@ export class OutboxWorker {
         );
       }
 
-      this.#assertCapability(work);
+      const assistedConfig = this.#assertCapability(work, context);
       this.#assertPayloadIntegrity(work, payload);
 
       const acquisition = await this.#jobs.acquirePublicationExecution({
@@ -254,6 +277,10 @@ export class OutboxWorker {
           retried: !final && released ? 1 : 0,
           deadLettered: final && released ? 1 : 0,
         };
+      }
+
+      if (assistedConfig !== null) {
+        return this.#createAssistedHandoff(event, context, work, attemptId, assistedConfig);
       }
 
       const startedAt = this.#now();
@@ -350,11 +377,44 @@ export class OutboxWorker {
     }
   }
 
-  #assertCapability(work: PublicationWork): void {
+  #isCtripAssisted(work: PublicationWork): boolean {
+    return work.job.platform === "ctrip_community" && work.job.executionLevel === "assisted";
+  }
+
+  #assertCapability(
+    work: PublicationWork,
+    context: TenantContext,
+  ): CtripAssistedAccountConfig | null {
+    if (this.#isCtripAssisted(work)) {
+      if (
+        work.account.status !== "active" ||
+        work.account.capability !== "browser_assisted" ||
+        !work.account.supportedExecutionLevels.includes("assisted")
+      ) {
+        throw new PermanentWorkerError(
+          "ACCOUNT_CAPABILITY_BLOCKED",
+          "Ctrip account cannot create an assisted handoff",
+        );
+      }
+      const config = this.#ctripAssistedAccounts.get(`${context.tenantId}:${work.account.id}`);
+      if (config === undefined) {
+        throw new RetryableWorkerError(
+          "CTRIP_ASSISTED_ACCOUNT_NOT_CONFIGURED",
+          "No reviewed Ctrip adapter mapping exists for this tenant and account",
+        );
+      }
+      if (Date.parse(config.evidenceExpiresAt) <= this.#now().getTime()) {
+        throw new PermanentWorkerError(
+          "CTRIP_ASSISTED_ADAPTER_EVIDENCE_EXPIRED",
+          "The reviewed Ctrip adapter mapping has expired",
+        );
+      }
+      return config;
+    }
     if (work.job.executionLevel !== "dry_run") {
       throw new PermanentWorkerError(
         "MVP_DRY_RUN_ONLY",
-        "This worker release executes dry-run publication only",
+        "This worker release supports dry-run and Ctrip assisted handoff creation only",
       );
     }
     if (
@@ -367,6 +427,78 @@ export class OutboxWorker {
         "Channel account cannot execute the requested dry-run",
       );
     }
+    return null;
+  }
+
+  #assertExistingAssistedHandoff(work: PublicationWork): void {
+    const handoff = work.assistedHandoff;
+    if (
+      handoff === null ||
+      handoff.jobId !== work.job.id ||
+      handoff.channelAccountId !== work.account.id ||
+      handoff.variantId !== work.variant.id ||
+      handoff.platform !== "ctrip_community" ||
+      handoff.payloadHash !== work.job.payloadHash ||
+      handoff.auditHash !== work.authorization.auditHash
+    ) {
+      throw new PermanentWorkerError(
+        "ASSISTED_HANDOFF_BINDING_MISMATCH",
+        "Existing Ctrip handoff does not match its audited publication job",
+      );
+    }
+  }
+
+  async #createAssistedHandoff(
+    event: ClaimedOutboxEvent,
+    context: TenantContext,
+    work: PublicationWork,
+    attemptId: string,
+    config: CtripAssistedAccountConfig,
+  ): Promise<EventOutcome> {
+    const renderedDraft = renderCtripCommunityAssistedDraft({
+      tenantId: context.tenantId,
+      channelAccountId: work.account.id,
+      executionLevel: "assisted",
+      variantId: work.variant.id,
+      payload: work.variant.payload,
+    });
+    const now = this.#now();
+    const expiresAt = new Date(
+      Math.min(
+        now.getTime() + config.handoffTtlSeconds * 1_000,
+        Date.parse(work.authorization.grantExpiresAt),
+        Date.parse(work.authorization.artifactExpiresAt),
+      ),
+    );
+    if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime()) {
+      throw new PermanentWorkerError(
+        "PUBLICATION_AUTHORIZATION_INVALID",
+        "Ctrip handoff authorization has expired",
+      );
+    }
+    const handoffId = this.#idGenerator();
+    const result = await this.#jobs.createAssistedHandoff({
+      context,
+      handoffId,
+      jobId: work.job.id,
+      attemptId,
+      previewHash: renderedDraft.previewHash,
+      adapterVersion: config.adapterVersion,
+      idempotencyKey: `ctrip-handoff:${work.job.id}`,
+      expiresAt,
+    });
+    if (result.handoffId !== handoffId) {
+      throw new PermanentWorkerError(
+        "ASSISTED_HANDOFF_ID_MISMATCH",
+        "Persisted Ctrip handoff did not return the requested identity",
+      );
+    }
+    const acknowledged = await this.#dispatcher.acknowledge(event.eventId, this.#workerId);
+    return {
+      ...EMPTY_OUTCOME,
+      handedOff: result.wasCreated ? 1 : 0,
+      acknowledged: acknowledged ? 1 : 0,
+    };
   }
 
   #assertPayloadIntegrity(work: PublicationWork, payload: PublicationRequestedPayload): void {
@@ -564,7 +696,8 @@ export class OutboxWorker {
   ): Promise<EventOutcome> {
     const configurationBlocked =
       failure.code === "WORKER_ACTOR_NOT_CONFIGURED" ||
-      failure.code === "WORKER_ACTOR_NOT_AUTHORIZED";
+      failure.code === "WORKER_ACTOR_NOT_AUTHORIZED" ||
+      failure.code === "CTRIP_ASSISTED_ACCOUNT_NOT_CONFIGURED";
     let final =
       !configurationBlocked &&
       (failure.disposition === "dead_letter" || event.attempts >= this.#maxAttempts);

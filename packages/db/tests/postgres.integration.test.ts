@@ -918,6 +918,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0015_tenant_member_identity_reader",
       "0016_brand_agent_profiles",
       "0017_ctrip_assisted_handoffs",
+      "0018_ctrip_assisted_admission",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2297,6 +2298,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     const sessionEvidenceHash = "6".repeat(64);
     const draftEvidenceHash = "7".repeat(64);
     const ctripAuditHash = "3".repeat(64);
+    let ctripAssistedJobId: string | undefined;
 
     await adminClient.query("BEGIN");
     try {
@@ -2422,44 +2424,136 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           "0".repeat(64),
         ],
       );
+      await adminClient.query("SAVEPOINT reject_unattended");
+      await expect(
+        adminClient.query(
+          `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+             $1, $2, $3, $4, 'unattended', NULL
+           )`,
+          [
+            ids.ctripAssistedGrant,
+            "0".repeat(64),
+            "ctrip-unattended-rejected",
+            assistedRequestHash,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "0A000" });
+      await adminClient.query("ROLLBACK TO SAVEPOINT reject_unattended");
+
       await adminClient.query(
-        `UPDATE geo.publication_grants
-         SET status = 'consumed', consumed_at = clock_timestamp(),
-             consumed_by_actor_id = $3
+        `UPDATE geo.channel_accounts
+         SET last_verified_at = clock_timestamp() - interval '25 hours'
          WHERE tenant_id = $1 AND id = $2`,
-        [tenantId, ids.ctripAssistedGrant, actorId],
+        [tenantId, SEED_IDS.zhongtong.ctrip],
       );
+      await adminClient.query("SAVEPOINT reject_stale_evidence");
+      await expect(
+        adminClient.query(
+          `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+             $1, $2, $3, $4, 'assisted', NULL
+           )`,
+          [
+            ids.ctripAssistedGrant,
+            "0".repeat(64),
+            "ctrip-stale-evidence-rejected",
+            assistedRequestHash,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await adminClient.query("ROLLBACK TO SAVEPOINT reject_stale_evidence");
       await adminClient.query(
-        `INSERT INTO geo.publication_jobs
-           (tenant_id, id, grant_id, audit_artifact_id, variant_id,
-            channel_account_id, platform, execution_level, state, idempotency_key,
-            request_hash, payload_hash, scheduled_for, lease_owner, lease_expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'ctrip_community', 'assisted',
-                 'dispatching', 'ctrip-assisted-integration', $7, $8,
-                 clock_timestamp(), 'ctrip-integration-worker',
-                 clock_timestamp() + interval '10 minutes')`,
-        [
-          tenantId,
-          ids.ctripAssistedJob,
-          ids.ctripAssistedGrant,
-          ids.ctripAssistedAuditArtifact,
-          ids.ctripAssistedVariant,
-          SEED_IDS.zhongtong.ctrip,
-          assistedRequestHash,
-          payloadHash,
-        ],
+        `UPDATE geo.channel_accounts
+         SET last_verified_at = clock_timestamp()
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, SEED_IDS.zhongtong.ctrip],
+      );
+
+      await adminClient.query("SAVEPOINT reject_scoped_control");
+      await adminClient.query(
+        `INSERT INTO geo.automation_controls
+           (tenant_id, scope_type, scope_key, mode, kill_switch_enabled)
+         VALUES ($1, 'platform', 'ctrip_community', 'shadow', false)
+         ON CONFLICT (tenant_id, scope_type, scope_key)
+         DO UPDATE SET mode = 'shadow', kill_switch_enabled = false`,
+        [tenantId],
+      );
+      await expect(
+        adminClient.query(
+          `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+             $1, $2, $3, $4, 'assisted', NULL
+           )`,
+          [
+            ids.ctripAssistedGrant,
+            "0".repeat(64),
+            "ctrip-scoped-control-rejected",
+            assistedRequestHash,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await adminClient.query("ROLLBACK TO SAVEPOINT reject_scoped_control");
+
+      await adminClient.query("SAVEPOINT reject_half_open_circuit");
+      await adminClient.query(
+        `INSERT INTO geo.circuit_breakers
+           (tenant_id, scope_type, scope_key, state, reason)
+         VALUES ($1, 'platform', 'ctrip_community', 'half_open', 'admission test')
+         ON CONFLICT (tenant_id, scope_type, scope_key)
+         DO UPDATE SET state = 'half_open', opened_at = NULL,
+                       reason = 'admission test'`,
+        [tenantId],
+      );
+      await expect(
+        adminClient.query(
+          `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+             $1, $2, $3, $4, 'assisted', NULL
+           )`,
+          [ids.ctripAssistedGrant, "0".repeat(64), "ctrip-half-open-rejected", assistedRequestHash],
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+      await adminClient.query("ROLLBACK TO SAVEPOINT reject_half_open_circuit");
+
+      const admitted = await adminClient.query<GrantConsumptionRow>(
+        `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+           $1, $2, $3, $4, 'assisted', NULL
+         )`,
+        [ids.ctripAssistedGrant, "0".repeat(64), "ctrip-assisted-integration", assistedRequestHash],
+      );
+      expect(admitted.rows[0]?.was_created).toBe(true);
+      ctripAssistedJobId = admitted.rows[0]?.publication_job_id;
+      if (ctripAssistedJobId === undefined) {
+        throw new Error("Ctrip assisted admission returned no job");
+      }
+      const replay = await adminClient.query<GrantConsumptionRow>(
+        `SELECT * FROM geo.consume_ctrip_assisted_publication_grant(
+           $1, $2, $3, $4, 'assisted', NULL
+         )`,
+        [ids.ctripAssistedGrant, "0".repeat(64), "ctrip-assisted-integration", assistedRequestHash],
+      );
+      expect(replay.rows[0]).toMatchObject({
+        publication_job_id: ctripAssistedJobId,
+        publication_outbox_event_id: admitted.rows[0]?.publication_outbox_event_id,
+        was_created: false,
+      });
+      await adminClient.query(
+        `UPDATE geo.publication_jobs
+         SET state = 'dispatching', lease_owner = 'ctrip-integration-worker',
+             lease_expires_at = clock_timestamp() + interval '10 minutes'
+         WHERE tenant_id = $1 AND id = $2`,
+        [tenantId, ctripAssistedJobId],
       );
       await adminClient.query(
         `INSERT INTO geo.publication_attempts
            (tenant_id, id, job_id, attempt_no, state, worker_id, request_hash)
          VALUES ($1, $2, $3, 1, 'started', 'ctrip-integration-worker', $4)`,
-        [tenantId, ids.ctripAssistedAttempt, ids.ctripAssistedJob, assistedRequestHash],
+        [tenantId, ids.ctripAssistedAttempt, ctripAssistedJobId, assistedRequestHash],
       );
       await adminClient.query("COMMIT");
     } catch (error) {
       await adminClient.query("ROLLBACK");
       throw error;
     }
+    const ctripJobId = ctripAssistedJobId;
+    if (ctripJobId === undefined) throw new Error("Ctrip assisted job was not committed");
 
     const functionPrivilege = await adminClient.query<{ allowed: boolean }>(
       `SELECT has_function_privilege(
@@ -2478,7 +2572,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
          )`,
         [
           ids.ctripAssistedHandoff,
-          ids.ctripAssistedJob,
+          ctripJobId,
           ids.ctripAssistedAttempt,
           previewHash,
           "ctrip-community-web-v1",
@@ -2640,7 +2734,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     const finished = await runtimeTransaction((client) =>
       client.query<{ circuits_opened: number; circuits_closed: number }>(
         "SELECT * FROM geo.finish_publication_execution($1, $2, 'uncertain'::text, $3)",
-        [ids.ctripAssistedJob, ids.ctripAssistedAttempt, "ASSISTED_SUBMIT_PERMIT_CONSUMED"],
+        [ctripJobId, ids.ctripAssistedAttempt, "ASSISTED_SUBMIT_PERMIT_CONSUMED"],
       ),
     );
     expect(finished.rows[0]).toEqual({ circuits_opened: 0, circuits_closed: 0 });

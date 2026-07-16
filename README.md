@@ -2,9 +2,9 @@
 
 面向多租户、多行业的 GEO 内容治理与 AI 可见性评测平台。首个行业包是旅游，首个租户是中通国际旅行社（24 小时热线 `4001133986`，微信 `ZTGL3411` / `ZTGL6431`）；通用数据模型不把旅行社字段写死，后续行业通过策略包、事实与查询集扩展。
 
-系统把生成、审计、授权和投放分开：Pi/Agent 只能提出动作，确定性服务负责事实校验、租户授权、不可变审计、一次性发布许可、outbox 与 Kill Switch。当前头条号、搜狐号、携程社区只有 `DryRunConnector`，没有已验证的普通公开发文 API；豆包/千问只有 fixture 和人工导入评测，Google 排名不能作为它们的代理指标。
+系统把生成、审计、授权和投放分开：Pi/Agent 只能提出动作，确定性服务负责事实校验、租户授权、不可变审计、一次性发布许可、outbox 与 Kill Switch。默认头条号、搜狐号、携程社区仍使用 `DryRunConnector`，没有已验证的普通公开发文 API；经书面授权、账号证据复核和精确租户/账号映射后，携程 `assisted` 请求只能自动创建内部人工接管 handoff，不会操作浏览器或声称已发布。豆包/千问只有 fixture 和人工导入评测，Google 排名不能作为它们的代理指标。
 
-`assisted` / `unattended` 发布请求会在治理评估、消耗 grant、创建 job 或写入 outbox 之前被确定性拒绝。当前“排期”和“回执”均指 Dry-run 预演链，不代表外部平台已接收内容。passed 且未过期的审计可导出独立人工发布包；该包固定标记 `requiresManualAction=true`、`publicationStatus=not_published`，不会触发外部发送。
+全部 `unattended` 和非携程 `assisted` 发布请求会在治理评估或创建 job 前被确定性拒绝。合格的携程 `assisted` 请求会经过 Plastic Promise、数据库账号证据、审计、控制面和熔断器复核，再由 Worker 生成确定性预览并创建 durable handoff；handoff 不是回执或发布确认。passed 且未过期的审计仍可导出独立人工发布包；该包固定标记 `requiresManualAction=true`、`publicationStatus=not_published`，不会触发外部发送。
 
 图片生产默认由 `GEO_MEDIA_PROVIDER=disabled` 关闭；唯一可启用的 `fixture` provider 只生成确定性 PNG，用于验证 VisualBrief、事实绑定、OCR/版权/来源审计、内容寻址存储和 successor 内容版本，不是可投放的生产图片，也不访问网络。带图的人工发布包会附带 `media-manifest.json` 和逐字节校验的 base64 附件；真实生图 provider 仍未实现，`live` 配置会在启动时被拒绝。
 
@@ -21,7 +21,7 @@ Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可
 | 图文生产与附件导出          | 默认关闭；fixture 可验证完整性与审计链                | 已接入真实生图 API 或图片可直接生产投放      |
 | GEO 文章模板目录            | 21 套共享 V1 模板贯通 Web、HTTP API、Pi 与 MCP        | 模板可绕过事实、策略或最终变体审计           |
 | Brand Agent Profile         | 品牌级不可变版本贯通 Web、HTTP API、Pi、MCP 与审计    | Profile 是事实来源或可绕过正文闭合与审计     |
-| 头条/搜狐/携程连接器        | `DRY_RUN`，输出未确认 preview receipt                 | 已发文、公开 API 或无人值守投放              |
+| 头条/搜狐/携程连接器        | 默认 `DRY_RUN`；携程可创建受审计的 `assisted` handoff | 已发文、公开 API、浏览器已接通或无人值守投放 |
 | 豆包/千问可见性             | fixture + manual import                               | 已调用真实产品搜索或可等同 Google            |
 | 品牌记忆正负反馈闭环        | 未纳入第一版；当前只保留显式治理上下文                | 系统会依据文章或审计结果自动改写长期记忆     |
 | GEO MCP                     | 11 个静态白名单工具                                   | 任意 MCP 工具访问或 Pi 内建 MCP              |

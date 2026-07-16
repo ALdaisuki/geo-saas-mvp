@@ -109,6 +109,24 @@ function draftHashMaterial(draft: Omit<RenderedDraft, "previewHash">): unknown {
   return draft;
 }
 
+export function renderCtripCommunityAssistedDraft(input: RenderDraftInput): RenderedDraft {
+  if (input.executionLevel !== "assisted") {
+    throw new TypeError("Ctrip assisted handoff rendering requires assisted execution");
+  }
+  const payload = publicationVariantPayloadSchema.parse(input.payload);
+  const hashMaterial: Omit<RenderedDraft, "previewHash"> = {
+    schemaVersion: "geo.connector.preview.v1",
+    platform: PLATFORM,
+    tenantId: input.tenantId,
+    channelAccountId: input.channelAccountId,
+    variantId: input.variantId,
+    executionLevel: input.executionLevel,
+    payload,
+    manualText: renderCtripText({ ...input, payload }),
+  };
+  return { ...hashMaterial, previewHash: stableSha256(draftHashMaterial(hashMaterial)) };
+}
+
 function statusError(status: Exclude<CtripSessionStatus, "ready">): {
   code: ConnectorPolicyErrorCode;
   message: string;
@@ -315,18 +333,7 @@ export class CtripCommunityConnector implements PlatformConnector {
   async renderDraft(input: RenderDraftInput): Promise<RenderedDraft> {
     if (input.executionLevel === "dry_run") return this.#dryRun.renderDraft(input);
     this.#assertAllowed(input.executionLevel);
-    const payload = publicationVariantPayloadSchema.parse(input.payload);
-    const hashMaterial: Omit<RenderedDraft, "previewHash"> = {
-      schemaVersion: "geo.connector.preview.v1",
-      platform: this.platform,
-      tenantId: input.tenantId,
-      channelAccountId: input.channelAccountId,
-      variantId: input.variantId,
-      executionLevel: input.executionLevel,
-      payload,
-      manualText: renderCtripText({ ...input, payload }),
-    };
-    return { ...hashMaterial, previewHash: stableSha256(draftHashMaterial(hashMaterial)) };
+    return renderCtripCommunityAssistedDraft(input);
   }
 
   async #sessionProbe(input: SubmitDraftInput): Promise<CtripSessionProbe> {

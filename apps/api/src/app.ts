@@ -994,7 +994,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       void reply.status(422).send({
         error: {
           code: "PUBLICATION_CAPABILITY_UNSUPPORTED",
-          message: "Current platform adapters support dry-run publication only",
+          message: "Current platform adapters support dry-run and Ctrip assisted handoffs only",
           requestId: request.id,
         },
       });
@@ -2399,11 +2399,11 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     { preHandler: guard("publish:request", true) },
     async (request, reply) => {
       const body = publicationRequestSchema.parse(request.body);
-      if (body.executionLevel !== "dry_run") {
+      if (body.executionLevel === "unattended") {
         throw new ApiError(
           422,
           "PUBLICATION_CAPABILITY_UNSUPPORTED",
-          "Current platform adapters support dry-run publication only",
+          "Current platform adapters support dry-run and Ctrip assisted handoffs only",
         );
       }
       if (body.scheduledFor !== undefined) {
@@ -2433,6 +2433,16 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       );
       if (publicationContext === null) {
         throw new RepositoryNotFoundError("Publication grant was not found");
+      }
+      if (
+        body.executionLevel === "assisted" &&
+        publicationContext.artifact.platform !== "ctrip_community"
+      ) {
+        throw new ApiError(
+          422,
+          "PUBLICATION_CAPABILITY_UNSUPPORTED",
+          "Current platform adapters support dry-run and Ctrip assisted handoffs only",
+        );
       }
       const decisionId = uuid();
       let governanceDecision: Awaited<ReturnType<PublicationGovernanceGate["evaluate"]>>;

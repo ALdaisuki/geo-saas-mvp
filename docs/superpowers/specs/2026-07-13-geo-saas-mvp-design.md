@@ -26,13 +26,12 @@ The MVP includes:
    `PublicationGrant` created only from a passing audit.
 5. A transactional outbox, idempotent publisher worker, platform rate limits,
    receipts, retries, dead-letter handling, and kill switches.
-6. Platform connector contracts plus dry-run connectors. The current Toutiao,
-   Sohu, and Ctrip Community adapters are `manual_only` and support only
-   `dry_run`. Any `assisted` or `unattended` request returns
-   `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before grant consumption, job
-   creation, or outbox insertion. Live API, browser-assisted delivery, and
-   external platform readback remain future capability models, not configurable
-   MVP features.
+6. Platform connector contracts plus dry-run connectors. Toutiao and Sohu remain
+   `manual_only + dry_run`; all `unattended` and non-Ctrip `assisted` requests are
+   rejected. A reviewed `browser_assisted` Ctrip account may consume a narrow
+   `assisted` grant and create a durable operator handoff after repeated governance
+   checks. This does not operate a browser, submit to Ctrip, or provide external
+   platform readback; those remain separately gated capabilities.
 7. Doubao and Qwen visibility probes with prompt sets, raw response evidence,
    cited sources, brand/contact accuracy, hallucination, and competitor metrics.
 8. A Chinese operations console for customer setup, content review, audit,

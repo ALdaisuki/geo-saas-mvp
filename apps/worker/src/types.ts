@@ -89,6 +89,24 @@ export interface PublicationWork {
     supportedExecutionLevels: readonly ExecutionLevel[];
     status: "active" | "disabled" | "needs_verification";
   };
+  authorization: {
+    auditHash: string;
+    grantExpiresAt: string;
+    artifactExpiresAt: string;
+  };
+  assistedHandoff: {
+    id: string;
+    jobId: string;
+    attemptId: string;
+    channelAccountId: string;
+    variantId: string;
+    platform: "ctrip_community";
+    payloadHash: string;
+    auditHash: string;
+    previewHash: string;
+    adapterVersion: string;
+    expiresAt: string;
+  } | null;
   gate: {
     allowed: boolean;
     reason: string | null;
@@ -124,6 +142,22 @@ export interface CompletePublicationInput {
 export interface CompletePublicationResult {
   alreadyCompleted: boolean;
   receipt: PublicationReceipt;
+}
+
+export interface CreateAssistedHandoffInput {
+  context: TenantContext;
+  handoffId: string;
+  jobId: string;
+  attemptId: string;
+  previewHash: string;
+  adapterVersion: string;
+  idempotencyKey: string;
+  expiresAt: Date;
+}
+
+export interface CreateAssistedHandoffResult {
+  handoffId: string;
+  wasCreated: boolean;
 }
 
 export interface RecordFailureInput {
@@ -168,6 +202,7 @@ export interface TenantJobStore {
   acquirePublicationExecution(
     input: AcquirePublicationExecutionInput,
   ): Promise<AcquirePublicationExecutionResult>;
+  createAssistedHandoff(input: CreateAssistedHandoffInput): Promise<CreateAssistedHandoffResult>;
   complete(input: CompletePublicationInput): Promise<CompletePublicationResult>;
   recordFailure(input: RecordFailureInput): Promise<void>;
   recordReconciliationFailure(input: RecordReconciliationFailureInput): Promise<void>;
@@ -181,6 +216,7 @@ export interface ConnectorResolver {
 
 export interface RunSummary {
   claimed: number;
+  handedOff: number;
   completed: number;
   acknowledged: number;
   retried: number;

@@ -269,6 +269,7 @@ class FakeRepository implements ApiRepository {
   assistedHandoffState: PublicationAssistedHandoffView["state"] = "handoff_pending";
   assistedHandoffLeaseOwner: string | null = null;
   publicationRequestError: (Error & { code?: string }) | null = null;
+  publicationGovernancePlatform: AuditArtifact["platform"] = "toutiao";
   publicationReplayResult: Awaited<ReturnType<ApiRepository["resolvePublicationReplay"]>> = null;
   automationBatchState: AutomationBatchView["state"] = "scheduled";
   campaign: Awaited<ReturnType<ApiRepository["createCampaign"]>> | null = null;
@@ -1595,7 +1596,7 @@ class FakeRepository implements ApiRepository {
         tenantId: context.tenantId,
         variantId: ids.variant,
         channelAccountId: ids.account,
-        platform: "toutiao",
+        platform: this.publicationGovernancePlatform,
         payloadHash: "a".repeat(64),
         factSnapshotHash: "b".repeat(64),
         brandSnapshotHash: "e".repeat(64),
@@ -3549,35 +3550,100 @@ describe("Fastify API security and vertical publication flow", () => {
     });
   });
 
-  it.each(["assisted", "unattended"] as const)(
-    "rejects %s before governance evaluation, grant consumption, or queueing",
-    async (executionLevel) => {
-      const repository = new FakeRepository();
-      const app = await testApp(repository);
-      const authenticated = await login(app);
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/publication-requests",
-        headers: {
-          cookie: authenticated.cookie,
-          "x-csrf-token": authenticated.body.csrfToken,
-        },
-        payload: {
-          grantId: "10000000-0000-4000-8000-000000000990",
-          token: tokenValue,
-          idempotencyKey: `unsupported-${executionLevel}`,
-          executionLevel,
-        },
-      });
+  it("admits Ctrip assisted handoff requests through governance and grant consumption", async () => {
+    const repository = new FakeRepository();
+    repository.publicationGovernancePlatform = "ctrip_community";
+    const governanceInputs: Parameters<PublicationGovernanceGate["evaluate"]>[0][] = [];
+    const app = await testApp(repository, {
+      evaluate: async (input) => {
+        governanceInputs.push(input);
+        return { allowed: true, reason: "ctrip_assisted_allowed", evidence: { test: true } };
+      },
+    });
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "ctrip-assisted-handoff",
+        executionLevel: "assisted",
+      },
+    });
 
-      expect(response.statusCode).toBe(422);
-      expect(response.json()).toMatchObject({
-        error: { code: "PUBLICATION_CAPABILITY_UNSUPPORTED" },
-      });
-      expect(repository.governanceDecisions).toHaveLength(0);
-      expect(repository.publicationRequests).toHaveLength(0);
-    },
-  );
+    expect(response.statusCode, response.body).toBe(202);
+    expect(governanceInputs).toHaveLength(1);
+    expect(governanceInputs[0]).toMatchObject({
+      phase: "grant_consumption",
+      executionLevel: "assisted",
+      publicationContext: { artifact: { platform: "ctrip_community" } },
+    });
+    expect(repository.governanceDecisions).toMatchObject([
+      { allowed: true, executionLevel: "assisted" },
+    ]);
+    expect(repository.publicationRequests).toMatchObject([
+      { executionLevel: "assisted", idempotencyKey: "ctrip-assisted-handoff" },
+    ]);
+  });
+
+  it("rejects non-Ctrip assisted requests before governance or grant consumption", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "toutiao-assisted-unsupported",
+        executionLevel: "assisted",
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: { code: "PUBLICATION_CAPABILITY_UNSUPPORTED" },
+    });
+    expect(repository.governanceDecisions).toHaveLength(0);
+    expect(repository.publicationRequests).toHaveLength(0);
+  });
+
+  it("rejects unattended before governance evaluation, grant consumption, or queueing", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/publication-requests",
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {
+        grantId: "10000000-0000-4000-8000-000000000990",
+        token: tokenValue,
+        idempotencyKey: "unsupported-unattended",
+        executionLevel: "unattended",
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: { code: "PUBLICATION_CAPABILITY_UNSUPPORTED" },
+    });
+    expect(repository.governanceDecisions).toHaveLength(0);
+    expect(repository.publicationRequests).toHaveLength(0);
+  });
 
   it("resolves an existing publication checkpoint without grant access or side effects", async () => {
     const repository = new FakeRepository();
@@ -3650,7 +3716,7 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(response.json()).toMatchObject({
       error: {
         code: "PUBLICATION_CAPABILITY_UNSUPPORTED",
-        message: "Current platform adapters support dry-run publication only",
+        message: "Current platform adapters support dry-run and Ctrip assisted handoffs only",
       },
     });
   });

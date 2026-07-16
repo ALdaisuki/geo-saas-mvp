@@ -4,6 +4,7 @@ import { createDefaultConnectorRegistry } from "@geo/connectors";
 import { createDatabase } from "@geo/db";
 
 import { parseWorkerTenantActors } from "./actor-map.js";
+import { parseCtripAssistedAccounts } from "./ctrip-assisted-config.js";
 import { PostgresDispatcherStore, PostgresTenantJobStore } from "./postgres-stores.js";
 import { OutboxWorker } from "./worker.js";
 
@@ -48,6 +49,7 @@ const worker = new OutboxWorker({
   connectors: createDefaultConnectorRegistry(),
   workerId,
   actorIdsByTenant: parseWorkerTenantActors(requiredEnvironment("WORKER_TENANT_ACTORS_JSON")),
+  ctripAssistedAccounts: parseCtripAssistedAccounts(process.env.CTRIP_ASSISTED_ACCOUNTS_JSON),
   batchSize: integerEnvironment("WORKER_BATCH_SIZE", 25),
   concurrency: integerEnvironment("WORKER_CONCURRENCY", 4),
   leaseSeconds: integerEnvironment("WORKER_LEASE_SECONDS", 60),

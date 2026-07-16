@@ -17,6 +17,8 @@ import type {
   ClaimOptions,
   CompletePublicationInput,
   CompletePublicationResult,
+  CreateAssistedHandoffInput,
+  CreateAssistedHandoffResult,
   DispatcherStore,
   PublicationWork,
   RecordFailureInput,
@@ -47,6 +49,11 @@ interface AcquisitionRow {
   half_open_probe: boolean;
 }
 
+interface AssistedHandoffCreationRow {
+  publication_assisted_handoff_id: string;
+  was_created: boolean;
+}
+
 interface WorkRow {
   job_id: string;
   job_state: PublicationWork["job"]["state"];
@@ -68,6 +75,19 @@ interface WorkRow {
   account_capability: ConnectorCapability;
   supported_execution_levels: ExecutionLevel[];
   account_status: PublicationWork["account"]["status"];
+  authorization_audit_hash: string;
+  grant_expires_at: Date;
+  artifact_expires_at: Date;
+  assisted_handoff_id: string | null;
+  assisted_handoff_attempt_id: string | null;
+  assisted_handoff_account_id: string | null;
+  assisted_handoff_variant_id: string | null;
+  assisted_handoff_platform: "ctrip_community" | null;
+  assisted_handoff_payload_hash: string | null;
+  assisted_handoff_audit_hash: string | null;
+  assisted_handoff_preview_hash: string | null;
+  assisted_handoff_adapter_version: string | null;
+  assisted_handoff_expires_at: Date | null;
   control_mode: "shadow" | "supervised" | "unattended" | "paused" | "stopped" | null;
   kill_switch_enabled: boolean;
   circuit_open: boolean;
@@ -270,6 +290,19 @@ export class PostgresTenantJobStore implements TenantJobStore {
           account.capability as account_capability,
           account.supported_execution_levels,
           account.status as account_status,
+          artifact.audit_hash as authorization_audit_hash,
+          publication_grant.expires_at as grant_expires_at,
+          artifact.expires_at as artifact_expires_at,
+          assisted_handoff.id as assisted_handoff_id,
+          assisted_handoff.attempt_id as assisted_handoff_attempt_id,
+          assisted_handoff.channel_account_id as assisted_handoff_account_id,
+          assisted_handoff.variant_id as assisted_handoff_variant_id,
+          assisted_handoff.platform as assisted_handoff_platform,
+          assisted_handoff.payload_hash as assisted_handoff_payload_hash,
+          assisted_handoff.audit_hash as assisted_handoff_audit_hash,
+          assisted_handoff.preview_hash as assisted_handoff_preview_hash,
+          assisted_handoff.adapter_version as assisted_handoff_adapter_version,
+          assisted_handoff.expires_at as assisted_handoff_expires_at,
           control.mode as control_mode,
           coalesce(control.kill_switch_enabled, false) as kill_switch_enabled,
           exists (
@@ -301,6 +334,12 @@ export class PostgresTenantJobStore implements TenantJobStore {
           on variant.tenant_id = job.tenant_id and variant.id = job.variant_id
         join geo.channel_accounts as account
           on account.tenant_id = job.tenant_id and account.id = job.channel_account_id
+        join geo.publication_grants as publication_grant
+          on publication_grant.tenant_id = job.tenant_id and publication_grant.id = job.grant_id
+        join geo.audit_artifacts as artifact
+          on artifact.tenant_id = job.tenant_id and artifact.id = job.audit_artifact_id
+        left join geo.publication_assisted_handoffs as assisted_handoff
+          on assisted_handoff.tenant_id = job.tenant_id and assisted_handoff.job_id = job.id
         left join geo.automation_controls as control
           on control.tenant_id = job.tenant_id
          and control.scope_type = 'tenant'
@@ -355,6 +394,36 @@ export class PostgresTenantJobStore implements TenantJobStore {
           supportedExecutionLevels: row.supported_execution_levels,
           status: row.account_status,
         },
+        authorization: {
+          auditHash: row.authorization_audit_hash,
+          grantExpiresAt: asIso(row.grant_expires_at),
+          artifactExpiresAt: asIso(row.artifact_expires_at),
+        },
+        assistedHandoff:
+          row.assisted_handoff_id === null ||
+          row.assisted_handoff_attempt_id === null ||
+          row.assisted_handoff_account_id === null ||
+          row.assisted_handoff_variant_id === null ||
+          row.assisted_handoff_platform === null ||
+          row.assisted_handoff_payload_hash === null ||
+          row.assisted_handoff_audit_hash === null ||
+          row.assisted_handoff_preview_hash === null ||
+          row.assisted_handoff_adapter_version === null ||
+          row.assisted_handoff_expires_at === null
+            ? null
+            : {
+                id: row.assisted_handoff_id,
+                jobId: row.job_id,
+                attemptId: row.assisted_handoff_attempt_id,
+                channelAccountId: row.assisted_handoff_account_id,
+                variantId: row.assisted_handoff_variant_id,
+                platform: row.assisted_handoff_platform,
+                payloadHash: row.assisted_handoff_payload_hash,
+                auditHash: row.assisted_handoff_audit_hash,
+                previewHash: row.assisted_handoff_preview_hash,
+                adapterVersion: row.assisted_handoff_adapter_version,
+                expiresAt: asIso(row.assisted_handoff_expires_at),
+              },
         gate: { allowed: gateReason === null, reason: gateReason },
         existingReceipt: receipt,
       };
@@ -379,6 +448,31 @@ export class PostgresTenantJobStore implements TenantJobStore {
         allowed: row.allowed,
         reason: row.reason,
         halfOpenProbe: row.half_open_probe,
+      };
+    });
+  }
+
+  async createAssistedHandoff(
+    input: CreateAssistedHandoffInput,
+  ): Promise<CreateAssistedHandoffResult> {
+    return this.#withRuntimeTenant(input.context, async (transaction) => {
+      const result = await sql<AssistedHandoffCreationRow>`
+        select *
+        from geo.create_publication_assisted_handoff(
+          ${input.handoffId}::uuid,
+          ${input.jobId}::uuid,
+          ${input.attemptId}::uuid,
+          ${input.previewHash}::geo.sha256_hex,
+          ${input.adapterVersion},
+          ${input.idempotencyKey},
+          ${input.expiresAt}
+        )
+      `.execute(transaction);
+      const row = result.rows[0];
+      if (row === undefined) throw new Error("Assisted handoff creation returned no state");
+      return {
+        handoffId: row.publication_assisted_handoff_id,
+        wasCreated: row.was_created,
       };
     });
   }

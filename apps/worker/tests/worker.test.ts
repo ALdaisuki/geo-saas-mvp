@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 
 import { UncertainPublicationError } from "../src/errors.js";
 import { OutboxWorker } from "../src/worker.js";
+import type { CtripAssistedAccountConfig } from "../src/ctrip-assisted-config.js";
 import type { ClaimedOutboxEvent, ConnectorResolver, PublicationWork } from "../src/types.js";
 import { FakeDispatcherStore, FakeTenantJobStore } from "./fakes.js";
 
@@ -62,6 +63,12 @@ function makeWork(
       supportedExecutionLevels: ["dry_run"],
       status: "active",
     },
+    authorization: {
+      auditHash: "d".repeat(64),
+      grantExpiresAt: "2026-07-14T00:20:00.000Z",
+      artifactExpiresAt: "2026-07-14T00:30:00.000Z",
+    },
+    assistedHandoff: null,
     gate: { allowed: true, reason: null },
     existingReceipt: null,
   };
@@ -94,6 +101,7 @@ function idGenerator(): () => string {
 function setup(
   work: PublicationWork,
   resolver: ConnectorResolver = createDefaultConnectorRegistry(),
+  ctripAssistedAccounts: readonly CtripAssistedAccountConfig[] = [],
 ) {
   const event = makeEvent(work);
   const dispatcher = new FakeDispatcherStore([event]);
@@ -105,6 +113,7 @@ function setup(
     connectors: resolver,
     workerId: "test-worker",
     actorIdsByTenant: { [tenantId]: actorId },
+    ctripAssistedAccounts,
     now: () => new Date("2026-07-14T00:00:00.000Z"),
     idGenerator: idGenerator(),
   });
@@ -521,34 +530,107 @@ it("hard rejects non-dry-run execution even when account and gate advertise unat
   expect(dispatcher.retries[0]).toMatchObject({ deadLetter: true });
 });
 
-it("does not invoke an injected Ctrip connector for assisted execution in this worker release", async () => {
+it("creates a durable Ctrip handoff without invoking connector session or publish methods", async () => {
   const work = makeWork("ctrip_community");
   work.job.executionLevel = "assisted";
   work.account.capability = "browser_assisted";
   work.account.supportedExecutionLevels = ["dry_run", "assisted"];
   const connector = createDefaultConnectorRegistry().get("ctrip_community");
+  let sessionCalls = 0;
   let publishCalls = 0;
-  const { dispatcher, jobs, worker } = setup(work, {
-    get: () =>
-      new Proxy(connector, {
-        get(target, property, receiver) {
-          if (property === "publish") {
-            return async (input: PublishInput) => {
-              publishCalls += 1;
-              return target.publish(input);
-            };
-          }
-          const value = Reflect.get(target, property, receiver) as unknown;
-          return typeof value === "function" ? value.bind(target) : value;
-        },
-      }),
-  });
+  const { dispatcher, jobs, worker } = setup(
+    work,
+    {
+      get: () =>
+        new Proxy(connector, {
+          get(target, property, receiver) {
+            if (property === "validateSession" || property === "preflight") {
+              return async () => {
+                sessionCalls += 1;
+                throw new Error("assisted handoff must not call connector session methods");
+              };
+            }
+            if (property === "publish") {
+              return async (input: PublishInput) => {
+                publishCalls += 1;
+                return target.publish(input);
+              };
+            }
+            const value = Reflect.get(target, property, receiver) as unknown;
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+    },
+    [
+      {
+        tenantId,
+        channelAccountId: accountId,
+        adapterVersion: "ctrip-community-web-v1",
+        evidenceExpiresAt: "2026-07-15T00:00:00.000Z",
+        handoffTtlSeconds: 900,
+      },
+    ],
+  );
 
-  await worker.runOnce();
+  const summary = await worker.runOnce();
 
+  expect(sessionCalls).toBe(0);
   expect(publishCalls).toBe(0);
-  expect(jobs.failures[0]).toMatchObject({ code: "MVP_DRY_RUN_ONLY", final: true });
-  expect(dispatcher.retries[0]).toMatchObject({ deadLetter: true });
+  expect(jobs.completions).toHaveLength(0);
+  expect(jobs.assistedHandoffs[0]).toMatchObject({
+    jobId: work.job.id,
+    adapterVersion: "ctrip-community-web-v1",
+    expiresAt: new Date("2026-07-14T00:15:00.000Z"),
+  });
+  expect(dispatcher.acknowledged).toEqual([makeEvent(work).eventId]);
+  expect(summary).toMatchObject({ handedOff: 1, completed: 0, acknowledged: 1 });
+});
+
+it("keeps Ctrip assisted work retryable when no exact account mapping exists", async () => {
+  const work = makeWork("ctrip_community");
+  work.job.executionLevel = "assisted";
+  work.account.capability = "browser_assisted";
+  work.account.supportedExecutionLevels = ["dry_run", "assisted"];
+  const { dispatcher, jobs, worker } = setup(work);
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.assistedHandoffs).toHaveLength(0);
+  expect(jobs.failures[0]).toMatchObject({
+    code: "CTRIP_ASSISTED_ACCOUNT_NOT_CONFIGURED",
+    final: false,
+  });
+  expect(dispatcher.retries[0]).toMatchObject({ deadLetter: false });
+  expect(summary.retried).toBe(1);
+});
+
+it("acknowledges a redelivered Ctrip event after validating its existing handoff", async () => {
+  const work = makeWork("ctrip_community");
+  work.job.executionLevel = "assisted";
+  work.job.state = "dispatching";
+  work.account.capability = "browser_assisted";
+  work.account.supportedExecutionLevels = ["dry_run", "assisted"];
+  work.assistedHandoff = {
+    id: "30000000-0000-4000-8000-000000000111",
+    jobId: work.job.id,
+    attemptId: "30000000-0000-4000-8000-000000000112",
+    channelAccountId: work.account.id,
+    variantId: work.variant.id,
+    platform: "ctrip_community",
+    payloadHash: work.job.payloadHash,
+    auditHash: work.authorization.auditHash,
+    previewHash: "e".repeat(64),
+    adapterVersion: "ctrip-community-web-v1",
+    expiresAt: "2026-07-14T00:15:00.000Z",
+  };
+  const { dispatcher, jobs, worker } = setup(work);
+
+  const summary = await worker.runOnce();
+
+  expect(jobs.acquisitions).toHaveLength(0);
+  expect(jobs.assistedHandoffs).toHaveLength(0);
+  expect(dispatcher.acknowledged).toHaveLength(1);
+  expect(summary).toMatchObject({ handedOff: 0, acknowledged: 1 });
 });
 
 it("persists UNCERTAIN, reconciles, and retries only after not_published evidence", async () => {

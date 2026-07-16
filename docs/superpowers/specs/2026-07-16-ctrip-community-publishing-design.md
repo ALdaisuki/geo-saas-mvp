@@ -180,17 +180,25 @@ Implemented:
   current-operator-only permit consumption, bounded expiry and consumed-but-unobserved
   `uncertain` recovery.
 
-Still required before Increment 2 is operational:
+Increment 3A now makes this control plane operational for internal handoff intake:
 
-- wire the Worker to create a handoff after an authorized assisted attempt;
-- enable assisted publication requests only after that Worker path and its recovery
-  contract are verified.
+- `0018_ctrip_assisted_admission.sql` admits only current, governed Ctrip
+  `browser_assisted` grants;
+- the Worker acquires an audited attempt, renders the shared deterministic preview,
+  creates the handoff, and acknowledges the outbox event only after persistence;
+- redelivery reuses the job-bound handoff, while missing tenant/account adapter
+  mappings remain retryable and fail closed.
 
-Until those items exist, the table and API are a dormant control plane and cannot
-cause a Ctrip network write.
+This operational intake still cannot cause a Ctrip network write. Browser session,
+platform draft, submit observation and independent public readback remain Increment
+3B work.
 
 ### Increment 3: authenticated canary adapter
 
+- Increment 3A first connects Ctrip-assisted grant consumption to Worker-created
+  durable handoffs. The Worker uses an exact tenant/account adapter mapping and a
+  shared deterministic renderer, then acknowledges only after the handoff exists.
+  It does not operate a browser or create publication evidence.
 - Inspect an authorized Ctrip account with written browser-assistance permission.
 - Pin reviewed origins and an adapter version from authenticated evidence.
 - Run one supervised draft-only canary, then one explicit-submit canary.

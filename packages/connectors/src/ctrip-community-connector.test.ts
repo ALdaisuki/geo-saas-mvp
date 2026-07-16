@@ -5,6 +5,7 @@ import {
   CtripCommunityConnector,
   createDefaultConnectorRegistry,
   DryRunConnector,
+  renderCtripCommunityAssistedDraft,
   stableSha256,
   type CtripAssistedSessionPort,
 } from "./index.js";
@@ -134,6 +135,19 @@ describe("Ctrip Community connector registration", () => {
 });
 
 describe("Ctrip Community supervised draft preparation", () => {
+  it("uses the same deterministic renderer for Worker handoff and connector preparation", async () => {
+    const renderedByConnector = await renderedAssistedDraft();
+    const renderedForHandoff = renderCtripCommunityAssistedDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "assisted",
+      payload,
+    });
+
+    expect(renderedForHandoff).toEqual(renderedByConnector);
+  });
+
   it("prepares one exact audited draft but never claims a public publication", async () => {
     const sessionPort = readyPort();
     const connector = assistedConnector(sessionPort);

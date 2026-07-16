@@ -361,6 +361,26 @@ describe("PostgreSQL migration contract", () => {
     );
   });
 
+  it("admits only current governed Ctrip assisted grants through a narrow function", () => {
+    const consume = functionDefinition("consume_ctrip_assisted_publication_grant");
+    expect(consume).toContain("SECURITY DEFINER");
+    expect(consume).toContain("p_execution_level <> 'assisted'");
+    expect(consume).toContain("grant_row.platform <> 'ctrip_community'");
+    expect(consume).toContain("account_row.capability <> 'browser_assisted'");
+    expect(consume).toContain("account_row.last_verified_at");
+    expect(consume).toContain("interval '24 hours'");
+    expect(consume).toContain("control_row.kill_switch_enabled");
+    expect(consume).toContain("control_row.mode IN ('shadow', 'paused', 'stopped')");
+    expect(consume).toContain("scoped_control.mode IN ('shadow', 'paused', 'stopped')");
+    expect(consume).toContain("breaker.state IN ('open', 'half_open')");
+    expect(consume).toContain("INSERT INTO geo.publication_jobs");
+    expect(consume).toContain("INSERT INTO geo.outbox_events");
+    expect(consume).toContain("publication_grant.ctrip_assisted_consumed");
+    expect(migrationSql).toMatch(
+      /GRANT EXECUTE ON FUNCTION geo\.consume_ctrip_assisted_publication_grant\(\s*uuid, geo\.sha256_hex, text, geo\.sha256_hex, text, timestamptz\s*\) TO geo_runtime/u,
+    );
+  });
+
   it("distinguishes missing and conflicting grant revocations under a row lock", () => {
     const revoke = latestFunctionDefinition("revoke_publication_grant");
     expect(revoke).toContain("FOR UPDATE");

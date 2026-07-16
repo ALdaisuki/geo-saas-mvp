@@ -55,6 +55,9 @@ GRANT EXECUTE ON FUNCTION geo.require_tenant_id() TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.require_actor_id() TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.consume_publication_grant(uuid, geo.sha256_hex, text, geo.sha256_hex, text, timestamptz) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.consume_publication_grant(uuid, geo.sha256_hex, text, geo.sha256_hex, text) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.consume_ctrip_assisted_publication_grant(
+  uuid, geo.sha256_hex, text, geo.sha256_hex, text, timestamptz
+) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.revoke_publication_grant(uuid, text) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.cancel_publication_job(uuid, text) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.schedule_publication_readback(uuid, uuid, timestamptz) TO geo_runtime;
@@ -144,6 +147,11 @@ BEGIN
      OR NOT has_function_privilege(
        'geo_runtime',
        'geo.consume_publication_grant(uuid,geo.sha256_hex,text,geo.sha256_hex,text,timestamptz)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.consume_ctrip_assisted_publication_grant(uuid,geo.sha256_hex,text,geo.sha256_hex,text,timestamptz)',
        'EXECUTE'
      )
      OR has_function_privilege(

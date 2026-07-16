@@ -93,6 +93,17 @@ describe("PostgreSQL worker store contract", () => {
     expect(uncertainFinishIndex).toBeLessThan(uncertain.indexOf("this.#lockJob"));
   });
 
+  it("persists a Ctrip assisted handoff before acknowledging its outbox event", () => {
+    const createIndex = workerSource.indexOf("this.#jobs.createAssistedHandoff");
+    const acknowledgeIndex = workerSource.indexOf("this.#dispatcher.acknowledge", createIndex);
+    expect(createIndex).toBeGreaterThan(0);
+    expect(acknowledgeIndex).toBeGreaterThan(createIndex);
+    expect(storeSource).toContain("geo.create_publication_assisted_handoff");
+    expect(storeSource).toContain("join geo.publication_assisted_handoffs as assisted_handoff");
+    expect(workerSource).toContain("renderCtripCommunityAssistedDraft");
+    expect(workerSource).not.toContain("sessionPort.prepareDraft");
+  });
+
   it("appends tenant-scoped audit evidence for every worker state transition", () => {
     expect(storeSource).toContain("insert into geo.audit_log");
     expect(storeSource).toContain("input.context.actorId");

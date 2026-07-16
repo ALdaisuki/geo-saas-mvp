@@ -5,6 +5,8 @@ import type {
   CompletePublicationResult,
   ClaimedOutboxEvent,
   ClaimOptions,
+  CreateAssistedHandoffInput,
+  CreateAssistedHandoffResult,
   DispatcherStore,
   PublicationWork,
   RecordFailureInput,
@@ -58,6 +60,7 @@ export class FakeTenantJobStore implements TenantJobStore {
     halfOpenProbe: false,
   };
   readonly completions: CompletePublicationInput[] = [];
+  readonly assistedHandoffs: CreateAssistedHandoffInput[] = [];
   readonly failures: RecordFailureInput[] = [];
   failureError: Error | null = null;
   readonly reconciliationFailures: RecordReconciliationFailureInput[] = [];
@@ -90,6 +93,29 @@ export class FakeTenantJobStore implements TenantJobStore {
       work.existingReceipt = input.receipt;
     }
     return { alreadyCompleted: false, receipt: input.receipt };
+  }
+
+  async createAssistedHandoff(
+    input: CreateAssistedHandoffInput,
+  ): Promise<CreateAssistedHandoffResult> {
+    this.assistedHandoffs.push(input);
+    const work = this.works.get(input.jobId);
+    if (work !== undefined) {
+      work.assistedHandoff = {
+        id: input.handoffId,
+        jobId: input.jobId,
+        attemptId: input.attemptId,
+        channelAccountId: work.account.id,
+        variantId: work.variant.id,
+        platform: "ctrip_community",
+        payloadHash: work.job.payloadHash,
+        auditHash: work.authorization.auditHash,
+        previewHash: input.previewHash,
+        adapterVersion: input.adapterVersion,
+        expiresAt: input.expiresAt.toISOString(),
+      };
+    }
+    return { handoffId: input.handoffId, wasCreated: true };
   }
 
   async recordFailure(input: RecordFailureInput): Promise<void> {

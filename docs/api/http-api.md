@@ -166,19 +166,23 @@ lease or permit may outlive its handoff. The table is read-only to `geo_runtime`
 security-definer functions own all writes. Cookies, authorization headers, QR/SMS
 values and raw screenshots are not persisted.
 
-This control plane is currently dormant in normal product flow. The publication API
-still rejects assisted requests before job creation and the Worker does not yet call
-`geo.create_publication_assisted_handoff`. No authenticated Ctrip bridge or
-independent public readback adapter is deployed, so these endpoints cannot by
-themselves publish or prove publication.
+Migration `0018_ctrip_assisted_admission.sql` and the Worker connect this control
+plane to normal product flow for Ctrip only. The API admits an `assisted` request
+only when its immutable audit names `ctrip_community`; the database then rechecks
+the active `browser_assisted` account, 24-hour evidence freshness, tenant/scoped
+controls, Kill Switches and circuits. The Worker uses an exact tenant/account
+adapter mapping, renders the frozen preview, creates the handoff, and only then
+acknowledges the outbox event. No authenticated Ctrip bridge or independent public
+readback adapter is deployed, so these endpoints cannot publish or prove
+publication.
 
 ## Important absences
 
 - No email invitation, password reset, or member self-enrollment workflow. Tenant managers can create and update members through the authenticated API; a privileged one-shot owner bootstrap CLI remains for initial/recovery bootstrap.
 - No live Doubao/Qwen provider route; `/api/visibility-runs` is fixture by implementation.
 - No live image-generation provider. Media production defaults to disabled, and fixture output proves only pipeline integrity, not production image quality or external provider availability.
-- No Toutiao/Sohu public/partner API connector and no authenticated Ctrip publisher bridge. `assisted` and `unattended` publication requests still fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED` before governance evaluation, grant consumption, job creation, outbox insertion, or handoff creation.
-- Ctrip `browser_assisted` now has connector and durable handoff contracts, but live publication, Worker handoff creation, browser-session operation, ambiguous-result reconciliation, and external platform readback remain undeployed capabilities. Current publication readback records still only declare that Dry-run Preview readback is not required.
+- No Toutiao/Sohu public/partner API connector and no authenticated Ctrip publisher bridge. All `unattended` and non-Ctrip `assisted` requests fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED`; a governed Ctrip `assisted` request can create only an internal handoff.
+- Ctrip `browser_assisted` now has connector, admission, Worker handoff and durable control-plane contracts, but browser-session operation, platform draft creation, final submit observation, ambiguous-result reconciliation, and external platform readback remain undeployed capabilities. No handoff is a receipt or confirmation.
 - The generated OpenAPI document is a route/security inventory, not yet a complete generated payload contract or a multi-version compatibility promise.
 
 These are product gaps, not hidden endpoints.

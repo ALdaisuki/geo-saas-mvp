@@ -21,11 +21,20 @@ export interface CtripBridgeHandoffDraft {
     | "challenge_required"
     | "draft_prepared"
     | "awaiting_operator_submit"
-    | "readback_pending";
+    | "submitted_unconfirmed"
+    | "readback_pending"
+    | "confirmed"
+    | "needs_review"
+    | "cancelled"
+    | "expired"
+    | "failed";
   readonly previewHash: string;
   readonly payloadHash: string;
   readonly adapterVersion: string;
   readonly bridgePrincipalId: string;
+  readonly externalDraftId: string | null;
+  readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
+  readonly submitEvidenceKind: "simulation" | "browser" | null;
   readonly payload: PublicationVariantPayload;
 }
 

@@ -784,4 +784,50 @@ describe("PostgreSQL migration contract", () => {
       /publication_assisted_handoff_permit_actor_consistency[\s\S]*?\) NOT VALID,/u,
     );
   });
+
+  it("records Ctrip submit observations before independent readback confirmation", () => {
+    const submit = latestFunctionDefinition("record_publication_assisted_submit_observation");
+    const readback = latestFunctionDefinition("record_publication_assisted_readback");
+    const transition = latestFunctionDefinition("enforce_publication_assisted_handoff_transition");
+
+    for (const column of [
+      "submit_outcome",
+      "submit_evidence_kind",
+      "submit_observed_at",
+      "publication_receipt_id",
+      "publication_readback_id",
+      "readback_outcome",
+      "readback_evidence_kind",
+      "readback_evidence_hash",
+      "readback_observed_at",
+      "observed_payload_hash",
+    ]) {
+      expect(migrationSql).toContain(`ADD COLUMN ${column}`);
+    }
+    expect(migrationSql).toContain("publication_assisted_handoff_simulation_not_live");
+    expect(submit).toContain("geo.require_bound_ctrip_bridge");
+    expect(submit).toContain("submit_permit_consumed_by_principal_id <> actor_value");
+    expect(submit).toContain("state = 'submitted_unconfirmed'");
+    expect(submit).toContain("INSERT INTO geo.publication_receipts");
+    expect(submit).toContain("confirmed, payload");
+    expect(submit).toContain("INSERT INTO geo.publication_readbacks");
+    expect(submit).toContain("'pending', true, 'assisted_publication_unconfirmed'");
+    expect(submit).toContain("state = 'readback_pending'");
+    expect(submit).toContain("publication_assisted_handoff.submit_observed");
+    expect(readback).toContain("geo.require_bound_ctrip_bridge");
+    expect(readback).toContain("p_evidence_kind <> 'platform_readback'");
+    expect(readback).toContain("p_observed_payload_hash IS DISTINCT FROM handoff.payload_hash");
+    expect(readback).toContain("ctrip\\.com");
+    expect(readback).toContain("p_outcome = 'simulation_only'");
+    expect(readback).toContain("next_state := 'needs_review'");
+    expect(readback).toContain("WHEN next_state = 'confirmed' THEN 'confirmed'");
+    expect(transition).toContain("'submit_outcome'");
+    expect(transition).toContain("'readback_evidence_hash'");
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_submit_observation(",
+    );
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(",
+    );
+  });
 });

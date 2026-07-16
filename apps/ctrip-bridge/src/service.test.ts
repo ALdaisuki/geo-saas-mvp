@@ -44,6 +44,9 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     payloadHash: "a".repeat(64),
     adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
     bridgePrincipalId,
+    externalDraftId: state === "handoff_pending" ? null : `sim-draft-${handoffId}`,
+    submitOutcome: state === "readback_pending" ? "accepted" : null,
+    submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
     payload,
   };
 }

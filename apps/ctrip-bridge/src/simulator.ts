@@ -80,16 +80,35 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
     draft: RenderedDraft,
   ): Promise<CtripBridgeSubmitObservation> {
     const prepared = this.#drafts.get(handoff.id);
-    if (prepared === undefined || prepared.draft.previewHash !== draft.previewHash) {
-      throw new Error("Simulator draft is not prepared");
+    if (prepared === undefined) {
+      if (
+        handoff.externalDraftId === null ||
+        !["awaiting_operator_submit", "submitted_unconfirmed", "readback_pending"].includes(
+          handoff.state,
+        )
+      ) {
+        throw new Error("Simulator draft is not prepared");
+      }
+      this.#drafts.set(handoff.id, {
+        handoff,
+        draft,
+        externalDraftId: handoff.externalDraftId,
+        preparedAt: this.#now().toISOString(),
+        submittedAt: null,
+        submitOutcome: null,
+      });
     }
-    if (prepared.submittedAt !== null) {
+    const durable = this.#drafts.get(handoff.id);
+    if (durable === undefined || durable.draft.previewHash !== draft.previewHash) {
+      throw new Error("Simulator draft does not match the durable preview");
+    }
+    if (durable.submittedAt !== null) {
       throw new Error("Simulator submit is one-shot and was already invoked");
     }
     const observedAt = this.#now().toISOString();
     const outcome = this.#nextSubmitOutcome();
-    prepared.submittedAt = observedAt;
-    prepared.submitOutcome = outcome;
+    durable.submittedAt = observedAt;
+    durable.submitOutcome = outcome;
     return {
       outcome,
       observedAt,
@@ -112,7 +131,9 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
   ): Promise<CtripBridgeReadbackObservation> {
     const prepared = this.#drafts.get(handoff.id);
     const observedAt = this.#now().toISOString();
-    const submitted = prepared?.submittedAt !== null && prepared?.submittedAt !== undefined;
+    const submitted =
+      (prepared?.submittedAt !== null && prepared?.submittedAt !== undefined) ||
+      (handoff.state === "readback_pending" && handoff.submitOutcome !== null);
     const outcome = submitted ? "simulation_only" : "not_found";
     return {
       outcome,

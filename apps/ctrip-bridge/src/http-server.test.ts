@@ -57,6 +57,9 @@ function runtime() {
     payloadHash: "a".repeat(64),
     adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
     bridgePrincipalId,
+    externalDraftId: null,
+    submitOutcome: null,
+    submitEvidenceKind: null,
     payload,
   };
   const simulator = new CtripCommunitySimulator({

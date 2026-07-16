@@ -923,6 +923,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0017_ctrip_assisted_handoffs",
       "0018_ctrip_assisted_admission",
       "0019_ctrip_bridge_authority",
+      "0020_ctrip_submit_observations",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2865,6 +2866,41 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       ),
     ).rejects.toMatchObject({ code: "55000" });
 
+    const submitEvidenceHash = "a".repeat(64);
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_submit_observation(
+               $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, submitEvidenceHash],
+          ),
+        { actor: SEED_IDS.zhongtong.workerPrincipal },
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    const submitted = await runtimeTransaction(
+      (client) =>
+        client.query<{
+          publication_receipt_id: string;
+          publication_readback_id: string;
+        }>(
+          `SELECT * FROM geo.record_publication_assisted_submit_observation(
+             $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+           )`,
+          [ids.ctripAssistedHandoff, submitEvidenceHash],
+        ),
+      { actor: ids.ctripBridgePrincipal },
+    );
+    const receiptId = submitted.rows[0]?.publication_receipt_id;
+    const readbackId = submitted.rows[0]?.publication_readback_id;
+    expect(receiptId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(readbackId).toMatch(/^[0-9a-f-]{36}$/u);
+    if (receiptId === undefined || readbackId === undefined) {
+      throw new Error("Assisted submit observation did not create delivery evidence");
+    }
+
     const persisted = await adminClient.query<{
       state: string;
       submit_permit_hash: string;
@@ -2873,6 +2909,10 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       external_draft_id: string;
       submit_permit_issued_by_actor_id: string;
       submit_permit_consumed_by_principal_id: string;
+      submit_outcome: string;
+      submit_evidence_kind: string;
+      publication_receipt_id: string;
+      publication_readback_id: string;
       external_id: string | null;
       external_url: string | null;
     }>(
@@ -2880,19 +2920,25 @@ describe("real PostgreSQL tenant and publication invariants", () => {
               bridge_service_principal_id, external_draft_id,
               submit_permit_issued_by_actor_id,
               submit_permit_consumed_by_principal_id,
+              submit_outcome, submit_evidence_kind,
+              publication_receipt_id, publication_readback_id,
               external_id, external_url
        FROM geo.publication_assisted_handoffs
        WHERE tenant_id = $1 AND id = $2`,
       [tenantId, ids.ctripAssistedHandoff],
     );
     expect(persisted.rows[0]).toMatchObject({
-      state: "awaiting_operator_submit",
+      state: "readback_pending",
       submit_permit_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
       submit_permit_consumed_at: expect.any(Date),
       bridge_service_principal_id: ids.ctripBridgePrincipal,
       external_draft_id: "ctrip-draft-integration-001",
       submit_permit_issued_by_actor_id: actorId,
       submit_permit_consumed_by_principal_id: ids.ctripBridgePrincipal,
+      submit_outcome: "accepted",
+      submit_evidence_kind: "simulation",
+      publication_receipt_id: receiptId,
+      publication_readback_id: readbackId,
       external_id: null,
       external_url: null,
     });
@@ -2908,13 +2954,166 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     );
     expect(leakedPermit.rows[0]?.leaked).toBe(false);
 
-    const finished = await runtimeTransaction((client) =>
-      client.query<{ circuits_opened: number; circuits_closed: number }>(
-        "SELECT * FROM geo.finish_publication_execution($1, $2, 'uncertain'::text, $3)",
-        [ctripJobId, ids.ctripAssistedAttempt, "ASSISTED_SUBMIT_PERMIT_CONSUMED"],
-      ),
+    const deliveryEvidence = await adminClient.query<{
+      confirmed: boolean;
+      evidence_type: string;
+      receipt_payload: Record<string, unknown>;
+      readback_status: string;
+      required: boolean;
+      attempt_state: string;
+      job_state: string;
+    }>(
+      `SELECT receipt.confirmed, receipt.evidence_type,
+              receipt.payload AS receipt_payload,
+              readback.status AS readback_status, readback.required,
+              attempt.state AS attempt_state, job.state AS job_state
+       FROM geo.publication_assisted_handoffs AS handoff
+       JOIN geo.publication_receipts AS receipt
+         ON receipt.tenant_id = handoff.tenant_id
+        AND receipt.id = handoff.publication_receipt_id
+       JOIN geo.publication_readbacks AS readback
+         ON readback.tenant_id = handoff.tenant_id
+        AND readback.id = handoff.publication_readback_id
+       JOIN geo.publication_attempts AS attempt
+         ON attempt.tenant_id = handoff.tenant_id AND attempt.id = handoff.attempt_id
+       JOIN geo.publication_jobs AS job
+         ON job.tenant_id = handoff.tenant_id AND job.id = handoff.job_id
+       WHERE handoff.tenant_id = $1 AND handoff.id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
     );
-    expect(finished.rows[0]).toEqual({ circuits_opened: 0, circuits_closed: 0 });
+    expect(deliveryEvidence.rows[0]).toMatchObject({
+      confirmed: false,
+      evidence_type: "fixture",
+      receipt_payload: {
+        outcome: "accepted",
+        evidenceKind: "simulation",
+        confirmed: false,
+        simulation: true,
+        readback: { required: true, status: "pending" },
+      },
+      readback_status: "pending",
+      required: true,
+      attempt_state: "uncertain",
+      job_state: "uncertain",
+    });
+
+    const readbackEvidenceHash = "b".repeat(64);
+    await runtimeTransaction(
+      async (client) => {
+        await client.query("SAVEPOINT reject_simulator_confirmation");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_readback(
+               $1, 'confirmed', 'simulation', $2::geo.sha256_hex,
+               $3::geo.sha256_hex, 'fake-live-id',
+               'https://you.ctrip.com/travels/fake.html', clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, readbackEvidenceHash, payloadHash],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_simulator_confirmation");
+
+        await client.query("SAVEPOINT reject_external_host");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_readback(
+               $1, 'confirmed', 'platform_readback', $2::geo.sha256_hex,
+               $3::geo.sha256_hex, 'live-id',
+               'https://attacker.example/travels/live.html', clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, readbackEvidenceHash, payloadHash],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_external_host");
+
+        await client.query("SAVEPOINT prove_live_confirmation_contract");
+        const live = await client.query<{
+          state: string;
+          external_id: string;
+          external_url: string;
+        }>(
+          `SELECT * FROM geo.record_publication_assisted_readback(
+             $1, 'confirmed', 'platform_readback', $2::geo.sha256_hex,
+             $3::geo.sha256_hex, 'ctrip-live-contract-id',
+             'https://you.ctrip.com/travels/contract.html', clock_timestamp()
+           )`,
+          [ids.ctripAssistedHandoff, readbackEvidenceHash, payloadHash],
+        );
+        expect(live.rows[0]).toEqual({
+          state: "confirmed",
+          external_id: "ctrip-live-contract-id",
+          external_url: "https://you.ctrip.com/travels/contract.html",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT prove_live_confirmation_contract");
+
+        const simulated = await client.query<{
+          state: string;
+          external_id: string | null;
+          external_url: string | null;
+        }>(
+          `SELECT * FROM geo.record_publication_assisted_readback(
+             $1, 'simulation_only', 'simulation', $2::geo.sha256_hex,
+             $3::geo.sha256_hex, NULL, NULL, clock_timestamp()
+           )`,
+          [ids.ctripAssistedHandoff, readbackEvidenceHash, payloadHash],
+        );
+        expect(simulated.rows[0]).toEqual({
+          state: "needs_review",
+          external_id: null,
+          external_url: null,
+        });
+      },
+      { actor: ids.ctripBridgePrincipal },
+    );
+
+    const finalEvidence = await adminClient.query<{
+      handoff_state: string;
+      readback_outcome: string;
+      readback_evidence_kind: string;
+      external_id: string | null;
+      external_url: string | null;
+      readback_status: string;
+      readback_error: string;
+      job_state: string;
+    }>(
+      `SELECT handoff.state AS handoff_state, handoff.readback_outcome,
+              handoff.readback_evidence_kind, handoff.external_id, handoff.external_url,
+              readback.status AS readback_status, readback.last_error AS readback_error,
+              job.state AS job_state
+       FROM geo.publication_assisted_handoffs AS handoff
+       JOIN geo.publication_readbacks AS readback
+         ON readback.tenant_id = handoff.tenant_id
+        AND readback.id = handoff.publication_readback_id
+       JOIN geo.publication_jobs AS job
+         ON job.tenant_id = handoff.tenant_id AND job.id = handoff.job_id
+       WHERE handoff.tenant_id = $1 AND handoff.id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(finalEvidence.rows[0]).toEqual({
+      handoff_state: "needs_review",
+      readback_outcome: "simulation_only",
+      readback_evidence_kind: "simulation",
+      external_id: null,
+      external_url: null,
+      readback_status: "failed",
+      readback_error: "SIMULATION_ONLY",
+      job_state: "needs_review",
+    });
+
+    const auditOrder = await adminClient.query<{ action: string }>(
+      `SELECT action FROM geo.audit_log
+       WHERE tenant_id = $1 AND resource_id = $2
+         AND action IN (
+           'publication_assisted_handoff.submit_permit_consumed',
+           'publication_assisted_handoff.submit_observed'
+         )
+       ORDER BY created_at, id`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(auditOrder.rows.map((row) => row.action)).toEqual([
+      "publication_assisted_handoff.submit_permit_consumed",
+      "publication_assisted_handoff.submit_observed",
+    ]);
   });
 
   it("persists tenant-scoped media production as immutable successor content", async () => {

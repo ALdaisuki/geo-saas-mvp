@@ -22,6 +22,7 @@
     "@geo/contracts": "workspace:*",
     "@geo/core": "workspace:*",
     "@geo/db": "workspace:*",
+    "kysely": "0.28.8",
     "zod": "catalog:"
   },
   "devDependencies": {

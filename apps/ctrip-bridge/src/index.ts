@@ -1,4 +1,6 @@
 export * from "./authenticated-surface-review.js";
+export * from "./browser-preflight-adapter.js";
+export * from "./browser-review-session.js";
 export * from "./config.js";
 export * from "./http-server.js";
 export * from "./postgres-control-plane.js";

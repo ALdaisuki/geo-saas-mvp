@@ -186,13 +186,25 @@ Simulation evidence is prohibited from supplying an external ID/URL or reaching
 adapter or independent public readback adapter is deployed, so the current module
 cannot publish or prove publication.
 
+The internal Bridge has two explicit process modes. `simulator` advertises
+`ctrip-community-simulator-v1` and supports `prepare`, `submit` and `readback` with
+simulation evidence only. `browser_preflight` advertises
+`ctrip-community-browser-preflight-v1`, requires exactly one configured tenant and
+one local reviewed browser session, and exposes no simulator page. Its adapter
+supports only `prepare`; `submit` and `readback` fail with
+`CTRIP_BRIDGE_COMMAND_UNSUPPORTED` before the service consumes a submit permit or
+invokes an adapter method. A prepare result is persisted as `session_required`,
+`challenge_required` or `adapter_drift`. While the source-controlled live-canary
+manifest remains disabled, a `reviewed_surface` observation is intentionally mapped
+to `adapter_drift`. The mode and adapter version are visible at `GET /health/live`.
+
 ## Important absences
 
 - No email invitation, password reset, or member self-enrollment workflow. Tenant managers can create and update members through the authenticated API; a privileged one-shot owner bootstrap CLI remains for initial/recovery bootstrap.
 - No live Doubao/Qwen provider route; `/api/visibility-runs` is fixture by implementation.
 - No live image-generation provider. Media production defaults to disabled, and fixture output proves only pipeline integrity, not production image quality or external provider availability.
 - No Toutiao/Sohu public/partner API connector and no authenticated live Ctrip publisher bridge. All `unattended` and non-Ctrip `assisted` requests fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED`; a governed Ctrip `assisted` request can create an internal handoff and, only when explicitly configured, exercise the no-network simulator.
-- Ctrip `browser_assisted` now has connector, admission, Worker handoff, isolated bridge contracts, simulator submit observation and simulator readback. Real browser-session operation, platform draft creation, final live submit, ambiguous-result reconciliation against Ctrip, and external platform readback remain undeployed capabilities. An assisted receipt stays unconfirmed until valid `platform_readback` evidence matches the frozen payload.
+- Ctrip `browser_assisted` now has connector, admission, Worker handoff, isolated bridge contracts, simulator submit observation/readback and read-only authenticated browser preflight. Write-capable browser operation, platform draft creation, final live submit, ambiguous-result reconciliation against Ctrip, and external platform readback remain undeployed capabilities. An assisted receipt stays unconfirmed until valid `platform_readback` evidence matches the frozen payload.
 - The generated OpenAPI document is a route/security inventory, not yet a complete generated payload contract or a multi-version compatibility promise.
 
 These are product gaps, not hidden endpoints.

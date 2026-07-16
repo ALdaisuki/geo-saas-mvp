@@ -168,6 +168,13 @@ export class CtripBridgeCommandService {
   async execute(input: unknown): Promise<CtripBridgeResult> {
     const command = ctripBridgeCommandSchema.parse(input);
     const loaded = await this.#load(command);
+    if (!this.#adapter.commandCapabilities[command.command]) {
+      throw new CtripBridgeServiceError(
+        409,
+        "CTRIP_BRIDGE_COMMAND_UNSUPPORTED",
+        "Bridge adapter does not support this command",
+      );
+    }
     switch (command.command) {
       case "prepare": {
         const media = await this.#loadTrustedMedia(loaded.context, loaded.handoff);

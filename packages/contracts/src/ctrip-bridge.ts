@@ -68,7 +68,7 @@ export type CtripBridgeResult = z.infer<typeof ctripBridgeResultSchema>;
 export const ctripBridgeHealthSchema = z.strictObject({
   status: z.literal("ok"),
   service: z.literal("geo-ctrip-bridge"),
-  mode: z.literal("simulator"),
+  mode: z.enum(["simulator", "browser_preflight"]),
   adapterVersion: z.string().trim().min(1).max(100),
 });
 export type CtripBridgeHealth = z.infer<typeof ctripBridgeHealthSchema>;

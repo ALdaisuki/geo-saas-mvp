@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { CtripBridgeServiceError } from "./service.js";
 import type { CtripBridgeCommandService } from "./service.js";
 import type { CtripCommunitySimulator } from "./simulator.js";
+import type { CtripBridgeMode } from "./config.js";
 
 const MAX_COMMAND_BYTES = 128 * 1024;
 
@@ -14,13 +15,15 @@ export interface CtripBridgeTenantRuntime {
   readonly bridgePrincipalId: string;
   readonly accessToken: string;
   readonly service: CtripBridgeCommandService;
-  readonly simulator: CtripCommunitySimulator;
+  readonly simulator: CtripCommunitySimulator | null;
 }
 
 export interface CtripBridgeHttpServerOptions {
   readonly tenants: readonly CtripBridgeTenantRuntime[];
   readonly allowedHosts: readonly string[];
   readonly allowedOrigins?: readonly string[];
+  readonly mode: CtripBridgeMode;
+  readonly adapterVersion: string;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -73,6 +76,15 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
     tokenHash: tokenHash(runtime.accessToken),
   }));
   if (runtimes.length === 0) throw new TypeError("At least one Ctrip bridge tenant is required");
+  if (
+    options.adapterVersion.trim().length === 0 ||
+    options.adapterVersion.length > 100 ||
+    (options.mode === "simulator" && runtimes.some(({ runtime }) => runtime.simulator === null)) ||
+    (options.mode === "browser_preflight" &&
+      runtimes.some(({ runtime }) => runtime.simulator !== null))
+  ) {
+    throw new TypeError("Ctrip bridge runtime mode is inconsistent");
+  }
   if (new Set(runtimes.map(({ runtime }) => runtime.tenantId)).size !== runtimes.length) {
     throw new TypeError("Ctrip bridge tenant IDs must be unique");
   }
@@ -104,8 +116,8 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
         writeJson(response, 200, {
           status: "ok",
           service: "geo-ctrip-bridge",
-          mode: "simulator",
-          adapterVersion: "ctrip-community-simulator-v1",
+          mode: options.mode,
+          adapterVersion: options.adapterVersion,
         });
         return;
       }
@@ -129,6 +141,10 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
       }
 
       if (requestUrl.pathname === "/simulator" && request.method === "GET") {
+        if (runtime.simulator === null) {
+          writeJson(response, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
+          return;
+        }
         const html = runtime.simulator.renderHtml(runtime.tenantId);
         response.writeHead(200, {
           "content-type": "text/html; charset=utf-8",

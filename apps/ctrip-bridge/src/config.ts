@@ -9,6 +9,22 @@ const tenantConfigSchema = z.strictObject({
 
 export type CtripBridgeTenantConfig = z.infer<typeof tenantConfigSchema>;
 
+const ctripBridgeModeSchema = z.enum(["simulator", "browser_preflight"]);
+export type CtripBridgeMode = z.infer<typeof ctripBridgeModeSchema>;
+
+export function requireCtripBridgeMode(value: string): CtripBridgeMode {
+  return ctripBridgeModeSchema.parse(value);
+}
+
+export function requireBrowserPreflightTenant(
+  tenants: readonly CtripBridgeTenantConfig[],
+): CtripBridgeTenantConfig {
+  if (tenants.length !== 1) {
+    throw new TypeError("Ctrip browser preflight mode requires exactly one tenant");
+  }
+  return tenants[0] as CtripBridgeTenantConfig;
+}
+
 export function parseCtripBridgeTenantConfigs(value: string): readonly CtripBridgeTenantConfig[] {
   let parsed: unknown;
   try {
@@ -35,13 +51,15 @@ export function parseCtripBridgeTenantConfigs(value: string): readonly CtripBrid
   return tenants;
 }
 
-export function requireSimulatorHost(value: string): string {
+export function requireBridgeHost(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (!["127.0.0.1", "localhost", "::1"].includes(normalized)) {
-    throw new TypeError("Ctrip simulator bridge must bind to a loopback host");
+    throw new TypeError("Ctrip bridge must bind to a loopback host");
   }
   return normalized;
 }
+
+export const requireSimulatorHost = requireBridgeHost;
 
 export function requireLocalCdpEndpoint(value: string): string {
   let parsed: URL;

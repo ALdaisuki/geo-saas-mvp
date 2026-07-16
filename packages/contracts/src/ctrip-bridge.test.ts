@@ -101,5 +101,13 @@ describe("Ctrip bridge contracts", () => {
         adapterVersion: "ctrip-community-simulator-v1",
       }),
     ).toMatchObject({ mode: "simulator" });
+    expect(
+      ctripBridgeHealthSchema.parse({
+        status: "ok",
+        service: "geo-ctrip-bridge",
+        mode: "browser_preflight",
+        adapterVersion: "ctrip-community-browser-preflight-v1",
+      }),
+    ).toMatchObject({ mode: "browser_preflight" });
   });
 });

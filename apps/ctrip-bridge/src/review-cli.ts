@@ -1,12 +1,4 @@
-import { mkdir } from "node:fs/promises";
-
-import { reviewCtripAuthenticatedSurface } from "./authenticated-surface-review.js";
-import {
-  requireLocalCdpEndpoint,
-  requireRuntimeTmpRoot,
-  resolveLocalCdpWebSocketEndpoint,
-} from "./config.js";
-import { createPlaywrightCtripSurfaceReviewPage } from "./playwright-surface-reader.js";
+import { connectCtripBrowserReviewSession } from "./browser-review-session.js";
 
 async function main(): Promise<void> {
   const endpointValue = process.env.CTRIP_REVIEW_CDP_ENDPOINT;
@@ -14,26 +6,15 @@ async function main(): Promise<void> {
   if (endpointValue === undefined || tmpRootValue === undefined) {
     throw new Error("CTRIP_REVIEW_CDP_ENDPOINT and GEO_RUNTIME_TMP_ROOT are required");
   }
-  const endpoint = requireLocalCdpEndpoint(endpointValue);
-  const tmpRoot = requireRuntimeTmpRoot(tmpRootValue);
-  await mkdir(tmpRoot, { recursive: true });
-  process.env.TMP = tmpRoot;
-  process.env.TEMP = tmpRoot;
-  process.env.TMPDIR = tmpRoot;
-
-  const webSocketEndpoint = await resolveLocalCdpWebSocketEndpoint(endpoint);
-  const { chromium } = await import("playwright-core");
-  const browser = await chromium.connectOverCDP(webSocketEndpoint, { timeout: 10_000 });
+  const session = await connectCtripBrowserReviewSession({
+    httpEndpoint: endpointValue,
+    runtimeTmpRoot: tmpRootValue,
+  });
   try {
-    const pages = browser
-      .contexts()
-      .flatMap((context) => context.pages())
-      .map(createPlaywrightCtripSurfaceReviewPage);
-    const evidence = await reviewCtripAuthenticatedSurface(pages);
+    const evidence = await session.inspect();
     process.stdout.write(`${JSON.stringify(evidence)}\n`);
   } finally {
-    // For a CDP attachment Playwright maps close to transport disconnect and cleanup.
-    await browser.close();
+    await session.close();
   }
 }
 

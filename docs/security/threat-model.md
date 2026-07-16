@@ -59,6 +59,11 @@ Publication governance also treats a semantically downgraded `allow` response as
 | Denial of service                                     | request body limits, bounded agent deadline with Pi abort, a lock retained until timed-out work settles, one active request run per tenant/actor process key, Producer concurrency capped at 16, claim backoff and bounded worker settings                                                                                                                  | No distributed request limiter or queue SLO monitor exists, and an underlying SDK that ignores abort retains work until it settles. Enforce edge limits, monitor queue/lease age and keep initial Producer concurrency low; Redis is not currently a real dependency.                                                       |
 | XSS/content injection                                 | React escaping, CSP, no-store/API security headers                                                                                                                                                                                                                                                                                                          | CSP permits Unsplash images and inline style attributes used by charts (not inline scripts). Self-host images and remove `unsafe-inline` styles before customer deployment.                                                                                                                                                 |
 
+The Bridge `browser_preflight` process adds a second isolation boundary: it requires
+exactly one tenant, exposes no simulator page, supports only `prepare`, and rejects
+`submit`/`readback` before permit consumption. This narrows the process surface but
+does not turn CDP evidence into publication authorization.
+
 ## Release blockers for live publication
 
 Unattended external writes remain blocked until all of the following are independently verified:

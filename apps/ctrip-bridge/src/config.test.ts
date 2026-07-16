@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseCtripBridgeTenantConfigs,
+  requireBrowserPreflightTenant,
+  requireCtripBridgeMode,
   requireLocalCdpEndpoint,
   requireLocalCdpWebSocketEndpoint,
   requireRuntimeTmpRoot,
@@ -43,6 +45,17 @@ describe("Ctrip bridge startup configuration", () => {
   it("binds simulator mode to loopback only", () => {
     expect(requireSimulatorHost("127.0.0.1")).toBe("127.0.0.1");
     expect(() => requireSimulatorHost("0.0.0.0")).toThrow(/loopback/iu);
+  });
+
+  it("requires an explicit mode and one isolated browser-preflight tenant", () => {
+    const tenant = { tenantId, bridgePrincipalId, accessToken };
+    expect(requireCtripBridgeMode("simulator")).toBe("simulator");
+    expect(requireCtripBridgeMode("browser_preflight")).toBe("browser_preflight");
+    expect(() => requireCtripBridgeMode("live")).toThrow();
+    expect(requireBrowserPreflightTenant([tenant])).toEqual(tenant);
+    expect(() =>
+      requireBrowserPreflightTenant([tenant, { ...tenant, tenantId: bridgePrincipalId }]),
+    ).toThrow(/one tenant/iu);
   });
 
   it("accepts only a credential-free local HTTP CDP endpoint", () => {

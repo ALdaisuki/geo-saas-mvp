@@ -118,6 +118,8 @@ async function startedServer() {
   const server = createCtripBridgeHttpServer({
     tenants: [{ tenantId, bridgePrincipalId, accessToken, service, simulator: state.simulator }],
     allowedHosts: [`127.0.0.1:${port}`],
+    mode: "simulator",
+    adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
   });
   await listenCtripBridgeHttpServer(server, { host: "127.0.0.1", port });
   closeCallbacks.push(
@@ -149,6 +151,45 @@ describe("Ctrip bridge HTTP server", () => {
       mode: "simulator",
       adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
     });
+  });
+
+  it("advertises browser preflight without exposing a simulator surface", async () => {
+    const state = runtime();
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: state.port,
+      mediaObjectStore: { get: vi.fn(async () => new Uint8Array()) },
+      adapter: state.simulator,
+    });
+    const port = await availablePort();
+    const server = createCtripBridgeHttpServer({
+      tenants: [{ tenantId, bridgePrincipalId, accessToken, service, simulator: null }],
+      allowedHosts: [`127.0.0.1:${port}`],
+      mode: "browser_preflight",
+      adapterVersion: "ctrip-community-browser-preflight-v1",
+    });
+    await listenCtripBridgeHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+    const origin = `http://127.0.0.1:${port}`;
+
+    await expect(
+      fetch(`${origin}/health/live`).then((response) => response.json()),
+    ).resolves.toEqual({
+      status: "ok",
+      service: "geo-ctrip-bridge",
+      mode: "browser_preflight",
+      adapterVersion: "ctrip-community-browser-preflight-v1",
+    });
+    const simulator = await fetch(`${origin}/simulator`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(simulator.status).toBe(404);
   });
 
   it("requires the tenant bearer and exact command route", async () => {

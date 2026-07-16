@@ -146,6 +146,11 @@ export interface CtripBridgeControlPlane {
 export interface CtripFixedAdapter {
   readonly version: string;
   readonly evidenceKind: "simulation" | "browser";
+  readonly commandCapabilities: Readonly<{
+    prepare: boolean;
+    submit: boolean;
+    readback: boolean;
+  }>;
   prepare(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,

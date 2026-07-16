@@ -142,6 +142,7 @@ describe("CtripBridgeCommandService", () => {
       const adapter = {
         version: CTRIP_SIMULATOR_ADAPTER_VERSION,
         evidenceKind: "browser",
+        commandCapabilities: { prepare: true, submit: true, readback: true },
         prepare: vi.fn(async () => ({
           outcome,
           sessionEvidenceHash: "b".repeat(64),
@@ -170,6 +171,44 @@ describe("CtripBridgeCommandService", () => {
       expect(basePort.recordPrepared).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects an unsupported submit before consuming its one-time permit", async () => {
+    const current = { value: handoff("draft_prepared") };
+    const port = controlPlane(current);
+    const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+    const submit = vi.fn(simulator.submit.bind(simulator));
+    const adapter = {
+      version: CTRIP_SIMULATOR_ADAPTER_VERSION,
+      evidenceKind: "browser",
+      commandCapabilities: { prepare: true, submit: false, readback: false },
+      prepare: simulator.prepare.bind(simulator),
+      submit,
+      readback: simulator.readback.bind(simulator),
+    } as unknown as CtripFixedAdapter;
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter,
+    });
+
+    await expect(
+      service.execute({
+        schemaVersion: "geo.ctrip-bridge.command.v1",
+        tenantId,
+        handoffId,
+        requestId: "request-unsupported-submit",
+        command: "submit",
+        submitPermit: "f".repeat(64),
+      }),
+    ).rejects.toMatchObject({
+      code: "CTRIP_BRIDGE_COMMAND_UNSUPPORTED",
+      statusCode: 409,
+    });
+    expect(port.consumeSubmitPermit).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
 
   it("consumes the one-time permit before invoking submit and records required readback", async () => {
     const current = { value: handoff("handoff_pending") };

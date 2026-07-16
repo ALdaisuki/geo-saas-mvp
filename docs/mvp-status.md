@@ -47,15 +47,19 @@ independent Ctrip public readback are still absent, so this is not a live or hid
 Ctrip publishing path.
 
 The Bridge now durably records `session_required`, `challenge_required` and
-`adapter_drift` prepare outcomes before returning them. A separate supervised
-`review:surface` command can attach to an operator-authenticated, already-open
-Chromium page through a local-only CDP endpoint. It has no navigation or input
-methods and emits only canonical Ctrip origin/path, bounded redacted control labels,
+`adapter_drift` prepare outcomes before returning them. The same read-only surface
+review is available either as the supervised `review:surface` command or as the
+explicit `browser_preflight` Bridge mode. That mode binds one process to exactly one
+tenant and one operator-authenticated, already-open Chromium session through a
+local-only CDP endpoint. It supports only `prepare`, exposes no `/simulator` page,
+and rejects `submit` or `readback` with `CTRIP_BRIDGE_COMMAND_UNSUPPORTED` before a
+one-time submit permit can be consumed. Both paths have no navigation or input
+methods and emit only canonical Ctrip origin/path, bounded redacted control labels,
 fixed challenge signals and hashes. The compiled reviewed-surface list is empty and
-`liveCanaryEnabled=false`; consequently this evidence-discovery tool cannot start a
-live canary or publish content. The next live milestone requires an authorized
-evidence review, a source-controlled fixed surface manifest, fixed prepare/upload/
-submit locators and one explicitly supervised canary followed by independent public
-readback.
+`liveCanaryEnabled=false`; consequently even a recognized page is durably recorded
+as `adapter_drift` and cannot start a live canary or publish content. The next live
+milestone requires an authorized evidence review, a source-controlled fixed surface
+manifest, fixed prepare/upload/submit locators and one explicitly supervised canary
+followed by independent public readback.
 
 These deferred items are not configuration flags or hidden endpoints. Real Pi mode is available for article orchestration when a supported provider/model/key is configured, but article quality must still be evaluated against tenant facts, audit results and human review samples before production use.

@@ -29,4 +29,10 @@ All included first-release control-plane paths have implementation, automated ve
 - Production image generation.
 - Automatic positive/negative feedback into long-term brand memory.
 
+The Ctrip Community supervised connector contract now has typed capability evidence,
+session freshness, exact draft hashing, challenge/adapter-drift outcomes and
+unconfirmed browser-evidence receipts. It is intentionally not wired into the API or
+worker: the authenticated publisher bridge, durable operator handoff and independent
+public readback remain required before this item can leave the deferred list.
+
 These deferred items are not configuration flags or hidden endpoints. Real Pi mode is available for article orchestration when a supported provider/model/key is configured, but article quality must still be evaluated against tenant facts, audit results and human review samples before production use.

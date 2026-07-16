@@ -60,9 +60,12 @@ export interface SubmitDraftInput extends ConnectorScope {
 }
 
 export interface DraftSubmission {
+  state: "not_submitted" | "draft_prepared";
   submitted: false;
-  externalDraftId: null;
+  externalDraftId: string | null;
   requestHash: string;
+  responseHash?: string | undefined;
+  evidenceHash?: string | undefined;
   requiresManualAction: boolean;
   reason: string;
 }
@@ -107,7 +110,7 @@ export interface CaptureEvidenceInput {
 }
 
 export interface ConnectorEvidence {
-  evidenceType: "preview";
+  evidenceType: "preview" | "browser_screenshot";
   evidenceHash: string;
   previewHash: string;
   requestHash: string;

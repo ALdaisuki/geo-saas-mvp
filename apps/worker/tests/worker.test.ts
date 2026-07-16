@@ -521,6 +521,36 @@ it("hard rejects non-dry-run execution even when account and gate advertise unat
   expect(dispatcher.retries[0]).toMatchObject({ deadLetter: true });
 });
 
+it("does not invoke an injected Ctrip connector for assisted execution in this worker release", async () => {
+  const work = makeWork("ctrip_community");
+  work.job.executionLevel = "assisted";
+  work.account.capability = "browser_assisted";
+  work.account.supportedExecutionLevels = ["dry_run", "assisted"];
+  const connector = createDefaultConnectorRegistry().get("ctrip_community");
+  let publishCalls = 0;
+  const { dispatcher, jobs, worker } = setup(work, {
+    get: () =>
+      new Proxy(connector, {
+        get(target, property, receiver) {
+          if (property === "publish") {
+            return async (input: PublishInput) => {
+              publishCalls += 1;
+              return target.publish(input);
+            };
+          }
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+  });
+
+  await worker.runOnce();
+
+  expect(publishCalls).toBe(0);
+  expect(jobs.failures[0]).toMatchObject({ code: "MVP_DRY_RUN_ONLY", final: true });
+  expect(dispatcher.retries[0]).toMatchObject({ deadLetter: true });
+});
+
 it("persists UNCERTAIN, reconciles, and retries only after not_published evidence", async () => {
   const base = createDefaultConnectorRegistry().get("toutiao");
   let publishCalls = 0;

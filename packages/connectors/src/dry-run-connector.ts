@@ -151,6 +151,7 @@ export class DryRunConnector implements PlatformConnector {
   async submitDraft(input: SubmitDraftInput): Promise<DraftSubmission> {
     await this.preflight(input);
     return {
+      state: "not_submitted",
       submitted: false,
       externalDraftId: null,
       requestHash: stableSha256({

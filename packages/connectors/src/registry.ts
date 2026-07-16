@@ -65,6 +65,24 @@ export class ConnectorRegistry {
   }
 }
 
-export function createDefaultConnectorRegistry(): ConnectorRegistry {
-  return new ConnectorRegistry(definitions.map((definition) => new DryRunConnector(definition)));
+export interface DefaultConnectorRegistryOptions {
+  readonly ctripCommunity?: PlatformConnector | undefined;
+}
+
+export function createDefaultConnectorRegistry(
+  options: DefaultConnectorRegistryOptions = {},
+): ConnectorRegistry {
+  if (
+    options.ctripCommunity !== undefined &&
+    options.ctripCommunity.platform !== "ctrip_community"
+  ) {
+    throw new TypeError("Ctrip registry override must target ctrip_community");
+  }
+  return new ConnectorRegistry(
+    definitions.map((definition) =>
+      definition.platform === "ctrip_community" && options.ctripCommunity !== undefined
+        ? options.ctripCommunity
+        : new DryRunConnector(definition),
+    ),
+  );
 }

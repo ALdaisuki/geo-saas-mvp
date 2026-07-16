@@ -1,5 +1,4 @@
 import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-transport";
-import { getModels, getProviders, type Api, type Model } from "@mariozechner/pi-ai";
 
 import { readAutomationProducerConfig } from "./automation-config.js";
 import { createGeoAutomationProducerDependencies } from "./automation-producer-adapter.js";
@@ -10,6 +9,7 @@ import {
   parseMcpPrincipalCredentials,
 } from "./http-api-client.js";
 import { createGeoMcpHttpServer, listenGeoMcpHttpServer } from "./http-server.js";
+import { resolvePiAgentModel } from "./model-config.js";
 import {
   FixturePiAgentRunService,
   RealPiAgentRunService,
@@ -73,17 +73,16 @@ let agentRunner: PiAgentRunService;
 if (agentProvider === "fixture") {
   agentRunner = new FixturePiAgentRunService({ api, governance, model: agentModel });
 } else {
-  const knownProvider = getProviders().find((provider) => provider === agentProvider);
-  if (knownProvider === undefined) throw new Error("AGENT_PROVIDER is not supported by Pi");
-  const model = (getModels(knownProvider) as readonly Model<Api>[]).find(
-    (candidate) => candidate.id === agentModel,
-  );
-  if (model === undefined) throw new Error("AGENT_MODEL is not available for AGENT_PROVIDER");
+  const resolvedModel = resolvePiAgentModel({
+    provider: agentProvider,
+    modelId: agentModel,
+    ...(process.env.AGENT_BASE_URL === undefined ? {} : { baseUrl: process.env.AGENT_BASE_URL }),
+  });
   agentRunner = new RealPiAgentRunService({
     api,
     governance,
-    provider: knownProvider,
-    model,
+    provider: resolvedModel.provider,
+    model: resolvedModel.model,
     modelId: agentModel,
     apiKey: requiredEnvironment("AGENT_API_KEY"),
   });

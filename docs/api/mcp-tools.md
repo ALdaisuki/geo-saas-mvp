@@ -58,7 +58,7 @@ With the default `AGENT_PROVIDER=fixture`, `POST /agent/runs` invokes `FixturePi
 
 The request `tenantId` must match the authenticated principal. The fixture flow runs context -> template/Profile -> facts -> draft -> variant -> audit -> publication request through the same allowlisted tools and hard-codes `executionLevel=dry_run`. `articleTemplateId` is optional only for backward compatibility; the Web gateway always supplies the customer selection.
 
-Real Pi mode is selected only when `AGENT_PROVIDER` names a provider known to Pi, `AGENT_MODEL` names one of that provider's registered models, and `AGENT_API_KEY` is injected. Unknown providers/models or a missing key fail process startup. In this mode the endpoint accepts only:
+Real Pi mode is selected when `AGENT_PROVIDER` and `AGENT_MODEL` resolve through Pi's registry and `AGENT_API_KEY` is injected. A custom OpenAI Responses endpoint must instead use the explicit triplet `AGENT_PROVIDER=openai-compatible`, `AGENT_MODEL=<endpoint-model-id>`, and `AGENT_BASE_URL=<approved-base-url>` plus the injected key. Custom non-loopback endpoints require HTTPS; embedded URL credentials, query strings, fragments, and `AGENT_BASE_URL` on any other provider are rejected at startup. Unknown registered providers/models, an incomplete custom configuration, or a missing key also fail startup. In this mode the endpoint accepts only:
 
 ```json
 {

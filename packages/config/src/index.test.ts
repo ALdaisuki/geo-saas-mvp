@@ -19,6 +19,8 @@ describe("serverEnvSchema", () => {
     expect(env.ENABLE_BROWSER_ASSISTED).toBe(false);
     expect(env.GEO_MEDIA_PROVIDER).toBe("disabled");
     expect(env.GEO_MEDIA_OBJECT_ROOT).toBe(".data/media");
+    expect(env.AGENT_PROVIDER).toBe("fixture");
+    expect(env.AGENT_BASE_URL).toBeUndefined();
   });
 
   it("rejects short session secrets", () => {
@@ -54,6 +56,51 @@ describe("serverEnvSchema", () => {
     expect(() => serverEnvSchema.parse({ ...base, AGENT_GATEWAY_CREDENTIALS_JSON: "[]" })).toThrow(
       /configured together/iu,
     );
+  });
+
+  it("requires an API key and base URL for an OpenAI-compatible Pi provider", () => {
+    const base = {
+      DATABASE_URL: "postgresql://localhost/geo",
+      SESSION_SECRET: "a-secure-test-secret-that-is-long-enough",
+      APP_ORIGIN: "http://127.0.0.1:4173",
+      AGENT_PROVIDER: "openai-compatible",
+      AGENT_MODEL: "custom-model",
+    };
+    expect(() => serverEnvSchema.parse(base)).toThrow(/AGENT_BASE_URL/iu);
+    expect(() =>
+      serverEnvSchema.parse({ ...base, AGENT_BASE_URL: "https://models.example.test/v1" }),
+    ).toThrow(/AGENT_API_KEY/iu);
+    expect(
+      serverEnvSchema.parse({
+        ...base,
+        AGENT_BASE_URL: "https://models.example.test/v1",
+        AGENT_API_KEY: "test-key",
+      }),
+    ).toMatchObject({ AGENT_PROVIDER: "openai-compatible", AGENT_MODEL: "custom-model" });
+  });
+
+  it("rejects unsafe or misplaced custom agent base URLs", () => {
+    const base = {
+      DATABASE_URL: "postgresql://localhost/geo",
+      SESSION_SECRET: "a-secure-test-secret-that-is-long-enough",
+      APP_ORIGIN: "http://127.0.0.1:4173",
+      AGENT_API_KEY: "test-key",
+    };
+    expect(() =>
+      serverEnvSchema.parse({
+        ...base,
+        AGENT_PROVIDER: "openai-compatible",
+        AGENT_BASE_URL: "http://models.example.test/v1",
+      }),
+    ).toThrow(/HTTPS/iu);
+    expect(() =>
+      serverEnvSchema.parse({
+        ...base,
+        AGENT_PROVIDER: "openai",
+        AGENT_MODEL: "gpt-5",
+        AGENT_BASE_URL: "https://models.example.test/v1",
+      }),
+    ).toThrow(/only supported/iu);
   });
 
   it("rejects checked-in placeholder secrets in production server configuration", () => {
@@ -145,7 +192,11 @@ describe("productionDeploymentEnvSchema", () => {
     );
 
     expect(preflightBlock).toContain("- AGENT_API_KEY");
+    expect(preflightBlock).toContain("- AGENT_BASE_URL");
+    expect(preflightBlock).toContain("- AGENT_PROVIDER=${AGENT_PROVIDER:-fixture}");
+    expect(preflightBlock).toContain("- AGENT_MODEL=${AGENT_MODEL:-fixture-geo-writer-v1}");
     expect(agentMcpBlock).toContain("AGENT_API_KEY: ${AGENT_API_KEY:-}");
+    expect(agentMcpBlock).toContain("AGENT_BASE_URL: ${AGENT_BASE_URL:-}");
     expect(agentMcpBlock).toContain("AGENT_RUN_TIMEOUT_MS: ${AGENT_RUN_TIMEOUT_MS:-120000}");
     expect(preflightBlock).toContain("- AGENT_GATEWAY_CREDENTIALS_JSON=");
     expect(apiBlock).toContain("- AGENT_GATEWAY_URL=http://127.0.0.1:9021");
@@ -162,5 +213,21 @@ describe("productionDeploymentEnvSchema", () => {
     expect(composeSource).toContain("GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}");
     expect(composeSource).toContain("GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media");
     expect(composeSource).toContain("media-data:/var/lib/geo/media");
+  });
+
+  it("accepts a complete OpenAI-compatible production provider configuration", () => {
+    expect(
+      productionDeploymentEnvSchema.parse({
+        ...validProductionEnvironment,
+        AGENT_PROVIDER: "openai-compatible",
+        AGENT_MODEL: "custom-model",
+        AGENT_BASE_URL: "https://models.example.test/v1",
+        AGENT_API_KEY: "real-provider-secret",
+      }),
+    ).toMatchObject({
+      AGENT_PROVIDER: "openai-compatible",
+      AGENT_MODEL: "custom-model",
+      AGENT_BASE_URL: "https://models.example.test/v1",
+    });
   });
 });

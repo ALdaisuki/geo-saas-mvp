@@ -8,7 +8,7 @@
 
 图片生产默认由 `GEO_MEDIA_PROVIDER=disabled` 关闭；唯一可启用的 `fixture` provider 只生成确定性 PNG，用于验证 VisualBrief、事实绑定、OCR/版权/来源审计、内容寻址存储和 successor 内容版本，不是可投放的生产图片，也不访问网络。带图的人工发布包会附带 `media-manifest.json` 和逐字节校验的 base64 附件；真实生图 provider 仍未实现，`live` 配置会在启动时被拒绝。
 
-Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可显式启用的后台自动化 Producer。Producer 按租户身份轮询持久化批次，使用租约、心跳和断点恢复执行“生成 -> 确定性审计 -> Dry-run 预演 -> 回执回读”；一个租户身份失败不会阻塞其他租户。默认 `AGENT_PROVIDER=fixture` 使用确定性的 `FixturePiAgentRunService`；只有 Pi 已登记相应 provider/model 且由 secret 注入 `AGENT_API_KEY` 时，才启动 `RealPiAgentRunService`。真实 Pi 只改变模型编排方式，仍受静态 GEO/治理工具白名单、租户权限和确定性发布门禁约束，不会凭空获得头条/搜狐/携程发文 API 或豆包/千问真实搜索 API。
+Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可显式启用的后台自动化 Producer。Producer 按租户身份轮询持久化批次，使用租约、心跳和断点恢复执行“生成 -> 确定性审计 -> Dry-run 预演 -> 回执回读”；一个租户身份失败不会阻塞其他租户。默认 `AGENT_PROVIDER=fixture` 使用确定性的 `FixturePiAgentRunService`；Pi 注册表中的 provider/model，或显式配置为 `openai-compatible` 且实现 OpenAI Responses 协议的 HTTPS 端点，在 secret 注入 `AGENT_API_KEY` 后可启动 `RealPiAgentRunService`。真实 Pi 只改变模型编排方式，仍受静态 GEO/治理工具白名单、租户权限和确定性发布门禁约束，不会凭空获得头条/搜狐/携程发文 API 或豆包/千问真实搜索 API。
 
 ## 当前能力边界
 

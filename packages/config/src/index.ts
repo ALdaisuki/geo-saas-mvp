@@ -48,6 +48,58 @@ const booleanStringSchema = z
   .default("false")
   .transform((value) => value === "true");
 
+const agentBaseUrlSchema = z
+  .url()
+  .refine((value) => {
+    const url = new URL(value);
+    const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+    const loopback =
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost") ||
+      hostname === "::1" ||
+      /^127(?:\.\d{1,3}){3}$/u.test(hostname);
+    return url.protocol === "https:" || (url.protocol === "http:" && loopback);
+  }, "Agent base URL must use HTTPS unless it targets a loopback host")
+  .refine((value) => {
+    const url = new URL(value);
+    return url.username.length === 0 && url.password.length === 0;
+  }, "Agent base URL must not contain embedded credentials")
+  .refine((value) => {
+    const url = new URL(value);
+    return url.search.length === 0 && url.hash.length === 0;
+  }, "Agent base URL must not contain a query string or fragment");
+
+interface AgentEnvironment {
+  readonly AGENT_PROVIDER: string;
+  readonly AGENT_API_KEY?: string | undefined;
+  readonly AGENT_BASE_URL?: string | undefined;
+}
+
+function validateAgentEnvironment(environment: AgentEnvironment, context: z.RefinementCtx): void {
+  const compatible = environment.AGENT_PROVIDER === "openai-compatible";
+  if (compatible && environment.AGENT_BASE_URL === undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "AGENT_BASE_URL is required for AGENT_PROVIDER=openai-compatible",
+      path: ["AGENT_BASE_URL"],
+    });
+  }
+  if (!compatible && environment.AGENT_BASE_URL !== undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "AGENT_BASE_URL is only supported by AGENT_PROVIDER=openai-compatible",
+      path: ["AGENT_BASE_URL"],
+    });
+  }
+  if (environment.AGENT_PROVIDER !== "fixture" && environment.AGENT_API_KEY === undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "AGENT_API_KEY is required for a real Pi provider",
+      path: ["AGENT_API_KEY"],
+    });
+  }
+}
+
 const serverEnvBaseSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("127.0.0.1"),
@@ -67,6 +119,7 @@ const serverEnvBaseSchema = z.object({
   GEO_MEDIA_OBJECT_ROOT: z.string().min(1).default(".data/media"),
   AGENT_PROVIDER: z.string().min(1).default("fixture"),
   AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
+  AGENT_BASE_URL: agentBaseUrlSchema.optional(),
   AGENT_API_KEY: z.string().min(1).optional(),
   AGENT_GATEWAY_URL: z.string().url().optional(),
   AGENT_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
@@ -82,6 +135,7 @@ const serverEnvBaseSchema = z.object({
 });
 
 export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, context) => {
+  validateAgentEnvironment(environment, context);
   if (
     (environment.AGENT_GATEWAY_URL === undefined) !==
     (environment.AGENT_GATEWAY_CREDENTIALS_JSON === undefined)
@@ -131,21 +185,26 @@ export function loadServerEnv(input: NodeJS.ProcessEnv = process.env): ServerEnv
   return serverEnvSchema.parse(input);
 }
 
-export const productionDeploymentEnvSchema = z.object({
-  NODE_ENV: z.literal("production").default("production"),
-  POSTGRES_ADMIN_PASSWORD: productionSecretSchema,
-  GEO_API_DB_PASSWORD: productionSecretSchema,
-  GEO_WORKER_DB_PASSWORD: productionSecretSchema,
-  GEO_IDENTITY_DB_PASSWORD: productionSecretSchema,
-  SESSION_SECRET: productionLongSecretSchema,
-  MCP_PRINCIPALS_JSON: productionSecretSchema,
-  AGENT_GATEWAY_CREDENTIALS_JSON: productionSecretSchema,
-  AGENT_API_KEY: productionSecretSchema.optional(),
-  GEO_BOOTSTRAP_PASSWORD: productionSecretSchema.optional(),
-  PLASTIC_PROMISE_MCP_AUTHORIZATION: productionSecretSchema.optional(),
-  DOUBAO_API_KEY: productionSecretSchema.optional(),
-  QWEN_API_KEY: productionSecretSchema.optional(),
-});
+export const productionDeploymentEnvSchema = z
+  .object({
+    NODE_ENV: z.literal("production").default("production"),
+    POSTGRES_ADMIN_PASSWORD: productionSecretSchema,
+    GEO_API_DB_PASSWORD: productionSecretSchema,
+    GEO_WORKER_DB_PASSWORD: productionSecretSchema,
+    GEO_IDENTITY_DB_PASSWORD: productionSecretSchema,
+    SESSION_SECRET: productionLongSecretSchema,
+    MCP_PRINCIPALS_JSON: productionSecretSchema,
+    AGENT_GATEWAY_CREDENTIALS_JSON: productionSecretSchema,
+    AGENT_PROVIDER: z.string().min(1).default("fixture"),
+    AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
+    AGENT_BASE_URL: agentBaseUrlSchema.optional(),
+    AGENT_API_KEY: productionSecretSchema.optional(),
+    GEO_BOOTSTRAP_PASSWORD: productionSecretSchema.optional(),
+    PLASTIC_PROMISE_MCP_AUTHORIZATION: productionSecretSchema.optional(),
+    DOUBAO_API_KEY: productionSecretSchema.optional(),
+    QWEN_API_KEY: productionSecretSchema.optional(),
+  })
+  .superRefine(validateAgentEnvironment);
 
 export type ProductionDeploymentEnv = z.infer<typeof productionDeploymentEnvSchema>;
 

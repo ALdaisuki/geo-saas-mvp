@@ -615,6 +615,11 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   heartbeat_at: NullableDbTimestamp;
   session_evidence_hash: string | null;
   draft_evidence_hash: string | null;
+  prepare_outcome: "prepared" | "session_required" | "challenge_required" | "adapter_drift" | null;
+  prepare_evidence_kind: "simulation" | "browser" | null;
+  prepare_evidence_hash: string | null;
+  prepare_observed_at: NullableDbTimestamp;
+  media_manifest_hash: string | null;
   submit_evidence_hash: string | null;
   submit_permit_hash: string | null;
   submit_permit_expires_at: NullableDbTimestamp;

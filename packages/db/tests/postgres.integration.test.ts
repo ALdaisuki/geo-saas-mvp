@@ -925,6 +925,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0019_ctrip_bridge_authority",
       "0020_ctrip_submit_observations",
       "0021_ctrip_submit_recovery",
+      "0022_ctrip_prepare_evidence",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2303,6 +2304,9 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     const previewHash = "5".repeat(64);
     const sessionEvidenceHash = "6".repeat(64);
     const draftEvidenceHash = "7".repeat(64);
+    const prepareEvidenceHash = "8".repeat(64);
+    const mediaManifestHash = "9".repeat(64);
+    const blockerEvidenceHash = "a".repeat(64);
     const ctripAuditHash = "3".repeat(64);
     let ctripAssistedJobId: string | undefined;
 
@@ -2670,9 +2674,15 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         await client.query("SAVEPOINT challenge_report");
         await client.query(
           `SELECT geo.record_publication_assisted_bridge_status(
-             $1, 'challenge_required', $2::geo.sha256_hex, $3, NULL
+             $1, 'challenge_required', $2::geo.sha256_hex,
+             $3::geo.sha256_hex, 'browser', clock_timestamp(), $4, NULL
            )`,
-          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+          [
+            ids.ctripAssistedHandoff,
+            sessionEvidenceHash,
+            blockerEvidenceHash,
+            "ctrip-community-web-v1",
+          ],
         );
         const challengeCircuit = await client.query<{ state: string; reason: string }>(
           `SELECT state, reason FROM geo.circuit_breakers
@@ -2688,9 +2698,15 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         await client.query("SAVEPOINT drift_report");
         await client.query(
           `SELECT geo.record_publication_assisted_bridge_status(
-             $1, 'failed', $2::geo.sha256_hex, $3, 'ASSISTED_ADAPTER_DRIFT'
+             $1, 'failed', $2::geo.sha256_hex, $3::geo.sha256_hex,
+             'browser', clock_timestamp(), $4, 'ASSISTED_ADAPTER_DRIFT'
            )`,
-          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+          [
+            ids.ctripAssistedHandoff,
+            sessionEvidenceHash,
+            blockerEvidenceHash,
+            "ctrip-community-web-v1",
+          ],
         );
         const driftCircuit = await client.query<{ state: string; reason: string }>(
           `SELECT state, reason FROM geo.circuit_breakers
@@ -2705,22 +2721,70 @@ describe("real PostgreSQL tenant and publication invariants", () => {
 
         await client.query(
           `SELECT geo.record_publication_assisted_bridge_status(
-             $1, 'session_required', $2::geo.sha256_hex, $3, NULL
+             $1, 'session_required', $2::geo.sha256_hex,
+             $3::geo.sha256_hex, 'browser', clock_timestamp(), $4, NULL
            )`,
-          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+          [
+            ids.ctripAssistedHandoff,
+            sessionEvidenceHash,
+            blockerEvidenceHash,
+            "ctrip-community-web-v1",
+          ],
         );
+        const blockedEvidence = await client.query<{
+          prepare_outcome: string;
+          prepare_evidence_kind: string;
+          prepare_evidence_hash: string;
+          observed: boolean;
+          media_manifest_hash: string | null;
+        }>(
+          `SELECT prepare_outcome, prepare_evidence_kind, prepare_evidence_hash,
+                  prepare_observed_at IS NOT NULL AS observed, media_manifest_hash
+           FROM geo.publication_assisted_handoffs WHERE id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(blockedEvidence.rows[0]).toEqual({
+          prepare_outcome: "session_required",
+          prepare_evidence_kind: "browser",
+          prepare_evidence_hash: blockerEvidenceHash,
+          observed: true,
+          media_manifest_hash: null,
+        });
         await client.query(
           `SELECT geo.record_publication_assisted_draft(
-             $1, $2::geo.sha256_hex, $3::geo.sha256_hex, $4, $5
+             $1, $2::geo.sha256_hex, $3::geo.sha256_hex,
+             $4::geo.sha256_hex, $5::geo.sha256_hex,
+             'browser', clock_timestamp(), $6, $7
            )`,
           [
             ids.ctripAssistedHandoff,
             sessionEvidenceHash,
             draftEvidenceHash,
+            prepareEvidenceHash,
+            mediaManifestHash,
             "ctrip-draft-integration-001",
             "ctrip-community-web-v1",
           ],
         );
+        const preparedEvidence = await client.query<{
+          prepare_outcome: string;
+          prepare_evidence_kind: string;
+          prepare_evidence_hash: string;
+          media_manifest_hash: string;
+          observed: boolean;
+        }>(
+          `SELECT prepare_outcome, prepare_evidence_kind, prepare_evidence_hash,
+                  media_manifest_hash, prepare_observed_at IS NOT NULL AS observed
+           FROM geo.publication_assisted_handoffs WHERE id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(preparedEvidence.rows[0]).toEqual({
+          prepare_outcome: "prepared",
+          prepare_evidence_kind: "browser",
+          prepare_evidence_hash: prepareEvidenceHash,
+          media_manifest_hash: mediaManifestHash,
+          observed: true,
+        });
       },
       { actor: ids.ctripBridgePrincipal },
     );

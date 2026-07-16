@@ -87,10 +87,11 @@ GRANT EXECUTE ON FUNCTION geo.claim_publication_assisted_handoff(uuid, integer) 
 GRANT EXECUTE ON FUNCTION geo.heartbeat_publication_assisted_handoff(uuid, integer)
   TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(
-  uuid, geo.sha256_hex, geo.sha256_hex, text, text
+  uuid, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex,
+  text, timestamptz, text, text
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(
-  uuid, text, geo.sha256_hex, text, text
+  uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.issue_publication_assisted_submit_permit(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)
@@ -208,7 +209,7 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime',
-       'geo.record_publication_assisted_draft(uuid,geo.sha256_hex,geo.sha256_hex,text,text)',
+       'geo.record_publication_assisted_draft(uuid,geo.sha256_hex,geo.sha256_hex,geo.sha256_hex,geo.sha256_hex,text,timestamptz,text,text)',
        'EXECUTE'
      )
      OR has_function_privilege(
@@ -218,7 +219,7 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime',
-       'geo.record_publication_assisted_bridge_status(uuid,text,geo.sha256_hex,text,text)',
+       'geo.record_publication_assisted_bridge_status(uuid,text,geo.sha256_hex,geo.sha256_hex,text,timestamptz,text,text)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(

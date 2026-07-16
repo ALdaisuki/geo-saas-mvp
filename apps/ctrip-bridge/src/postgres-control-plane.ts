@@ -255,6 +255,10 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
           ${handoff.id}::uuid,
           ${evidence.sessionEvidenceHash}::geo.sha256_hex,
           ${evidence.draftEvidenceHash}::geo.sha256_hex,
+          ${evidence.evidenceHash}::geo.sha256_hex,
+          ${evidence.mediaManifestHash}::geo.sha256_hex,
+          ${evidence.evidenceKind},
+          ${evidence.observedAt}::timestamptz,
           ${evidence.externalDraftId},
           ${handoff.adapterVersion}
         )
@@ -275,6 +279,9 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
           ${handoff.id}::uuid,
           ${status},
           ${blocker.sessionEvidenceHash}::geo.sha256_hex,
+          ${blocker.evidenceHash}::geo.sha256_hex,
+          ${blocker.evidenceKind},
+          ${blocker.observedAt}::timestamptz,
           ${handoff.adapterVersion},
           ${errorCode}
         )

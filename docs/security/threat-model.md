@@ -64,6 +64,11 @@ exactly one tenant, exposes no simulator page, supports only `prepare`, and reje
 `submit`/`readback` before permit consumption. This narrows the process surface but
 does not turn CDP evidence into publication authorization.
 
+New prepare observations are transactionally bound to the handoff as an outcome,
+evidence kind/hash and observation time; prepared drafts also bind the media-manifest
+hash. The audit row uses the top-level evidence hash. Pre-migration rows remain null
+and are never upgraded from weaker state or session-hash evidence.
+
 ## Release blockers for live publication
 
 Unattended external writes remain blocked until all of the following are independently verified:

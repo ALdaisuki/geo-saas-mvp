@@ -505,6 +505,11 @@ interface PublicationAssistedHandoffRow {
   readonly heartbeat_at: Date | null;
   readonly session_evidence_hash: string | null;
   readonly draft_evidence_hash: string | null;
+  readonly prepare_outcome: PublicationAssistedHandoffView["prepareOutcome"];
+  readonly prepare_evidence_kind: PublicationAssistedHandoffView["prepareEvidenceKind"];
+  readonly prepare_evidence_hash: string | null;
+  readonly prepare_observed_at: Date | null;
+  readonly media_manifest_hash: string | null;
   readonly submit_evidence_hash: string | null;
   readonly submit_permit_issued: boolean;
   readonly submit_permit_expires_at: Date | null;
@@ -553,6 +558,11 @@ function publicationAssistedHandoffView(
     heartbeatAt: toNullableIso(row.heartbeat_at),
     sessionEvidenceHash: row.session_evidence_hash,
     draftEvidenceHash: row.draft_evidence_hash,
+    prepareOutcome: row.prepare_outcome,
+    prepareEvidenceKind: row.prepare_evidence_kind,
+    prepareEvidenceHash: row.prepare_evidence_hash,
+    prepareObservedAt: toNullableIso(row.prepare_observed_at),
+    mediaManifestHash: row.media_manifest_hash,
     submitEvidenceHash: row.submit_evidence_hash,
     submitPermitIssued: row.submit_permit_issued,
     submitPermitExpiresAt: toNullableIso(row.submit_permit_expires_at),
@@ -880,7 +890,10 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
              handoff.bridge_service_principal_id,
              handoff.lease_owner_actor_id, handoff.lease_expires_at,
              handoff.heartbeat_at, handoff.session_evidence_hash,
-             handoff.draft_evidence_hash, handoff.submit_evidence_hash,
+             handoff.draft_evidence_hash, handoff.prepare_outcome,
+             handoff.prepare_evidence_kind, handoff.prepare_evidence_hash,
+             handoff.prepare_observed_at, handoff.media_manifest_hash,
+             handoff.submit_evidence_hash,
              (handoff.submit_permit_hash is not null) as submit_permit_issued,
              handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
              handoff.submit_permit_issued_by_actor_id,
@@ -4193,7 +4206,10 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
                  handoff.bridge_service_principal_id,
                  handoff.lease_owner_actor_id, handoff.lease_expires_at,
                  handoff.heartbeat_at, handoff.session_evidence_hash,
-                 handoff.draft_evidence_hash, handoff.submit_evidence_hash,
+                 handoff.draft_evidence_hash, handoff.prepare_outcome,
+                 handoff.prepare_evidence_kind, handoff.prepare_evidence_hash,
+                 handoff.prepare_observed_at, handoff.media_manifest_hash,
+                 handoff.submit_evidence_hash,
                  (handoff.submit_permit_hash is not null) as submit_permit_issued,
                  handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
                  handoff.submit_permit_issued_by_actor_id,

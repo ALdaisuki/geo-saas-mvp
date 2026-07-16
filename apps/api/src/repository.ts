@@ -896,6 +896,12 @@ export interface PublicationAssistedHandoffView {
   readonly heartbeatAt: string | null;
   readonly sessionEvidenceHash: string | null;
   readonly draftEvidenceHash: string | null;
+  readonly prepareOutcome:
+    "prepared" | "session_required" | "challenge_required" | "adapter_drift" | null;
+  readonly prepareEvidenceKind: "simulation" | "browser" | null;
+  readonly prepareEvidenceHash: string | null;
+  readonly prepareObservedAt: string | null;
+  readonly mediaManifestHash: string | null;
   readonly submitEvidenceHash: string | null;
   readonly submitPermitIssued: boolean;
   readonly submitPermitExpiresAt: string | null;

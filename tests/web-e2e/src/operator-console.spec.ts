@@ -380,6 +380,12 @@ async function installAutomationApiFixture(page: Page): Promise<{
     heartbeatAt: null as string | null,
     sessionEvidenceHash: null as string | null,
     draftEvidenceHash: null as string | null,
+    prepareOutcome: null as
+      "prepared" | "session_required" | "challenge_required" | "adapter_drift" | null,
+    prepareEvidenceKind: null as "simulation" | "browser" | null,
+    prepareEvidenceHash: null as string | null,
+    prepareObservedAt: null as string | null,
+    mediaManifestHash: null as string | null,
     submitEvidenceHash: null as string | null,
     submitPermitIssued: false,
     submitPermitExpiresAt: null as string | null,
@@ -493,6 +499,11 @@ async function installAutomationApiFixture(page: Page): Promise<{
           ...ctripHandoff,
           state: "draft_prepared",
           draftEvidenceHash: "6".repeat(64),
+          prepareOutcome: "prepared",
+          prepareEvidenceKind: "simulation",
+          prepareEvidenceHash: "6".repeat(64),
+          prepareObservedAt: now,
+          mediaManifestHash: "7".repeat(64),
         };
         await route.fulfill({
           status: 200,
@@ -873,6 +884,7 @@ test("live Ctrip simulator flow requires approval and ends in review", async ({
   await page.getByRole("button", { name: /认领交接单/ }).click();
   await page.getByRole("button", { name: /准备携程草稿/ }).click();
   await expect(page.getByText("草稿已准备", { exact: true })).toBeVisible();
+  await expect(page.getByText("prepared · simulation · 66666666…6666")).toBeVisible();
   await expect(page.getByText("尚未提交", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /批准提交/ }).click();

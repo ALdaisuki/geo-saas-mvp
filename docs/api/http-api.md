@@ -198,6 +198,14 @@ invokes an adapter method. A prepare result is persisted as `session_required`,
 manifest remains disabled, a `reviewed_surface` observation is intentionally mapped
 to `adapter_drift`. The mode and adapter version are visible at `GET /health/live`.
 
+For handoffs created after migration `0022_ctrip_prepare_evidence.sql`, list/detail
+responses expose the complete durable prepare identity: `prepareOutcome`,
+`prepareEvidenceKind`, `prepareEvidenceHash`, `prepareObservedAt` and, only for a
+prepared draft, `mediaManifestHash`. The database writes that group in the same
+transaction as the state transition and audit row. Older rows retain null values;
+clients must not infer or backfill evidence from state, adapter version or a later
+submit observation.
+
 ## Important absences
 
 - No email invitation, password reset, or member self-enrollment workflow. Tenant managers can create and update members through the authenticated API; a privileged one-shot owner bootstrap CLI remains for initial/recovery bootstrap.

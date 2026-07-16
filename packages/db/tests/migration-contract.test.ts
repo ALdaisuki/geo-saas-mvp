@@ -743,10 +743,7 @@ describe("PostgreSQL migration contract", () => {
       "p_bridge_service_principal_id uuid",
     );
     const bridgeStatus = latestFunctionDefinition("record_publication_assisted_bridge_status");
-    const draft = functionOverloadDefinition(
-      "record_publication_assisted_draft",
-      "p_external_draft_id text",
-    );
+    const draft = latestFunctionDefinition("record_publication_assisted_draft");
     const issuePermit = latestFunctionDefinition("issue_publication_assisted_submit_permit");
     const consumePermit = latestFunctionDefinition("consume_publication_assisted_submit_permit");
 
@@ -782,6 +779,38 @@ describe("PostgreSQL migration contract", () => {
     );
     expect(migrationSql).toMatch(
       /publication_assisted_handoff_permit_actor_consistency[\s\S]*?\) NOT VALID,/u,
+    );
+  });
+
+  it("retains complete Ctrip prepare evidence for canary review", () => {
+    const bridgeStatus = latestFunctionDefinition("record_publication_assisted_bridge_status");
+    const draft = latestFunctionDefinition("record_publication_assisted_draft");
+    const transition = latestFunctionDefinition("enforce_publication_assisted_handoff_transition");
+
+    for (const column of [
+      "prepare_outcome",
+      "prepare_evidence_kind",
+      "prepare_evidence_hash",
+      "prepare_observed_at",
+      "media_manifest_hash",
+    ]) {
+      expect(migrationSql).toContain(`ADD COLUMN ${column}`);
+    }
+    expect(migrationSql).toContain("publication_assisted_handoff_prepare_observation_complete");
+    expect(bridgeStatus).toContain("prepare_outcome = CASE");
+    expect(bridgeStatus).toContain("prepare_evidence_hash = p_prepare_evidence_hash");
+    expect(bridgeStatus).toContain("prepare_evidence_kind = p_prepare_evidence_kind");
+    expect(bridgeStatus).toContain("prepare_observed_at = p_prepare_observed_at");
+    expect(draft).toContain("prepare_outcome = 'prepared'");
+    expect(draft).toContain("media_manifest_hash = p_media_manifest_hash");
+    expect(draft).toContain("'mediaManifestHash', p_media_manifest_hash");
+    expect(transition).toContain("'prepare_outcome'");
+    expect(transition).toContain("'prepare_evidence_hash'");
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(",
+    );
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(",
     );
   });
 

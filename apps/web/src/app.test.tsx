@@ -127,6 +127,11 @@ function liveApi(): GeoApi {
     heartbeatAt: "1999-12-31T23:59:00.000Z",
     sessionEvidenceHash: null,
     draftEvidenceHash: null,
+    prepareOutcome: null,
+    prepareEvidenceKind: null,
+    prepareEvidenceHash: null,
+    prepareObservedAt: null,
+    mediaManifestHash: null,
     submitEvidenceHash: null,
     submitPermitIssued: false,
     submitPermitExpiresAt: null,
@@ -523,6 +528,11 @@ function liveApi(): GeoApi {
         ...assistedHandoff,
         state: "draft_prepared",
         draftEvidenceHash: "7".repeat(64),
+        prepareOutcome: "prepared",
+        prepareEvidenceKind: "simulation",
+        prepareEvidenceHash: "8".repeat(64),
+        prepareObservedAt: "2026-07-14T08:01:00.000Z",
+        mediaManifestHash: "9".repeat(64),
         adapterVersion: "ctrip-community-simulator-v1",
       };
       return {
@@ -1281,6 +1291,29 @@ describe("GEO operator console", () => {
     expect(screen.getByRole("button", { name: /取消交接单/ })).toBeDisabled();
     expect(document.body.textContent).not.toContain("submitPermitHash");
     expect(document.body.textContent).not.toContain("submit_permit");
+  });
+
+  it("labels read-only Ctrip browser preflight without presenting it as live", async () => {
+    const api = liveApi();
+    const [baseHandoff] = await api.getPublicationAssistedHandoffs();
+    if (baseHandoff === undefined) throw new Error("Ctrip handoff fixture is missing");
+    const preflightHandoff: PublicationAssistedHandoff = {
+      ...baseHandoff,
+      state: "session_required",
+      adapterVersion: "ctrip-community-browser-preflight-v1",
+      prepareOutcome: "session_required",
+      prepareEvidenceKind: "browser",
+      prepareEvidenceHash: "a".repeat(64),
+      prepareObservedAt: "2026-07-16T12:00:00.000Z",
+    };
+    api.getPublicationAssistedHandoffs = async () => [preflightHandoff];
+    api.getPublicationAssistedHandoff = async () => preflightHandoff;
+
+    renderApp({ path: "/publishing", api });
+
+    expect(await screen.findByText("Browser preflight")).toBeInTheDocument();
+    expect(screen.getByText("session_required · browser · aaaaaaaa…aaaa")).toBeInTheDocument();
+    expect(screen.queryByText("Live bridge")).not.toBeInTheDocument();
   });
 
   it("runs the governed Ctrip simulator commands through explicit approval and readback", async () => {

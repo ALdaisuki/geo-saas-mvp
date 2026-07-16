@@ -444,12 +444,19 @@ function stateLabel(state: string): string {
   return labels[state] ?? state;
 }
 
-function ctripEnvironmentLabel(handoff: PublicationAssistedHandoff): "Simulator" | "Live bridge" {
-  return handoff.adapterVersion.toLowerCase().includes("simulator") ||
+function ctripEnvironmentLabel(
+  handoff: PublicationAssistedHandoff,
+): "Simulator" | "Browser preflight" | "Live bridge" {
+  const adapterVersion = handoff.adapterVersion.toLowerCase();
+  if (
+    adapterVersion.includes("simulator") ||
     handoff.submitEvidenceKind === "simulation" ||
     handoff.readbackEvidenceKind === "simulation"
-    ? "Simulator"
-    : "Live bridge";
+  ) {
+    return "Simulator";
+  }
+  if (adapterVersion.includes("browser-preflight")) return "Browser preflight";
+  return "Live bridge";
 }
 
 function ctripSubmitObservation(handoff: PublicationAssistedHandoff): string {
@@ -2021,6 +2028,12 @@ function PublishingView({
                               {ctripEnvironmentLabel(handoff)}
                             </StatusBadge>
                             <span className="mono">{handoff.adapterVersion}</span>
+                            {handoff.prepareEvidenceHash === null ? null : (
+                              <span className="mono">
+                                {handoff.prepareOutcome} · {handoff.prepareEvidenceKind} ·{" "}
+                                {shortId(handoff.prepareEvidenceHash)}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td>

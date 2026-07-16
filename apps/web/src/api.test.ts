@@ -1210,6 +1210,11 @@ describe("HttpGeoApi", () => {
       heartbeatAt: null,
       sessionEvidenceHash: null,
       draftEvidenceHash: null,
+      prepareOutcome: null,
+      prepareEvidenceKind: null,
+      prepareEvidenceHash: null,
+      prepareObservedAt: null,
+      mediaManifestHash: null,
       submitEvidenceHash: null,
       submitPermitIssued: false,
       submitPermitExpiresAt: null,
@@ -1251,6 +1256,11 @@ describe("HttpGeoApi", () => {
       ...claimed,
       state: "draft_prepared",
       draftEvidenceHash: "d".repeat(64),
+      prepareOutcome: "prepared",
+      prepareEvidenceKind: "simulation",
+      prepareEvidenceHash: "f".repeat(64),
+      prepareObservedAt: "2026-07-15T02:00:30.000Z",
+      mediaManifestHash: "1".repeat(64),
     };
     const submitted = {
       ...prepared,
@@ -1346,7 +1356,14 @@ describe("HttpGeoApi", () => {
       wasChanged: true,
     });
     expect(preparation).toMatchObject({
-      handoff: { state: "draft_prepared" },
+      handoff: {
+        state: "draft_prepared",
+        prepareOutcome: "prepared",
+        prepareEvidenceKind: "simulation",
+        prepareEvidenceHash: "f".repeat(64),
+        prepareObservedAt: "2026-07-15T02:00:30.000Z",
+        mediaManifestHash: "1".repeat(64),
+      },
       bridge: { command: "prepare", evidenceKind: "simulation" },
     });
     expect(submission).toMatchObject({

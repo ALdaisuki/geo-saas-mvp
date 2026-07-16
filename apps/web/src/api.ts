@@ -470,6 +470,12 @@ export interface PublicationAssistedHandoff {
   readonly heartbeatAt: string | null;
   readonly sessionEvidenceHash: string | null;
   readonly draftEvidenceHash: string | null;
+  readonly prepareOutcome:
+    "prepared" | "session_required" | "challenge_required" | "adapter_drift" | null;
+  readonly prepareEvidenceKind: "simulation" | "browser" | null;
+  readonly prepareEvidenceHash: string | null;
+  readonly prepareObservedAt: string | null;
+  readonly mediaManifestHash: string | null;
   readonly submitEvidenceHash: string | null;
   readonly submitPermitIssued: boolean;
   readonly submitPermitExpiresAt: string | null;
@@ -1969,6 +1975,16 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     heartbeatAt: nullableStringValue(item, "heartbeatAt"),
     sessionEvidenceHash: nullableStringValue(item, "sessionEvidenceHash"),
     draftEvidenceHash: nullableStringValue(item, "draftEvidenceHash"),
+    prepareOutcome: nullableEnumValue(item, "prepareOutcome", [
+      "prepared",
+      "session_required",
+      "challenge_required",
+      "adapter_drift",
+    ]),
+    prepareEvidenceKind: nullableEnumValue(item, "prepareEvidenceKind", ["simulation", "browser"]),
+    prepareEvidenceHash: nullableStringValue(item, "prepareEvidenceHash"),
+    prepareObservedAt: nullableStringValue(item, "prepareObservedAt"),
+    mediaManifestHash: nullableStringValue(item, "mediaManifestHash"),
     submitEvidenceHash: nullableStringValue(item, "submitEvidenceHash"),
     submitPermitIssued: booleanValue(item, "submitPermitIssued"),
     submitPermitExpiresAt: nullableStringValue(item, "submitPermitExpiresAt"),

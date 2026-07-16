@@ -86,7 +86,12 @@ describe("replayable application ACL contract", () => {
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(",
     );
-    expect(aclSql).toContain("uuid, geo.sha256_hex, geo.sha256_hex, text, text");
+    expect(aclSql).toContain(
+      "uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text",
+    );
+    expect(aclSql).toContain(
+      "uuid, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex,",
+    );
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)",
     );

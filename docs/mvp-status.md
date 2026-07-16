@@ -62,4 +62,11 @@ milestone requires an authorized evidence review, a source-controlled fixed surf
 manifest, fixed prepare/upload/submit locators and one explicitly supervised canary
 followed by independent public readback.
 
+Migration `0022_ctrip_prepare_evidence.sql` closes the remaining prepare-audit gap.
+Every new blocker or prepared draft atomically stores `prepareOutcome`, evidence
+kind, top-level evidence hash and observation time; a prepared draft additionally
+stores its media-manifest hash. These values are returned by the tenant-scoped
+handoff API and shown as bounded evidence identity in the Publishing queue. Legacy
+handoffs remain explicitly null instead of receiving reconstructed evidence.
+
 These deferred items are not configuration flags or hidden endpoints. Real Pi mode is available for article orchestration when a supported provider/model/key is configured, but article quality must still be evaluated against tenant facts, audit results and human review samples before production use.

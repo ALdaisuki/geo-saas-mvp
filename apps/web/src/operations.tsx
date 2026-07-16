@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Ban,
+  Bot,
   CalendarClock,
   CheckCircle2,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   FileSearch,
   LoaderCircle,
   Plus,
+  Play,
   RefreshCw,
   ShieldAlert,
   Square,
@@ -22,6 +24,8 @@ import { NavLink } from "react-router-dom";
 import {
   GeoApiError,
   type AuditArtifact,
+  type AgentRunCapability,
+  type AgentRunResponse,
   type AuditResult,
   type Brand,
   type CanonicalBodyBlock,
@@ -858,6 +862,331 @@ function ArticleComposer({
   );
 }
 
+function AgentArticleComposer({
+  api,
+  tenantId,
+  brands,
+  campaigns,
+  accounts,
+  templates,
+  canWrite,
+  onCompleted,
+}: {
+  api: GeoApi;
+  tenantId: string;
+  brands: readonly Brand[];
+  campaigns: readonly Campaign[];
+  accounts: readonly ChannelAccount[];
+  templates: readonly ArticleTemplate[];
+  canWrite: boolean;
+  onCompleted: (content: readonly ContentItem[], result: AgentRunResponse) => void;
+}) {
+  const activeCampaigns = campaigns.filter((campaign) => campaign.status === "active");
+  const availableAccounts = accounts.filter(
+    (account) =>
+      account.status === "active" &&
+      account.supportedExecutionLevels.includes("dry_run") &&
+      ["toutiao", "sohu", "ctrip_community"].includes(account.platform),
+  );
+  const initialBrandId =
+    brands.find((brand) => activeCampaigns.some((campaign) => campaign.brandId === brand.id))?.id ??
+    "";
+  const [brandId, setBrandId] = useState(initialBrandId);
+  const [campaignId, setCampaignId] = useState(
+    activeCampaigns.find((campaign) => campaign.brandId === initialBrandId)?.id ?? "",
+  );
+  const [accountId, setAccountId] = useState(availableAccounts[0]?.id ?? "");
+  const [templateId, setTemplateId] = useState(
+    templates.find((template) => template.id === DEFAULT_ARTICLE_TEMPLATE_ID)?.id ??
+      templates[0]?.id ??
+      "",
+  );
+  const [topic, setTopic] = useState("");
+  const [capability, setCapability] = useState<AgentRunCapability | null>(null);
+  const [capabilityState, setCapabilityState] = useState<"loading" | "ready" | "error">("loading");
+  const [state, setState] = useState<WriteState>("idle");
+  const [result, setResult] = useState<AgentRunResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const selectedCampaigns = activeCampaigns.filter((campaign) => campaign.brandId === brandId);
+  const selectedAccount = availableAccounts.find((account) => account.id === accountId);
+  const selectedTemplate = templates.find((template) => template.id === templateId);
+
+  useEffect(() => {
+    const nextBrandId =
+      brands.find((brand) => activeCampaigns.some((campaign) => campaign.brandId === brand.id))
+        ?.id ?? "";
+    setBrandId(nextBrandId);
+    setCampaignId(activeCampaigns.find((campaign) => campaign.brandId === nextBrandId)?.id ?? "");
+    setAccountId(availableAccounts[0]?.id ?? "");
+    setTemplateId(
+      templates.find((template) => template.id === DEFAULT_ARTICLE_TEMPLATE_ID)?.id ??
+        templates[0]?.id ??
+        "",
+    );
+    setTopic("");
+    setResult(null);
+    setError(null);
+    setState("idle");
+  }, [tenantId]);
+
+  useEffect(() => {
+    if (
+      brandId === "" ||
+      !brands.some(
+        (brand) =>
+          brand.id === brandId && activeCampaigns.some((campaign) => campaign.brandId === brand.id),
+      )
+    ) {
+      setBrandId(
+        brands.find((brand) => activeCampaigns.some((campaign) => campaign.brandId === brand.id))
+          ?.id ?? "",
+      );
+    }
+  }, [activeCampaigns, brandId, brands]);
+
+  useEffect(() => {
+    if (!selectedCampaigns.some((campaign) => campaign.id === campaignId)) {
+      setCampaignId(selectedCampaigns[0]?.id ?? "");
+    }
+  }, [campaignId, selectedCampaigns]);
+
+  useEffect(() => {
+    if (!availableAccounts.some((account) => account.id === accountId)) {
+      setAccountId(availableAccounts[0]?.id ?? "");
+    }
+  }, [accountId, availableAccounts]);
+
+  useEffect(() => {
+    if (!templates.some((template) => template.id === templateId)) {
+      setTemplateId(
+        templates.find((template) => template.id === DEFAULT_ARTICLE_TEMPLATE_ID)?.id ??
+          templates[0]?.id ??
+          "",
+      );
+    }
+  }, [templateId, templates]);
+
+  async function loadCapability() {
+    setCapabilityState("loading");
+    setError(null);
+    try {
+      setCapability(await api.getAgentCapability());
+      setCapabilityState("ready");
+    } catch (requestError) {
+      setCapability(null);
+      setCapabilityState("error");
+      setError(apiError(requestError));
+    }
+  }
+
+  useEffect(() => {
+    void loadCapability();
+  }, [api, tenantId]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (
+      !canWrite ||
+      capability?.available !== true ||
+      selectedAccount === undefined ||
+      selectedTemplate === undefined ||
+      campaignId === ""
+    ) {
+      return;
+    }
+    setState("working");
+    setResult(null);
+    setError(null);
+    try {
+      const completed = await api.runAgent({
+        brandId,
+        campaignId,
+        channelAccountId: selectedAccount.id,
+        platform: selectedAccount.platform as "toutiao" | "sohu" | "ctrip_community",
+        topic: topic.trim(),
+        articleTemplateId: selectedTemplate.id,
+        idempotencyKey: `web-agent:${crypto.randomUUID()}`,
+      });
+      const refreshedContent = await api.getContent();
+      setResult(completed);
+      setState("done");
+      onCompleted(refreshedContent, completed);
+    } catch (requestError) {
+      setState("error");
+      setError(apiError(requestError));
+    }
+  }
+
+  const enabled =
+    canWrite &&
+    capability?.available === true &&
+    brandId !== "" &&
+    campaignId !== "" &&
+    selectedAccount !== undefined &&
+    selectedTemplate !== undefined &&
+    topic.trim().length > 0;
+  const capabilityLabel =
+    capabilityState === "loading"
+      ? "正在检查"
+      : capability?.available === true
+        ? `${capability.provider} · ${capability.model}`
+        : capability?.reason === "tenant_not_configured"
+          ? "当前客户未配置"
+          : capability?.reason === "runner_disabled"
+            ? "Agent Runner 已停用"
+            : "服务暂不可用";
+
+  return (
+    <section className="ops-agent-band" aria-labelledby="agent-composer-title">
+      <div className="ops-agent-heading">
+        <div>
+          <span>PI AGENT · 实时生产</span>
+          <h2 id="agent-composer-title">受治理文章生成</h2>
+        </div>
+        <div className="ops-agent-capability" data-state={capability?.available ? "ready" : "idle"}>
+          <Bot size={16} />
+          <span>{capabilityLabel}</span>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="刷新 Agent 能力"
+            title="刷新 Agent 能力"
+            onClick={() => void loadCapability()}
+            disabled={capabilityState === "loading" || state === "working"}
+          >
+            <RefreshCw className={capabilityState === "loading" ? "spin" : ""} size={14} />
+          </button>
+        </div>
+      </div>
+      <form className="ops-agent-form" onSubmit={(event) => void submit(event)}>
+        <div className="ops-form-grid">
+          <label>
+            品牌
+            <select
+              aria-label="Agent 品牌"
+              value={brandId}
+              onChange={(event) => {
+                const nextBrandId = event.target.value;
+                setBrandId(nextBrandId);
+                setCampaignId(
+                  activeCampaigns.find((campaign) => campaign.brandId === nextBrandId)?.id ?? "",
+                );
+              }}
+            >
+              {brands.map((brand) => (
+                <option key={brand.id} value={brand.id}>
+                  {brand.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Campaign
+            <select
+              aria-label="Agent Campaign"
+              value={campaignId}
+              onChange={(event) => setCampaignId(event.target.value)}
+            >
+              {selectedCampaigns.map((campaign) => (
+                <option key={campaign.id} value={campaign.id}>
+                  {campaign.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            平台账号
+            <select
+              aria-label="Agent 平台账号"
+              value={accountId}
+              onChange={(event) => setAccountId(event.target.value)}
+            >
+              {availableAccounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {platformName(account.platform)} · {account.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            文章模板
+            <select
+              aria-label="Agent 文章模板"
+              value={templateId}
+              onChange={(event) => setTemplateId(event.target.value)}
+            >
+              {templates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ops-form-wide">
+            主题与内容目标
+            <textarea
+              aria-label="Agent 主题与内容目标"
+              value={topic}
+              onChange={(event) => setTopic(event.target.value)}
+              rows={4}
+              maxLength={10_000}
+              placeholder="例如：面向上海家庭客群，核验日本暑期线路服务边界、联系方式与常见决策问题"
+            />
+          </label>
+        </div>
+        {selectedTemplate === undefined ? null : (
+          <div className="ops-agent-template-note">
+            <strong>{selectedTemplate.benefit}</strong>
+            <span>{selectedTemplate.geoMechanisms.slice(0, 3).join(" · ")}</span>
+          </div>
+        )}
+        <InlineError value={error} />
+        <div className="ops-agent-actions">
+          <span>固定输出：平台最终变体 · 确定性审计 · Dry-run</span>
+          <button
+            className="button-primary"
+            type="submit"
+            disabled={!enabled || state === "working"}
+          >
+            {state === "working" ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
+            {state === "working" ? "Pi Agent 执行中" : "实时生成文章"}
+          </button>
+        </div>
+      </form>
+      {state === "working" ? (
+        <div className="ops-agent-progress" role="status">
+          <LoaderCircle className="spin" size={18} />
+          <div>
+            <strong>运行请求已提交</strong>
+            <span>等待 Agent 返回实际工具链结果</span>
+          </div>
+        </div>
+      ) : null}
+      {result === null ? null : (
+        <div className="ops-agent-result" role="status">
+          <CheckCircle2 size={18} />
+          <div>
+            <strong>
+              {result.result.providerMode === "fixture"
+                ? "文章与 Dry-run 已生成"
+                : "Pi Agent 已完成"}
+            </strong>
+            {result.result.providerMode === "fixture" ? (
+              <>
+                <span>{result.result.steps.join(" → ")}</span>
+                <code>content {result.result.contentItemId}</code>
+              </>
+            ) : (
+              <span>{result.result.response || `模型消息 ${result.result.messageCount} 条`}</span>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 interface VariantAuditState {
   readonly result: AuditResult;
   readonly scheduledFor: string;
@@ -1457,6 +1786,24 @@ export function OperationsWorkspace({
           部分运营接口读取失败；依赖该数据的步骤保持禁用，不会以演示数据补位。
         </OperationNotice>
       ) : null}
+
+      <AgentArticleComposer
+        api={api}
+        tenantId={tenantId}
+        brands={brands}
+        campaigns={campaigns}
+        accounts={accounts}
+        templates={templates}
+        canWrite={canWrite}
+        onCompleted={(refreshed, completed) => {
+          setContent(refreshed);
+          const selectedId =
+            completed.result.providerMode === "fixture"
+              ? completed.result.contentItemId
+              : (refreshed[0]?.id ?? null);
+          setSelectedContentId(selectedId);
+        }}
+      />
 
       <section className="ops-evidence-band">
         <div className="ops-section-heading">

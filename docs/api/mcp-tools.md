@@ -51,11 +51,12 @@ With the default `AGENT_PROVIDER=fixture`, `POST /agent/runs` invokes `FixturePi
   "channelAccountId": "00000000-0000-4000-8000-000000000004",
   "platform": "toutiao",
   "topic": "Verified destination guidance",
+  "articleTemplateId": "step-by-step-guide",
   "idempotencyKey": "agent-run-001"
 }
 ```
 
-The request `tenantId` must match the authenticated principal. The fixture flow creates a deterministic draft, variant, audit, and publication request through the same allowlisted tools, and hard-codes `executionLevel=dry_run`.
+The request `tenantId` must match the authenticated principal. The fixture flow runs context -> template/Profile -> facts -> draft -> variant -> audit -> publication request through the same allowlisted tools and hard-codes `executionLevel=dry_run`. `articleTemplateId` is optional only for backward compatibility; the Web gateway always supplies the customer selection.
 
 Real Pi mode is selected only when `AGENT_PROVIDER` names a provider known to Pi, `AGENT_MODEL` names one of that provider's registered models, and `AGENT_API_KEY` is injected. Unknown providers/models or a missing key fail process startup. In this mode the endpoint accepts only:
 

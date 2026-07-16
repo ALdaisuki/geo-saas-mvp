@@ -18,7 +18,10 @@ import {
 import {
   buildApp,
   createPostgresApiRepository,
+  AgentRunGatewayError,
+  HttpAgentRunGateway,
   MediaProductionService,
+  type AgentRunGateway,
   type MediaAssetView,
   type PasswordService,
 } from "@geo/api";
@@ -65,6 +68,28 @@ let app: Awaited<ReturnType<typeof buildApp>>;
 let apiBaseUrl: string;
 let mediaObjectRoot: string;
 let mediaObjectStore: ContentAddressedMediaStore;
+let agentRunGatewayDelegate: AgentRunGateway | undefined;
+
+const delegatedAgentRunGateway: AgentRunGateway = {
+  getCapability: async (tenantId) =>
+    agentRunGatewayDelegate?.getCapability(tenantId) ?? {
+      available: false,
+      mode: "unavailable",
+      provider: null,
+      model: null,
+      reason: "service_unavailable",
+    },
+  run: async (input) => {
+    if (agentRunGatewayDelegate === undefined) {
+      throw new AgentRunGatewayError(
+        503,
+        "AGENT_GATEWAY_UNAVAILABLE",
+        "Agent runner is unavailable",
+      );
+    }
+    return agentRunGatewayDelegate.run(input);
+  },
+};
 
 function cookieHeader(headers: Readonly<Record<string, unknown>>): string {
   const value = headers["set-cookie"];
@@ -271,6 +296,7 @@ beforeAll(async () => {
         evidence: { fixture: true },
       }),
     },
+    agentRunGateway: delegatedAgentRunGateway,
     mediaProduction,
     mediaObjectStore,
   });
@@ -1791,6 +1817,10 @@ describe("governed multi-tenant publication flow", () => {
       allowedHosts: [`127.0.0.1:${mcpPort}`],
     });
     await listenGeoMcpHttpServer(mcpServer, { host: "127.0.0.1", port: mcpPort });
+    agentRunGatewayDelegate = new HttpAgentRunGateway({
+      baseUrl: `http://127.0.0.1:${mcpPort}`,
+      credentials: [{ tenantId: SEED_IDS.zhongtong.tenant, accessToken: mcpAccessToken }],
+    });
     const mcpClient = new McpClient({ name: "geo-e2e-client", version: "0.1.0" });
     const mcpTransport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${mcpPort}/mcp`),
@@ -1910,25 +1940,41 @@ describe("governed multi-tenant publication flow", () => {
       });
       expect(agentFactResponse.statusCode).toBe(201);
 
-      const agentRunBody = JSON.stringify({
-        workflow: "draft_to_publication",
-        tenantId: SEED_IDS.zhongtong.tenant,
+      const browserAgentRunBody = {
         brandId: SEED_IDS.zhongtong.brand,
         campaignId: campaign.id,
         channelAccountId: SEED_IDS.zhongtong.toutiao,
         platform: "toutiao",
         topic: "pi runner governance scope",
+        articleTemplateId: "step-by-step-guide",
         idempotencyKey: "agent-run-e2e",
+      } as const;
+      const browserCapability = await app.inject({
+        method: "GET",
+        url: "/api/agent/capability",
+        headers: { cookie: authenticated.cookie },
       });
-      const runAgent = () =>
-        fetch(`http://127.0.0.1:${mcpPort}/agent/runs`, {
+      expect(browserCapability.json()).toMatchObject({
+        available: true,
+        mode: "fixture",
+        provider: "fixture",
+        model: "fixture-geo-writer-v1",
+      });
+      const runAgent = async () => {
+        const response = await app.inject({
           method: "POST",
           headers: {
-            authorization: `Bearer ${mcpAccessToken}`,
-            "content-type": "application/json",
+            cookie: authenticated.cookie,
+            "x-csrf-token": authenticated.csrfToken,
           },
-          body: agentRunBody,
+          url: "/api/agent/runs",
+          payload: browserAgentRunBody,
         });
+        return {
+          status: response.statusCode,
+          json: async () => response.json<unknown>(),
+        };
+      };
       const agentResponse = await runAgent();
       expect(
         agentResponse.status,
@@ -1964,6 +2010,8 @@ describe("governed multi-tenant publication flow", () => {
           steps: [
             "plastic_context_supply",
             "geo_tenant_context",
+            "geo_template_catalog",
+            "geo_brand_profile",
             "geo_fact_lookup",
             "geo_draft_proposal",
             "geo_variant_preview",
@@ -2571,6 +2619,7 @@ describe("governed multi-tenant publication flow", () => {
       });
       expect(resetKillSwitch.statusCode).toBe(200);
     } finally {
+      agentRunGatewayDelegate = undefined;
       await mcpClient.close();
       await new Promise<void>((resolvePromise, rejectPromise) =>
         mcpServer.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),

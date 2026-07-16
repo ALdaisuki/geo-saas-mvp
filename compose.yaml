@@ -51,6 +51,7 @@ services:
       - GEO_IDENTITY_DB_PASSWORD=${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
       - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
       - MCP_PRINCIPALS_JSON=${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
+      - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
       - AGENT_API_KEY
       - GEO_BOOTSTRAP_PASSWORD
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
@@ -238,6 +239,8 @@ services:
       - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
       # Bare form passes the secret only when it is present in the operator environment/.env.
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
+      - AGENT_GATEWAY_URL=http://127.0.0.1:9021
+      - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
       - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
       - GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}
       - GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media

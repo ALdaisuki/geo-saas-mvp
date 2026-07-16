@@ -68,6 +68,8 @@ const serverEnvBaseSchema = z.object({
   AGENT_PROVIDER: z.string().min(1).default("fixture"),
   AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
   AGENT_API_KEY: z.string().min(1).optional(),
+  AGENT_GATEWAY_URL: z.string().url().optional(),
+  AGENT_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
   DOUBAO_ADAPTER: z.literal("fixture").default("fixture"),
   QWEN_ADAPTER: z.literal("fixture").default("fixture"),
   DOUBAO_API_KEY: z.string().min(1).optional(),
@@ -80,6 +82,16 @@ const serverEnvBaseSchema = z.object({
 });
 
 export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, context) => {
+  if (
+    (environment.AGENT_GATEWAY_URL === undefined) !==
+    (environment.AGENT_GATEWAY_CREDENTIALS_JSON === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "AGENT_GATEWAY_URL and AGENT_GATEWAY_CREDENTIALS_JSON must be configured together",
+      path: ["AGENT_GATEWAY_URL"],
+    });
+  }
   if (environment.NODE_ENV !== "production") return;
 
   rejectPlaceholder(decodedUrlPassword(environment.DATABASE_URL), "DATABASE_URL", context);
@@ -99,6 +111,11 @@ export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, con
   }
   rejectPlaceholder(environment.SESSION_SECRET, "SESSION_SECRET", context);
   rejectPlaceholder(environment.AGENT_API_KEY, "AGENT_API_KEY", context);
+  rejectPlaceholder(
+    environment.AGENT_GATEWAY_CREDENTIALS_JSON,
+    "AGENT_GATEWAY_CREDENTIALS_JSON",
+    context,
+  );
   rejectPlaceholder(
     environment.PLASTIC_PROMISE_MCP_AUTHORIZATION,
     "PLASTIC_PROMISE_MCP_AUTHORIZATION",
@@ -122,6 +139,7 @@ export const productionDeploymentEnvSchema = z.object({
   GEO_IDENTITY_DB_PASSWORD: productionSecretSchema,
   SESSION_SECRET: productionLongSecretSchema,
   MCP_PRINCIPALS_JSON: productionSecretSchema,
+  AGENT_GATEWAY_CREDENTIALS_JSON: productionSecretSchema,
   AGENT_API_KEY: productionSecretSchema.optional(),
   GEO_BOOTSTRAP_PASSWORD: productionSecretSchema.optional(),
   PLASTIC_PROMISE_MCP_AUTHORIZATION: productionSecretSchema.optional(),

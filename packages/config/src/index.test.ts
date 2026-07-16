@@ -42,6 +42,20 @@ describe("serverEnvSchema", () => {
     expect(() => serverEnvSchema.parse({ ...base, GEO_MEDIA_PROVIDER: "live" })).toThrow();
   });
 
+  it("requires the agent gateway URL and tenant credentials together", () => {
+    const base = {
+      DATABASE_URL: "postgresql://localhost/geo",
+      SESSION_SECRET: "a-secure-test-secret-that-is-long-enough",
+      APP_ORIGIN: "http://127.0.0.1:4173",
+    };
+    expect(() =>
+      serverEnvSchema.parse({ ...base, AGENT_GATEWAY_URL: "http://127.0.0.1:9021" }),
+    ).toThrow(/configured together/iu);
+    expect(() => serverEnvSchema.parse({ ...base, AGENT_GATEWAY_CREDENTIALS_JSON: "[]" })).toThrow(
+      /configured together/iu,
+    );
+  });
+
   it("rejects checked-in placeholder secrets in production server configuration", () => {
     expect(() =>
       serverEnvSchema.parse({
@@ -84,6 +98,12 @@ describe("productionDeploymentEnvSchema", () => {
         tenantSlug: "customer-tenant",
       },
     ]),
+    AGENT_GATEWAY_CREDENTIALS_JSON: JSON.stringify([
+      {
+        tenantId: "10000000-0000-4000-8000-000000000001",
+        accessToken: "a-real-mcp-access-token-with-32-characters",
+      },
+    ]),
   };
 
   it("rejects the checked-in deployment placeholders before startup", () => {
@@ -97,6 +117,8 @@ describe("productionDeploymentEnvSchema", () => {
         SESSION_SECRET: "replace-session-secret-with-at-least-32-random-bytes",
         MCP_PRINCIPALS_JSON:
           '[{"accessToken":"replace-with-at-least-32-random-characters","password":"replace-after-provisioning"}]',
+        AGENT_GATEWAY_CREDENTIALS_JSON:
+          '[{"tenantId":"10000000-0000-4000-8000-000000000001","accessToken":"replace-with-matching-token"}]',
         AGENT_API_KEY: "replace-agent-api-key",
       }),
     ).toThrow(/placeholder/iu);
@@ -117,10 +139,17 @@ describe("productionDeploymentEnvSchema", () => {
       composeSource.indexOf("  agent-mcp:"),
       composeSource.indexOf("  web:"),
     );
+    const apiBlock = composeSource.slice(
+      composeSource.indexOf("  api:"),
+      composeSource.indexOf("  worker:"),
+    );
 
     expect(preflightBlock).toContain("- AGENT_API_KEY");
     expect(agentMcpBlock).toContain("AGENT_API_KEY: ${AGENT_API_KEY:-}");
     expect(agentMcpBlock).toContain("AGENT_RUN_TIMEOUT_MS: ${AGENT_RUN_TIMEOUT_MS:-120000}");
+    expect(preflightBlock).toContain("- AGENT_GATEWAY_CREDENTIALS_JSON=");
+    expect(apiBlock).toContain("- AGENT_GATEWAY_URL=http://127.0.0.1:9021");
+    expect(apiBlock).toContain("- AGENT_GATEWAY_CREDENTIALS_JSON=");
     expect(agentMcpBlock).toContain(
       "AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:?set true or false explicitly}",
     );

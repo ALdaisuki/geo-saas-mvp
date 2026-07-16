@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
+    "@geo/contracts": "workspace:*",
     "@types/node": "catalog:",
     "typescript": "catalog:"
   }

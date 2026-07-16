@@ -497,6 +497,9 @@ importers:
 
   tests/web-e2e:
     devDependencies:
+      '@geo/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@playwright/test':
         specifier: 1.61.1
         version: 1.61.1

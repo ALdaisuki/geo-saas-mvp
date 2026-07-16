@@ -48,6 +48,8 @@ The API is tenant-scoped after login. `DATABASE_IDENTITY_URL` uses `geo_identity
 | `GET /api/channel-accounts`                                     | `tenant:read`                        | Platform accounts and declared capabilities                                                    |
 | `GET/POST /api/evidence-sources`                                | `content:read` / `content:write`     | Evidence registry                                                                              |
 | `GET /api/article-templates`                                    | `content:read`                       | Return `{ version: "geo.article-templates.v1", items }` from the shared governed catalog       |
+| `GET /api/agent/capability`                                     | `content:read`                       | Return the current tenant's sanitized Fixture/Pi runner availability, provider and model       |
+| `POST /api/agent/runs`                                          | `content:write` + CSRF               | Run one tenant-scoped article workflow through the server-side Agent gateway at fixed Dry-run  |
 | `GET/POST /api/facts`                                           | `content:read` / `content:write`     | Tenant/brand claims bound to evidence                                                          |
 | `GET /api/capabilities`                                         | `tenant:read`                        | Current role capabilities and connector reports                                                |
 | `POST /api/resource-scope-check`                                | session + CSRF                       | MCP-oriented tenant resource authorization                                                     |
@@ -106,7 +108,9 @@ Campaign creation always starts in `draft`. The state command accepts `{ status,
 
 Automation batch input never contains `tenantId` or an execution level. The authenticated transaction supplies tenant scope and the server fixes every batch to `dry_run`. Creation accepts at most 50 unique slots and at most three unique active Dry-run accounts per slot. Runtime mutations require the current actor's `automation:execute`; the API prefixes the submitted Producer ID with that actor ID before database lease comparison, so another login cannot heartbeat or checkpoint the lease. Claim and every mutation fail closed on tenant/Campaign state, Kill Switch or open/half-open circuit conditions. Automation state changes do not emit publication outbox topics; only the normal audited publication request may create a publication job/outbox event.
 
-`POST /agent/runs` is not an API-port route. It is served by `agent-mcp` on port `9021`, uses an MCP bearer principal rather than browser session/CSRF authentication, and is documented in [mcp-tools.md](mcp-tools.md).
+The browser never calls port `9021` or receives an MCP bearer. `POST /api/agent/runs` accepts only brand, Campaign, channel-account, platform, topic, template and idempotency fields from an authenticated tenant session. The API selects that tenant's token from `AGENT_GATEWAY_CREDENTIALS_JSON`, calls the loopback Agent service, limits the response to 2 MiB and maps upstream conflicts/provider failures/timeouts to sanitized `409`/`502`/`504` errors. A missing tenant mapping fails closed with `503 AGENT_TENANT_NOT_CONFIGURED`.
+
+The lower-level `POST /agent/runs` remains on `agent-mcp:9021`, uses an MCP bearer rather than browser cookies, and is documented in [mcp-tools.md](mcp-tools.md). Downstream content/audit records are executed by the mapped machine principal; the API gateway prompt also carries the initiating operator/request IDs for correlation, but that correlation does not replace append-only domain audit records.
 
 ## Brand Agent Profile contract
 

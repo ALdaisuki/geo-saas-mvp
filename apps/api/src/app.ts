@@ -67,6 +67,7 @@ import {
   automationTargetCheckpointCommandSchema,
   scopedWorkerId,
 } from "./automation-contracts.js";
+import { AgentRunGatewayError, type AgentRunGateway } from "./agent-run-gateway.js";
 import {
   createManualPublicationPackageExport,
   ManualPublicationPackageExportError,
@@ -151,6 +152,7 @@ export interface BuildAppOptions {
   readonly logger?: FastifyServerOptions["logger"];
   readonly allowedOrigins?: readonly string[];
   readonly publicationGovernanceGate: PublicationGovernanceGate;
+  readonly agentRunGateway?: AgentRunGateway;
   readonly mediaProduction?: MediaProductionController;
   readonly mediaObjectStore?: Pick<MediaObjectStore, "get">;
 }
@@ -332,6 +334,21 @@ const campaignSchema = z.object({
 const campaignTransitionSchema = z.strictObject({
   status: z.enum(["active", "paused", "completed"]),
   reason: z.string().trim().min(1).max(1_000).nullable().optional(),
+});
+
+const agentRunRequestSchema = z.strictObject({
+  brandId: idSchema,
+  campaignId: idSchema,
+  channelAccountId: idSchema,
+  platform: platformSchema,
+  topic: z.string().trim().min(1).max(10_000),
+  articleTemplateId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9][a-z0-9-]*$/u),
+  idempotencyKey: z.string().trim().min(1).max(180),
 });
 
 const evidenceSourceSchema = z
@@ -905,6 +922,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AgentRunGatewayError) {
+      void reply.status(error.statusCode).send({
+        error: { code: error.code, message: error.message, requestId: request.id },
+      });
+      return;
+    }
     if (error instanceof MediaProductionServiceError) {
       void reply.status(error.statusCode).send({
         error: {
@@ -1680,6 +1703,35 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     version: ARTICLE_TEMPLATE_CATALOG_VERSION,
     items: ARTICLE_TEMPLATES,
   }));
+  app.get("/api/agent/capability", { preHandler: guard("content:read") }, async (request) => {
+    const context = requestContext(request);
+    return (
+      (await options.agentRunGateway?.getCapability(context.tenantId)) ?? {
+        available: false,
+        mode: "disabled",
+        provider: null,
+        model: null,
+        reason: "tenant_not_configured",
+      }
+    );
+  });
+  app.post("/api/agent/runs", { preHandler: guard("content:write", true) }, async (request) => {
+    if (options.agentRunGateway === undefined) {
+      throw new AgentRunGatewayError(
+        503,
+        "AGENT_TENANT_NOT_CONFIGURED",
+        "Agent runner is not configured for this tenant",
+      );
+    }
+    const context = requestContext(request);
+    const body = agentRunRequestSchema.parse(request.body);
+    return options.agentRunGateway.run({
+      ...body,
+      tenantId: context.tenantId,
+      actorId: context.actorId,
+      requestId: context.requestId,
+    });
+  });
   app.post(
     "/api/evidence-sources",
     { preHandler: guard("content:write", true) },

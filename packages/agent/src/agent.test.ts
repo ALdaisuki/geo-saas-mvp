@@ -251,6 +251,7 @@ describe("fixture drafting runtime", () => {
       channelAccountId: accountId,
       platform: "toutiao",
       topic: "Shanghai weekend travel",
+      articleTemplateId: "step-by-step-guide",
       idempotencyKey: "fixture-flow-1",
       executionLevel: "dry_run",
     });
@@ -269,6 +270,8 @@ describe("fixture drafting runtime", () => {
     expect(governanceCalls).toEqual(["context_supply", "audit_pre_check", "defense"]);
     expect(called).toEqual([
       "geo_tenant_context",
+      "geo_template_catalog",
+      "geo_brand_profile",
       "geo_fact_lookup",
       "geo_draft_proposal",
       "geo_variant_preview",
@@ -277,6 +280,7 @@ describe("fixture drafting runtime", () => {
     ]);
     expect(calledArgs.get("geo_draft_proposal")).toMatchObject({
       brief: "Shanghai weekend travel",
+      articleTemplateId: "step-by-step-guide",
       idempotencyKey: "fixture-flow-1:draft",
     });
     expect([...governanceCalls, ...called].join(" ")).not.toMatch(/grant|connector|browser/);

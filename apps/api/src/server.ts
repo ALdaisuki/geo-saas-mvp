@@ -5,6 +5,7 @@ import { PlasticPromisePublicationGate } from "@geo/agent";
 import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-transport";
 
 import { buildApp } from "./app.js";
+import { HttpAgentRunGateway, parseAgentGatewayCredentials } from "./agent-run-gateway.js";
 import { MediaProductionService } from "./media-production-service.js";
 import { createPostgresApiRepository } from "./postgres-repository.js";
 
@@ -42,6 +43,13 @@ const mediaProduction =
         objectStore: mediaObjectStore,
       })
     : undefined;
+const agentRunGateway =
+  env.AGENT_GATEWAY_URL === undefined || env.AGENT_GATEWAY_CREDENTIALS_JSON === undefined
+    ? undefined
+    : new HttpAgentRunGateway({
+        baseUrl: env.AGENT_GATEWAY_URL,
+        credentials: parseAgentGatewayCredentials(env.AGENT_GATEWAY_CREDENTIALS_JSON),
+      });
 
 const app = await buildApp({
   repository,
@@ -50,6 +58,7 @@ const app = await buildApp({
   allowedOrigins: [env.APP_ORIGIN],
   logger: true,
   publicationGovernanceGate: new PlasticPromisePublicationGate(plasticPromise),
+  ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
   mediaObjectStore,
   ...(mediaProduction === undefined ? {} : { mediaProduction }),
 });

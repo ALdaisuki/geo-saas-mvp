@@ -22,6 +22,13 @@ const fixtureRunSchema = z
     channelAccountId: idSchema,
     platform: z.enum(["toutiao", "sohu", "ctrip_community"]),
     topic: z.string().trim().min(1).max(10_000),
+    articleTemplateId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z0-9][a-z0-9-]*$/u)
+      .optional(),
     idempotencyKey: z.string().trim().min(1).max(180),
   })
   .strict();
@@ -127,11 +134,13 @@ export class FixturePiAgentRunService implements PiAgentRunService {
     if (parsed.tenantId !== principal.tenantId) {
       throw new Error("Agent run tenant does not match the authenticated principal");
     }
+    const { articleTemplateId, ...flowInput } = parsed;
     return new FixtureDraftingRuntime(
       createGovernedAgentRuntime(principal, this.#api, this.#governance),
     ).run(
       {
-        ...parsed,
+        ...flowInput,
+        ...(articleTemplateId === undefined ? {} : { articleTemplateId }),
         executionLevel: "dry_run",
       },
       signal,

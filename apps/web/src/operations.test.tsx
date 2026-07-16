@@ -1,6 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
+import {
+  ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ARTICLE_TEMPLATES,
+  DEFAULT_ARTICLE_TEMPLATE_ID,
+} from "@geo/contracts";
 
 import {
   GeoApiError,
@@ -156,6 +160,17 @@ function createAuditResult(grantId = "10000000-0000-4000-8000-000000000801"): Au
 
 function articleApi(overrides: Partial<GeoApi> = {}): GeoApi {
   return {
+    getAgentCapability: async () => ({
+      available: false,
+      mode: "disabled",
+      provider: null,
+      model: null,
+      reason: "tenant_not_configured",
+    }),
+    runAgent: async () => {
+      throw new Error("agent run is not configured in this test");
+    },
+    getContent: async () => [content],
     getContentVersion: async () => currentVersion,
     getContentVariants: async () => [currentVariant],
     createContentVariant: async () => currentVariant,
@@ -642,13 +657,78 @@ describe("operations workspace governance", () => {
     expect(input?.payload.bodyMarkdown).toContain("24小时热线: 4001133986");
   });
 
+  it("runs the tenant-scoped Pi workflow and refreshes the generated content", async () => {
+    const runAgent = vi.fn<GeoApi["runAgent"]>(async () => ({
+      capability: { mode: "fixture", provider: "fixture", model: "fixture-geo-writer-v1" },
+      result: {
+        providerMode: "fixture",
+        contentItemId: content.id,
+        contentVersionId: currentVersion.id,
+        variantId: currentVariant.id,
+        auditRunId: "10000000-0000-4000-8000-000000000801",
+        auditArtifactId: "10000000-0000-4000-8000-000000000802",
+        publicationRequestId: "10000000-0000-4000-8000-000000000803",
+        publicationJobId: queuedJob.id,
+        outboxEventId: "10000000-0000-4000-8000-000000000804",
+        steps: [
+          "geo_tenant_context",
+          "geo_template_catalog",
+          "geo_brand_profile",
+          "geo_fact_lookup",
+          "geo_draft_proposal",
+          "geo_variant_preview",
+          "geo_audit_request",
+          "geo_publication_request",
+        ],
+      },
+    }));
+    const getContent = vi.fn<GeoApi["getContent"]>(async () => [content]);
+    renderWorkspace(
+      ["content:write"],
+      articleApi({
+        getAgentCapability: async () => ({
+          available: true,
+          mode: "fixture",
+          provider: "fixture",
+          model: "fixture-geo-writer-v1",
+        }),
+        runAgent,
+        getContent,
+      }),
+    );
+
+    expect(await screen.findByText("fixture · fixture-geo-writer-v1")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent 主题与内容目标" }), {
+      target: { value: "面向上海家庭客群核验日本线路服务边界" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "实时生成文章" }));
+
+    await waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+    expect(runAgent.mock.calls[0]?.[0]).toMatchObject({
+      brandId: brand.id,
+      campaignId: campaign.id,
+      channelAccountId: account.id,
+      platform: "toutiao",
+      topic: "面向上海家庭客群核验日本线路服务边界",
+      articleTemplateId: DEFAULT_ARTICLE_TEMPLATE_ID,
+      idempotencyKey: expect.stringMatching(/^web-agent:/u),
+    });
+    expect(await screen.findByText("文章与 Dry-run 已生成")).toBeInTheDocument();
+    expect(screen.getByText(/geo_template_catalog.*geo_audit_request/u)).toBeInTheDocument();
+    expect(getContent).toHaveBeenCalledTimes(1);
+  });
+
   it("submits the exact customer-selected template and governed profile", async () => {
     const createContent = vi.fn<GeoApi["createContent"]>(async () => content);
     renderWorkspace(["content:write"], articleApi({ createContent }));
 
     fireEvent.click(screen.getByRole("button", { name: "新建文章 + v1" }));
     fireEvent.click(screen.getByRole("button", { name: "辅助决策" }));
-    fireEvent.click(screen.getByRole("option", { name: /方案对比矩阵/u }));
+    const comparisonTemplate = screen
+      .getAllByRole("option", { name: /方案对比矩阵/u })
+      .find((element) => element.tagName === "BUTTON");
+    if (comparisonTemplate === undefined) throw new Error("comparison template button missing");
+    fireEvent.click(comparisonTemplate);
     fireEvent.change(screen.getByRole("textbox", { name: "主题键" }), {
       target: { value: "japan-plan-comparison" },
     });

@@ -851,6 +851,61 @@ export interface ArticleTemplateCatalogView {
   readonly items: readonly ArticleTemplate[];
 }
 
+export type AgentRunCapability =
+  | {
+      readonly available: true;
+      readonly mode: "fixture" | "pi";
+      readonly provider: string;
+      readonly model: string;
+    }
+  | {
+      readonly available: false;
+      readonly mode: "disabled" | "unavailable";
+      readonly provider: null;
+      readonly model: null;
+      readonly reason: "tenant_not_configured" | "runner_disabled" | "service_unavailable";
+    };
+
+export interface RunAgentInput {
+  readonly brandId: string;
+  readonly campaignId: string;
+  readonly channelAccountId: string;
+  readonly platform: "toutiao" | "sohu" | "ctrip_community";
+  readonly topic: string;
+  readonly articleTemplateId: string;
+  readonly idempotencyKey: string;
+}
+
+export type AgentRunResult =
+  | {
+      readonly providerMode: "fixture";
+      readonly contentItemId: string;
+      readonly contentVersionId: string;
+      readonly variantId: string;
+      readonly auditRunId: string;
+      readonly auditArtifactId: string;
+      readonly publicationRequestId: string;
+      readonly publicationJobId: string;
+      readonly outboxEventId: string;
+      readonly steps: readonly string[];
+    }
+  | {
+      readonly providerMode: "pi";
+      readonly provider: string;
+      readonly model: string;
+      readonly response: string;
+      readonly messageCount: number;
+    };
+
+export interface AgentRunResponse {
+  readonly capability: {
+    readonly mode: "fixture" | "pi";
+    readonly provider: string;
+    readonly model: string;
+  };
+  readonly result: AgentRunResult;
+}
+
 export class GeoApiError extends Error {
   constructor(
     readonly status: number,
@@ -925,6 +980,8 @@ export interface GeoApi {
     readonly wasChanged: boolean;
   }>;
   getArticleTemplates(): Promise<ArticleTemplateCatalogView>;
+  getAgentCapability(): Promise<AgentRunCapability>;
+  runAgent(input: RunAgentInput): Promise<AgentRunResponse>;
   getEvidenceSources(): Promise<readonly EvidenceSource[]>;
   createEvidenceSource(input: CreateEvidenceSourceInput): Promise<EvidenceSource>;
   getFacts(): Promise<readonly ClaimFact[]>;
@@ -1199,6 +1256,70 @@ function parseArticleTemplateCatalog(value: unknown): ArticleTemplateCatalogView
     throw protocolError("article template IDs must be unique");
   }
   return { version: ARTICLE_TEMPLATE_CATALOG_VERSION, items };
+}
+
+function parseAgentCapability(value: unknown): AgentRunCapability {
+  const item = recordValue(value, "agent capability");
+  const available = booleanValue(item, "available");
+  if (available) {
+    return {
+      available: true,
+      mode: stringEnumValue(item, "mode", ["fixture", "pi"] as const),
+      provider: stringValue(item, "provider"),
+      model: stringValue(item, "model"),
+    };
+  }
+  if (item.provider !== null || item.model !== null) {
+    throw protocolError("disabled agent capability must not expose provider details");
+  }
+  return {
+    available: false,
+    mode: stringEnumValue(item, "mode", ["disabled", "unavailable"] as const),
+    provider: null,
+    model: null,
+    reason: stringEnumValue(item, "reason", [
+      "tenant_not_configured",
+      "runner_disabled",
+      "service_unavailable",
+    ] as const),
+  };
+}
+
+function parseAgentRunResponse(value: unknown): AgentRunResponse {
+  const item = recordValue(value, "agent run response");
+  const capability = recordValue(item.capability, "agent run capability");
+  const mode = stringEnumValue(capability, "mode", ["fixture", "pi"] as const);
+  const result = recordValue(item.result, "agent run result");
+  const providerMode = stringEnumValue(result, "providerMode", ["fixture", "pi"] as const);
+  if (providerMode !== mode) throw protocolError("agent run mode does not match capability");
+  return {
+    capability: {
+      mode,
+      provider: stringValue(capability, "provider"),
+      model: stringValue(capability, "model"),
+    },
+    result:
+      providerMode === "fixture"
+        ? {
+            providerMode,
+            contentItemId: stringValue(result, "contentItemId"),
+            contentVersionId: stringValue(result, "contentVersionId"),
+            variantId: stringValue(result, "variantId"),
+            auditRunId: stringValue(result, "auditRunId"),
+            auditArtifactId: stringValue(result, "auditArtifactId"),
+            publicationRequestId: stringValue(result, "publicationRequestId"),
+            publicationJobId: stringValue(result, "publicationJobId"),
+            outboxEventId: stringValue(result, "outboxEventId"),
+            steps: stringArrayValue(result, "steps"),
+          }
+        : {
+            providerMode,
+            provider: stringValue(result, "provider"),
+            model: stringValue(result, "model"),
+            response: stringValue(result, "response"),
+            messageCount: numberValue(result, "messageCount"),
+          },
+  };
 }
 
 function parseSession(value: unknown): SessionSnapshot {
@@ -2536,6 +2657,16 @@ export class HttpGeoApi implements GeoApi {
 
   async getArticleTemplates(): Promise<ArticleTemplateCatalogView> {
     return parseArticleTemplateCatalog(await this.request("/api/article-templates"));
+  }
+
+  async getAgentCapability(): Promise<AgentRunCapability> {
+    return parseAgentCapability(await this.request("/api/agent/capability"));
+  }
+
+  async runAgent(input: RunAgentInput): Promise<AgentRunResponse> {
+    return parseAgentRunResponse(
+      await this.request("/api/agent/runs", { method: "POST", body: JSON.stringify(input) }, true),
+    );
   }
 
   async getEvidenceSources(): Promise<readonly EvidenceSource[]> {

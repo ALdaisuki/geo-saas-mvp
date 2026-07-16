@@ -351,6 +351,16 @@ function liveApi(): GeoApi {
       version: ARTICLE_TEMPLATE_CATALOG_VERSION,
       items: ARTICLE_TEMPLATES,
     }),
+    getAgentCapability: async () => ({
+      available: false,
+      mode: "disabled",
+      provider: null,
+      model: null,
+      reason: "tenant_not_configured",
+    }),
+    runAgent: async () => {
+      throw new Error("not used by this App fixture");
+    },
     getEvidenceSources: async () => [],
     createEvidenceSource: async () => {
       throw new Error("not used by this App fixture");

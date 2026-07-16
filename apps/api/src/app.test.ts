@@ -21,6 +21,7 @@ import {
   type PasswordService,
   type PublicationGovernanceGate,
 } from "./app.js";
+import type { AgentRunGateway, AgentRunRequest } from "./agent-run-gateway.js";
 import type {
   AutomationBatchView,
   AutomationRunView,
@@ -1865,6 +1866,7 @@ async function testApp(
     evaluate: async () => ({ allowed: true, reason: "test_allow", evidence: { test: true } }),
   },
   mediaProduction?: MediaProductionController,
+  agentRunGateway?: AgentRunGateway,
 ) {
   const app = await buildApp({
     repository,
@@ -1878,6 +1880,7 @@ async function testApp(
     publicationTokenFactory: () => tokenValue,
     allowedOrigins: ["https://console.example.test"],
     publicationGovernanceGate: governanceGate,
+    ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
     ...(mediaProduction === undefined ? {} : { mediaProduction }),
   });
   apps.push(app);
@@ -1890,6 +1893,125 @@ afterEach(async () => {
 });
 
 describe("Fastify API security and vertical publication flow", () => {
+  it("proxies tenant-scoped agent runs only through a content writer session and CSRF", async () => {
+    const repository = new FakeRepository();
+    const runInputs: AgentRunRequest[] = [];
+    const gateway: AgentRunGateway = {
+      getCapability: async (tenantId) => ({
+        available: true,
+        mode: "fixture",
+        provider: "fixture",
+        model: tenantId === ids.tenant ? "fixture-geo-writer-v1" : "unexpected",
+      }),
+      run: async (input) => {
+        runInputs.push(input);
+        return {
+          capability: {
+            mode: "fixture",
+            provider: "fixture",
+            model: "fixture-geo-writer-v1",
+          },
+          result: {
+            providerMode: "fixture",
+            contentItemId: ids.content,
+            steps: ["geo_tenant_context", "geo_draft_proposal", "geo_audit_request"],
+          },
+        };
+      },
+    };
+    const app = await testApp(repository, undefined, undefined, gateway);
+
+    const anonymous = await app.inject({ method: "GET", url: "/api/agent/capability" });
+    expect(anonymous.statusCode).toBe(401);
+
+    const authenticated = await login(app);
+    const headers = { cookie: authenticated.cookie };
+    const capability = await app.inject({
+      method: "GET",
+      url: "/api/agent/capability",
+      headers,
+    });
+    expect(capability.statusCode).toBe(200);
+    expect(capability.json()).toMatchObject({
+      available: true,
+      mode: "fixture",
+      model: "fixture-geo-writer-v1",
+    });
+
+    const payload = {
+      brandId: ids.brand,
+      campaignId: ids.brand,
+      channelAccountId: ids.account,
+      platform: "toutiao",
+      topic: "中通国际旅行社日本线路证据核验",
+      articleTemplateId: "step-by-step-guide",
+      idempotencyKey: "web-agent-run-1",
+    };
+    const missingCsrf = await app.inject({
+      method: "POST",
+      url: "/api/agent/runs",
+      headers,
+      payload,
+    });
+    expect(missingCsrf.statusCode).toBe(403);
+    expect(runInputs).toHaveLength(0);
+
+    const run = await app.inject({
+      method: "POST",
+      url: "/api/agent/runs",
+      headers: {
+        ...headers,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload,
+    });
+    expect(run.statusCode).toBe(200);
+    expect(run.json()).toMatchObject({
+      capability: { mode: "fixture" },
+      result: { contentItemId: ids.content },
+    });
+    expect(runInputs).toHaveLength(1);
+    expect(runInputs[0]).toMatchObject({
+      tenantId: ids.tenant,
+      actorId: ids.actor,
+      brandId: ids.brand,
+      articleTemplateId: "step-by-step-guide",
+    });
+    expect(runInputs[0]?.requestId).toEqual(expect.any(String));
+  });
+
+  it("fails closed when an agent runner is not configured", async () => {
+    const app = await testApp(new FakeRepository());
+    const authenticated = await login(app);
+    const headers = { cookie: authenticated.cookie };
+    const capability = await app.inject({
+      method: "GET",
+      url: "/api/agent/capability",
+      headers,
+    });
+    expect(capability.json()).toMatchObject({
+      available: false,
+      mode: "disabled",
+      reason: "tenant_not_configured",
+    });
+    const run = await app.inject({
+      method: "POST",
+      url: "/api/agent/runs",
+      headers: { ...headers, "x-csrf-token": authenticated.body.csrfToken },
+      payload: {
+        brandId: ids.brand,
+        campaignId: ids.brand,
+        channelAccountId: ids.account,
+        platform: "toutiao",
+        topic: "topic",
+        articleTemplateId: "step-by-step-guide",
+        idempotencyKey: "web-agent-run-disabled",
+      },
+    });
+    expect(run.statusCode).toBe(503);
+    expect(run.json()).toMatchObject({ error: { code: "AGENT_TENANT_NOT_CONFIGURED" } });
+  });
+
   it("publishes the route registry as OpenAPI and negotiates the API version", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -1930,6 +2052,15 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(document.paths["/api/query-sets/{querySetId}/versions"]).toMatchObject({
       get: { security: [{ cookieAuth: [] }] },
       post: { security: [{ cookieAuth: [] }] },
+    });
+    expect(document.paths["/api/agent/capability"]?.get).toMatchObject({
+      security: [{ cookieAuth: [] }],
+    });
+    expect(document.paths["/api/agent/runs"]?.post).toMatchObject({
+      security: [{ cookieAuth: [] }],
+      parameters: expect.arrayContaining([
+        expect.objectContaining({ name: "x-csrf-token", in: "header", required: true }),
+      ]),
     });
     expect(
       document.paths["/api/query-sets/{querySetId}/versions/{versionId}/activate"]?.post,

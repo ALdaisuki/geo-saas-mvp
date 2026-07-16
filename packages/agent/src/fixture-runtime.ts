@@ -9,6 +9,7 @@ export interface FixtureDraftFlowInput {
   channelAccountId: string;
   platform: Platform;
   topic: string;
+  articleTemplateId?: string;
   idempotencyKey: string;
   executionLevel: Extract<ExecutionLevel, "dry_run" | "assisted">;
 }
@@ -64,6 +65,11 @@ export class FixtureDraftingRuntime {
       taskType: "content_drafting",
     });
     await invoke("geo_tenant_context", { tenantId: input.tenantId });
+    await invoke("geo_template_catalog", { tenantId: input.tenantId });
+    await invoke("geo_brand_profile", {
+      tenantId: input.tenantId,
+      brandId: input.brandId,
+    });
     await invoke("geo_fact_lookup", {
       tenantId: input.tenantId,
       brandId: input.brandId,
@@ -77,6 +83,9 @@ export class FixtureDraftingRuntime {
         brandId: input.brandId,
         campaignId: input.campaignId,
         brief: input.topic,
+        ...(input.articleTemplateId === undefined
+          ? {}
+          : { articleTemplateId: input.articleTemplateId }),
         idempotencyKey: `${input.idempotencyKey}:draft`,
         fixtureMode: true,
       }),

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 const routes = [
   { href: "/overview", label: "运营概览", heading: "运营概览", slug: "overview" },
@@ -78,7 +79,16 @@ async function assertNoDirectChildOverlap(page: Page, selectors: readonly string
   expect(overlaps).toEqual([]);
 }
 
-async function installAutomationApiFixture(page: Page): Promise<void> {
+async function installAutomationApiFixture(page: Page): Promise<{
+  readonly agentRunRequests: Array<{
+    readonly authorization: string | undefined;
+    readonly csrf: string | undefined;
+    readonly body: Readonly<Record<string, unknown>>;
+  }>;
+}> {
+  await page
+    .context()
+    .addCookies([{ name: "geo_csrf", value: "web-e2e-csrf", domain: "127.0.0.1", path: "/" }]);
   const tenantId = "10000000-0000-4000-8000-000000000001";
   const actorId = "10000000-0000-4000-8000-000000000101";
   const brandId = "10000000-0000-4000-8000-000000000301";
@@ -90,6 +100,38 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
   const querySetVersionOneId = "10000000-0000-4000-8000-000000007002";
   const querySetVersionTwoId = "10000000-0000-4000-8000-000000007003";
   const now = "2026-07-15T08:00:00.000Z";
+  const contentItemId = "10000000-0000-4000-8000-000000005101";
+  const contentVersionId = "10000000-0000-4000-8000-000000005102";
+  const variantId = "10000000-0000-4000-8000-000000005103";
+  const agentRunRequests: Array<{
+    authorization: string | undefined;
+    csrf: string | undefined;
+    body: Readonly<Record<string, unknown>>;
+  }> = [];
+  const generatedPayload = {
+    title: "日本线路服务边界核验指南",
+    summary: "仅使用当前已验证事实与联系方式。",
+    bodyMarkdown: "## 当前可核验信息\n\n请以签约前提供的最终行程为准。",
+    titleBlocks: [{ type: "template", templateId: "generic.title.verified-service" }],
+    summaryBlocks: [{ type: "template", templateId: "generic.summary.verified-sources" }],
+    bodyBlocks: [{ type: "template", templateId: "generic.body.guidance.verified" }],
+    tagTemplateIds: ["generic.tag.verified"],
+    media: [],
+    claims: [],
+    contactIds: [],
+    tags: ["服务核验"],
+  };
+  const generatedContent = {
+    id: contentItemId,
+    campaignId,
+    brandId,
+    title: generatedPayload.title,
+    contentType: "guide",
+    state: "draft",
+    topicKey: "agent:e2e",
+    latestVersion: 1,
+    latestVersionId: contentVersionId,
+  };
   const session = {
     actor: {
       id: actorId,
@@ -310,6 +352,47 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
   const items = (values: readonly unknown[]) => ({ items: values });
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === "/api/agent/runs" && route.request().method() === "POST") {
+      agentRunRequests.push({
+        authorization: route.request().headers()["authorization"],
+        csrf: route.request().headers()["x-csrf-token"],
+        body: route.request().postDataJSON() as Readonly<Record<string, unknown>>,
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          capability: {
+            mode: "fixture",
+            provider: "fixture",
+            model: "fixture-geo-writer-v1",
+          },
+          result: {
+            providerMode: "fixture",
+            contentItemId,
+            contentVersionId,
+            variantId,
+            auditRunId: "10000000-0000-4000-8000-000000005104",
+            auditArtifactId: "10000000-0000-4000-8000-000000005105",
+            publicationRequestId: "10000000-0000-4000-8000-000000005106",
+            publicationJobId: "10000000-0000-4000-8000-000000005107",
+            outboxEventId: "10000000-0000-4000-8000-000000005108",
+            steps: [
+              "plastic_context_supply",
+              "geo_tenant_context",
+              "geo_template_catalog",
+              "geo_brand_profile",
+              "geo_fact_lookup",
+              "geo_draft_proposal",
+              "geo_variant_preview",
+              "geo_audit_request",
+              "geo_publication_request",
+            ],
+          },
+        }),
+      });
+      return;
+    }
     const responses = new Map<string, unknown>([
       ["/api/auth/session", session],
       [
@@ -353,6 +436,15 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
       ],
       ["/api/channel-accounts", items(accounts)],
       [
+        "/api/agent/capability",
+        {
+          available: true,
+          mode: "fixture",
+          provider: "fixture",
+          model: "fixture-geo-writer-v1",
+        },
+      ],
+      [
         "/api/brands",
         items([
           {
@@ -369,14 +461,49 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
           },
         ]),
       ],
+      ["/api/brand-agent-profiles", items([])],
+      ["/api/service-principals", items([])],
       ["/api/members", items([])],
       ["/api/policies", items(policies)],
       ["/api/query-sets", items(querySets)],
       [`/api/query-sets/${querySetId}/versions`, items(querySetVersions)],
       ["/api/evidence-sources", items([])],
+      [
+        "/api/article-templates",
+        { version: ARTICLE_TEMPLATE_CATALOG_VERSION, items: ARTICLE_TEMPLATES },
+      ],
       ["/api/facts", items([])],
       ["/api/campaigns", items(campaigns)],
-      ["/api/content", items([])],
+      ["/api/content", items(agentRunRequests.length === 0 ? [] : [generatedContent])],
+      [
+        `/api/content-versions/${contentVersionId}`,
+        {
+          id: contentVersionId,
+          contentItemId,
+          version: 1,
+          summary: generatedPayload.summary,
+          bodyMarkdown: generatedPayload.bodyMarkdown,
+          payload: generatedPayload,
+          payloadHash: "c".repeat(64),
+          frozenAt: null,
+        },
+      ],
+      [
+        `/api/content/${contentItemId}/variants`,
+        items([
+          {
+            id: variantId,
+            contentVersionId,
+            channelAccountId: accountId,
+            platform: "toutiao",
+            variantVersion: 1,
+            payload: generatedPayload,
+            payloadHash: "d".repeat(64),
+            state: "frozen",
+            frozenAt: now,
+          },
+        ]),
+      ],
       ["/api/audits", items([])],
       ["/api/publication-jobs", items([])],
       ["/api/receipts", items([])],
@@ -449,6 +576,7 @@ async function installAutomationApiFixture(page: Page): Promise<void> {
       body: JSON.stringify(response),
     });
   });
+  return { agentRunRequests };
 }
 
 test("demo console keeps every primary workflow truthful and responsive", async ({
@@ -560,6 +688,46 @@ test("live automation operations remain bounded and non-overlapping", async ({
   await expect(page.getByText(/完成是不可逆终态/)).toBeVisible();
   await assertNoPageOverflow(page);
   await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+});
+
+test("live governed agent generation stays tenant-scoped and responsive", async ({
+  page,
+}, testInfo) => {
+  const fixture = await installAutomationApiFixture(page);
+  await page.goto("/content");
+
+  await expect(page.getByRole("heading", { level: 1, name: "内容资产" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "受治理文章生成" })).toBeVisible();
+  await expect(page.getByText("fixture · fixture-geo-writer-v1")).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Agent 主题与内容目标" })
+    .fill("面向上海家庭客群核验日本暑期线路服务边界与官方咨询方式");
+  await page.getByRole("button", { name: "实时生成文章" }).click();
+
+  await expect(page.getByText("文章与 Dry-run 已生成")).toBeVisible();
+  await expect(page.getByText(/geo_template_catalog.*geo_audit_request/u)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "日本线路服务边界核验指南" })).toBeVisible();
+  expect(fixture.agentRunRequests).toHaveLength(1);
+  expect(fixture.agentRunRequests[0]).toMatchObject({
+    authorization: undefined,
+    csrf: "web-e2e-csrf",
+    body: {
+      brandId: "10000000-0000-4000-8000-000000000301",
+      campaignId: "10000000-0000-4000-8000-000000001001",
+      channelAccountId: "10000000-0000-4000-8000-000000000701",
+      platform: "toutiao",
+      articleTemplateId: "step-by-step-guide",
+    },
+  });
+
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [
+    ".ops-agent-heading",
+    ".ops-agent-actions",
+    ".ops-agent-result",
+    ".ops-agent-form .ops-form-grid",
+  ]);
+  await attachScreenshot(page, testInfo, "agent-live-generation");
 });
 
 test("live policy draft editor stays usable across viewports", async ({ page }, testInfo) => {

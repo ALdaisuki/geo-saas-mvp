@@ -174,6 +174,93 @@ describe("HttpGeoApi", () => {
     });
   });
 
+  it("reads agent capability and submits a CSRF-protected governed run", async () => {
+    const calls: Array<{ input: string; init: RequestInit | undefined }> = [];
+    const runInput = {
+      brandId: "10000000-0000-4000-8000-000000000301",
+      campaignId: "10000000-0000-4000-8000-000000000302",
+      channelAccountId: "10000000-0000-4000-8000-000000000303",
+      platform: "toutiao" as const,
+      topic: "日本线路证据核验",
+      articleTemplateId: "step-by-step-guide",
+      idempotencyKey: "web-agent-run-1",
+    };
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({
+        available: true,
+        mode: "fixture",
+        provider: "fixture",
+        model: "fixture-geo-writer-v1",
+      }),
+      jsonResponse({
+        capability: { mode: "fixture", provider: "fixture", model: "fixture-geo-writer-v1" },
+        result: {
+          providerMode: "fixture",
+          contentItemId: "10000000-0000-4000-8000-000000000401",
+          contentVersionId: "10000000-0000-4000-8000-000000000402",
+          variantId: "10000000-0000-4000-8000-000000000403",
+          auditRunId: "10000000-0000-4000-8000-000000000404",
+          auditArtifactId: "10000000-0000-4000-8000-000000000405",
+          publicationRequestId: "10000000-0000-4000-8000-000000000406",
+          publicationJobId: "10000000-0000-4000-8000-000000000407",
+          outboxEventId: "10000000-0000-4000-8000-000000000408",
+          steps: ["geo_tenant_context", "geo_draft_proposal", "geo_audit_request"],
+        },
+      }),
+    ];
+    const api = new HttpGeoApi("", async (input, init) => {
+      calls.push({ input: String(input), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    await expect(api.getAgentCapability()).resolves.toMatchObject({
+      available: true,
+      mode: "fixture",
+    });
+    await expect(api.runAgent(runInput)).resolves.toMatchObject({
+      result: { providerMode: "fixture", steps: expect.arrayContaining(["geo_audit_request"]) },
+    });
+    expect(calls.map((call) => call.input)).toEqual([
+      "/api/auth/login",
+      "/api/agent/capability",
+      "/api/agent/runs",
+    ]);
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual(runInput);
+    expect(new Headers(calls[2]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(new Headers(calls[2]?.init?.headers).has("authorization")).toBe(false);
+  });
+
+  it("rejects mismatched agent capability and result modes", async () => {
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({
+        capability: { mode: "pi", provider: "openai", model: "gpt-5" },
+        result: { providerMode: "fixture" },
+      }),
+    ];
+    const api = new HttpGeoApi("", async () => {
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    await expect(
+      api.runAgent({
+        brandId: "10000000-0000-4000-8000-000000000301",
+        campaignId: "10000000-0000-4000-8000-000000000302",
+        channelAccountId: "10000000-0000-4000-8000-000000000303",
+        platform: "toutiao",
+        topic: "topic",
+        articleTemplateId: "step-by-step-guide",
+        idempotencyKey: "run-mode-mismatch",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+  });
+
   it("preserves the native fetch receiver when no test transport is injected", async () => {
     const fetchMock = vi.fn(function (this: unknown) {
       if (this !== globalThis) throw new TypeError("Illegal invocation");

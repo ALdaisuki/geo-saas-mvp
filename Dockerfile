@@ -15,6 +15,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json .
 COPY apps/api/package.json apps/api/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY apps/agent-mcp/package.json apps/agent-mcp/package.json
+COPY apps/ctrip-bridge/package.json apps/ctrip-bridge/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/agent/package.json packages/agent/package.json
 COPY packages/authz/package.json packages/authz/package.json
@@ -39,12 +40,14 @@ RUN pnpm -r \
     --filter '@geo/api...' \
     --filter '@geo/worker...' \
     --filter '@geo/agent-mcp...' \
+    --filter '@geo/ctrip-bridge...' \
     --filter '@geo/web...' \
     run build
 
 RUN pnpm --offline --filter @geo/api deploy --prod --legacy /deploy/api && \
     pnpm --offline --filter @geo/worker deploy --prod --legacy /deploy/worker && \
     pnpm --offline --filter @geo/agent-mcp deploy --prod --legacy /deploy/agent-mcp && \
+    pnpm --offline --filter @geo/ctrip-bridge deploy --prod --legacy /deploy/ctrip-bridge && \
     pnpm --offline --filter @geo/db deploy --prod --legacy /deploy/db-tools
 
 FROM ${NODE_IMAGE} AS runtime-base
@@ -76,6 +79,15 @@ USER node
 EXPOSE 9021
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:9021/health/live').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+CMD ["node", "dist/cli.js"]
+
+FROM runtime-base AS ctrip-bridge
+
+COPY --from=builder --chown=node:node /deploy/ctrip-bridge ./
+USER node
+EXPOSE 9030
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:9030/health/live').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 CMD ["node", "dist/cli.js"]
 
 FROM runtime-base AS db-tools

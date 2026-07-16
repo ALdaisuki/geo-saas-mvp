@@ -6,6 +6,7 @@ import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-
 
 import { buildApp } from "./app.js";
 import { HttpAgentRunGateway, parseAgentGatewayCredentials } from "./agent-run-gateway.js";
+import { HttpCtripBridgeGateway, parseCtripBridgeCredentials } from "./ctrip-bridge-gateway.js";
 import { MediaProductionService } from "./media-production-service.js";
 import { createPostgresApiRepository } from "./postgres-repository.js";
 
@@ -50,6 +51,14 @@ const agentRunGateway =
         baseUrl: env.AGENT_GATEWAY_URL,
         credentials: parseAgentGatewayCredentials(env.AGENT_GATEWAY_CREDENTIALS_JSON),
       });
+const ctripBridgeGateway =
+  env.CTRIP_BRIDGE_GATEWAY_URL === undefined ||
+  env.CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON === undefined
+    ? undefined
+    : new HttpCtripBridgeGateway({
+        baseUrl: env.CTRIP_BRIDGE_GATEWAY_URL,
+        credentials: parseCtripBridgeCredentials(env.CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON),
+      });
 
 const app = await buildApp({
   repository,
@@ -59,6 +68,7 @@ const app = await buildApp({
   logger: true,
   publicationGovernanceGate: new PlasticPromisePublicationGate(plasticPromise),
   ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
+  ...(ctripBridgeGateway === undefined ? {} : { ctripBridgeGateway }),
   mediaObjectStore,
   ...(mediaProduction === undefined ? {} : { mediaProduction }),
 });

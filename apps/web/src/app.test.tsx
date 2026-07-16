@@ -132,6 +132,16 @@ function liveApi(): GeoApi {
     submitPermitConsumedAt: null,
     submitPermitIssuedByActorId: null,
     submitPermitConsumedByPrincipalId: null,
+    submitOutcome: null,
+    submitEvidenceKind: null,
+    submitObservedAt: null,
+    publicationReceiptId: null,
+    publicationReadbackId: null,
+    readbackOutcome: null,
+    readbackEvidenceKind: null,
+    readbackEvidenceHash: null,
+    readbackObservedAt: null,
+    observedPayloadHash: null,
     externalDraftId: null,
     externalId: null,
     externalUrl: null,
@@ -490,7 +500,7 @@ function liveApi(): GeoApi {
       assistedHandoff = {
         ...assistedHandoff,
         leaseOwnerActorId: session.actor.id,
-        leaseExpiresAt: "2026-07-14T08:02:00.000Z",
+        leaseExpiresAt: "2099-07-14T08:02:00.000Z",
         heartbeatAt: "2026-07-14T08:00:00.000Z",
       };
       return assistedHandoff;
@@ -507,10 +517,90 @@ function liveApi(): GeoApi {
       };
       return { handoff: assistedHandoff, wasChanged: true };
     },
-    issuePublicationAssistedSubmitPermit: async () => ({
-      submitPermit: "f".repeat(64),
-      expiresAt: "2026-07-14T08:05:00.000Z",
-    }),
+    preparePublicationAssistedHandoff: async () => {
+      assistedHandoff = {
+        ...assistedHandoff,
+        state: "draft_prepared",
+        draftEvidenceHash: "7".repeat(64),
+        adapterVersion: "ctrip-community-simulator-v1",
+      };
+      return {
+        handoff: assistedHandoff,
+        bridge: {
+          schemaVersion: "geo.ctrip-bridge.result.v1",
+          tenantId: session.tenant.id,
+          handoffId: assistedHandoff.id,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000001302",
+          command: "prepare",
+          outcome: "prepared",
+          evidenceKind: "simulation",
+          state: "draft_prepared",
+          adapterVersion: assistedHandoff.adapterVersion,
+          observedAt: "2026-07-14T08:01:00.000Z",
+          evidenceHash: "7".repeat(64),
+        },
+      };
+    },
+    submitPublicationAssistedHandoff: async () => {
+      assistedHandoff = {
+        ...assistedHandoff,
+        state: "readback_pending",
+        submitPermitIssued: true,
+        submitPermitConsumedAt: "2026-07-14T08:02:00.000Z",
+        submitOutcome: "accepted",
+        submitEvidenceKind: "simulation",
+        submitObservedAt: "2026-07-14T08:02:00.000Z",
+        publicationReceiptId: "10000000-0000-4000-8000-000000001303",
+        publicationReadbackId: "10000000-0000-4000-8000-000000001304",
+      };
+      return {
+        handoff: assistedHandoff,
+        bridge: {
+          schemaVersion: "geo.ctrip-bridge.result.v1",
+          tenantId: session.tenant.id,
+          handoffId: assistedHandoff.id,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000001302",
+          command: "submit",
+          outcome: "accepted",
+          evidenceKind: "simulation",
+          state: "readback_pending",
+          receiptId: "10000000-0000-4000-8000-000000001303",
+          readbackId: "10000000-0000-4000-8000-000000001304",
+          adapterVersion: assistedHandoff.adapterVersion,
+          observedAt: "2026-07-14T08:02:00.000Z",
+          evidenceHash: "8".repeat(64),
+        },
+      };
+    },
+    readbackPublicationAssistedHandoff: async () => {
+      assistedHandoff = {
+        ...assistedHandoff,
+        state: "needs_review",
+        readbackOutcome: "simulation_only",
+        readbackEvidenceKind: "simulation",
+        readbackEvidenceHash: "9".repeat(64),
+        readbackObservedAt: "2026-07-14T08:03:00.000Z",
+        observedPayloadHash: assistedHandoff.payloadHash,
+      };
+      return {
+        handoff: assistedHandoff,
+        bridge: {
+          schemaVersion: "geo.ctrip-bridge.result.v1",
+          tenantId: session.tenant.id,
+          handoffId: assistedHandoff.id,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000001302",
+          command: "readback",
+          outcome: "simulation_only",
+          evidenceKind: "simulation",
+          state: "needs_review",
+          externalId: null,
+          externalUrl: null,
+          adapterVersion: assistedHandoff.adapterVersion,
+          observedAt: "2026-07-14T08:03:00.000Z",
+          evidenceHash: "9".repeat(64),
+        },
+      };
+    },
     getReceipts: async () => [publicationReceipt],
     getReceipt: async () => publicationReceipt,
     getVisibilitySummary: async () => [
@@ -1189,6 +1279,39 @@ describe("GEO operator console", () => {
     expect(screen.getByRole("button", { name: /认领交接单/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /取消交接单/ })).toBeDisabled();
     expect(document.body.textContent).not.toContain("submitPermitHash");
+    expect(document.body.textContent).not.toContain("submit_permit");
+  });
+
+  it("runs the governed Ctrip simulator commands through explicit approval and readback", async () => {
+    const api = liveApi();
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "publish:request", "publish:cancel"],
+      },
+    });
+    renderApp({ path: "/publishing", api });
+
+    fireEvent.click(await screen.findByRole("button", { name: /认领交接单/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /准备携程草稿/ }));
+
+    expect(await screen.findByText("草稿已准备")).toBeInTheDocument();
+    expect(screen.getByText("Simulator")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /批准提交/ }));
+    const approval = await screen.findByRole("dialog", { name: "批准携程提交" });
+    expect(within(approval).getByText(/当前为 Simulator/)).toBeInTheDocument();
+    fireEvent.click(within(approval).getByRole("checkbox", { name: /确认已核对审计/ }));
+    fireEvent.click(within(approval).getByRole("button", { name: "确认提交" }));
+
+    expect(await screen.findByText("等待公开回读")).toBeInTheDocument();
+    expect(screen.getByText("模拟接受 · 未确认")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /执行携程回读/ }));
+
+    expect(await screen.findByText("需复核")).toBeInTheDocument();
+    expect(screen.getByText("仅仿真证据 · 未产生真实发布")).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("f".repeat(64));
+    expect(document.body.textContent).not.toContain("submitPermit");
     expect(document.body.textContent).not.toContain("submit_permit");
   });
 

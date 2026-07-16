@@ -48,7 +48,7 @@ export function parseCtripBridgeCredentials(value: string): readonly CtripBridge
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new TypeError("CTRIP_BRIDGE_CREDENTIALS_JSON must be valid JSON");
+    throw new TypeError("CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON must be valid JSON");
   }
   const credentials = credentialListSchema.parse(parsed);
   const tenantIds = new Set<string>();

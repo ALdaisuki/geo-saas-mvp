@@ -902,6 +902,17 @@ export interface PublicationAssistedHandoffView {
   readonly submitPermitConsumedAt: string | null;
   readonly submitPermitIssuedByActorId: string | null;
   readonly submitPermitConsumedByPrincipalId: string | null;
+  readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
+  readonly submitEvidenceKind: "simulation" | "browser" | null;
+  readonly submitObservedAt: string | null;
+  readonly publicationReceiptId: string | null;
+  readonly publicationReadbackId: string | null;
+  readonly readbackOutcome:
+    "confirmed" | "not_found" | "mismatch" | "unavailable" | "simulation_only" | null;
+  readonly readbackEvidenceKind: "simulation" | "browser" | "platform_readback" | null;
+  readonly readbackEvidenceHash: string | null;
+  readonly readbackObservedAt: string | null;
+  readonly observedPayloadHash: string | null;
   readonly externalDraftId: string | null;
   readonly externalId: string | null;
   readonly externalUrl: string | null;

@@ -19,86 +19,88 @@ The API is tenant-scoped after login. `DATABASE_IDENTITY_URL` uses `geo_identity
 
 ## Route inventory
 
-| Method/path                                                        | Required capability                  | Purpose                                                                                          |
-| ------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `POST /api/auth/login`                                             | public                               | Establish one tenant session                                                                     |
-| `POST /api/auth/logout`                                            | session + CSRF                       | Revoke server session and clear cookies                                                          |
-| `GET /api/auth/session`                                            | session                              | Return current actor/tenant context                                                              |
-| `GET /api/auth/tenants`                                            | session                              | List current user's memberships, marking inactive tenants/memberships unavailable                |
-| `POST /api/auth/switch-tenant`                                     | session + CSRF                       | Accept `{ tenantSlug }`, revoke the old session and issue a new tenant-scoped session            |
-| `GET /api/tenant`                                                  | `tenant:read`                        | Tenant summary                                                                                   |
-| `GET/POST /api/brands`                                             | `tenant:read` / `tenant:manage`      | List tenant brands or create a vertical-neutral brand                                            |
-| `GET /api/brand-agent-profiles`                                    | `content:read`                       | List the current tenant's active immutable Brand Agent Profiles                                  |
-| `GET /api/brands/:brandId/agent-profile`                           | `content:read`                       | Read the active Profile for one tenant-scoped brand or return 404                                |
-| `POST /api/brands/:brandId/agent-profile`                          | `tenant:manage` + CSRF               | Validate the strict document, retire the prior active row and create the next version            |
-| `GET/POST /api/members`                                            | `member:manage`                      | List tenant members or create a member with an initial password                                  |
-| `PATCH /api/members/:memberId`                                     | `member:manage` + CSRF               | Change a member role/status with an audited reason                                               |
-| `GET/POST /api/policies`                                           | `audit:read` / `tenant:manage`       | List policy bundles or create an immutable, audited draft bundle                                 |
-| `POST /api/policies/:policyId/state`                               | `tenant:manage` + CSRF               | Activate or retire a policy with canonical validation and an audited reason                      |
-| `GET/POST /api/query-sets`                                         | `visibility:read` / `visibility:run` | List query sets or create version 1 with provider-neutral prompts                                |
-| `GET/POST /api/query-sets/:querySetId/versions`                    | `visibility:read` / `visibility:run` | List immutable versions or create a reviewed inactive successor                                  |
-| `POST /api/query-sets/:querySetId/versions/:versionId/activate`    | `visibility:run` + CSRF              | Activate one tenant-scoped version and record the prior active version                           |
-| `POST /api/query-sets/:querySetId/state`                           | `visibility:run` + CSRF              | Retire a query set; retired is terminal                                                          |
-| `GET /api/automation`                                              | `tenant:read`                        | Read tenant automation control and tenant/platform/account circuit status                        |
-| `PUT /api/automation/control`                                      | `automation:manage` + CSRF           | Set tenant mode and the five bounded Worker quotas with an audited operator reason               |
-| `PUT /api/automation/controls/:scopeType/:scopeKey`                | `automation:manage` + CSRF           | Set platform/account/campaign/topic mode, quotas and scoped Kill Switch after ownership checks   |
-| `POST /api/automation/circuits/:scopeType/:scopeKey/state`         | `automation:manage` + CSRF           | Manually open or close a tenant/platform/account/campaign/topic circuit with audit evidence      |
-| `POST /api/automation/kill-switch`                                 | `automation:manage` + CSRF           | Accept `{ enabled, reason }`, update the tenant switch and append `geo.audit_log`                |
-| `GET /api/contacts`                                                | `tenant:read`                        | Current tenant contacts                                                                          |
-| `GET /api/channel-accounts`                                        | `tenant:read`                        | Platform accounts and declared capabilities                                                      |
-| `GET/POST /api/evidence-sources`                                   | `content:read` / `content:write`     | Evidence registry                                                                                |
-| `GET /api/article-templates`                                       | `content:read`                       | Return `{ version: "geo.article-templates.v1", items }` from the shared governed catalog         |
-| `GET /api/agent/capability`                                        | `content:read`                       | Return the current tenant's sanitized Fixture/Pi runner availability, provider and model         |
-| `POST /api/agent/runs`                                             | `content:write` + CSRF               | Run one tenant-scoped article workflow through the server-side Agent gateway at fixed Dry-run    |
-| `GET/POST /api/facts`                                              | `content:read` / `content:write`     | Tenant/brand claims bound to evidence                                                            |
-| `GET /api/capabilities`                                            | `tenant:read`                        | Current role capabilities and connector reports                                                  |
-| `POST /api/resource-scope-check`                                   | session + CSRF                       | MCP-oriented tenant resource authorization                                                       |
-| `GET/POST /api/campaigns`                                          | `content:read` / `content:write`     | Campaign collection and creation                                                                 |
-| `POST /api/campaigns/:campaignId/state`                            | `content:write` + CSRF               | Transition a campaign to `active`, `paused`, or terminal `completed`; append tenant audit log    |
-| `POST /api/campaigns/:campaignId/automation-batches`               | `automation:manage` + CSRF           | Create an idempotent 1-50 slot, 1-3 account-per-slot batch; execution is server-fixed Dry-run    |
-| `GET /api/automation-batches`                                      | `tenant:read`                        | List tenant-scoped batch summaries and aggregate states                                          |
-| `POST /api/automation-batches/:batchId/cancel`                     | `automation:manage` + CSRF           | Cancel uncompleted runs/targets with an audited reason                                           |
-| `GET /api/automation-runs[/:runId]`                                | `tenant:read`                        | List or read durable run, target, checkpoint and lease state                                     |
-| `POST /api/automation-runs/claim`                                  | `automation:execute` + CSRF          | Atomically claim eligible runs with actor-scoped Producer identity and tenant gate               |
-| `POST /api/automation-runs/:runId/heartbeat`                       | `automation:execute` + CSRF          | Fence by actor/Producer/attempt, persist stage checkpoint and renew a valid lease                |
-| `POST /api/automation-runs/:runId/draft-checkpoint`                | `automation:execute` + CSRF          | Bind one generated content item/version before target processing                                 |
-| `POST /api/automation-runs/:runId/targets/:targetId/checkpoint`    | `automation:execute` + CSRF          | Bind variant, real audit run/artifact, job and terminal target state                             |
-| `POST /api/automation-runs/:runId/reconcile`                       | `automation:execute` + CSRF          | Derive run/batch terminal or retry state from persisted targets                                  |
-| `GET/POST /api/content`                                            | `content:read` / `content:write`     | Content items and initial version                                                                |
-| `POST /api/content/:contentId/versions`                            | `content:write`                      | Create immutable content version                                                                 |
-| `GET /api/content-versions/:contentVersionId`                      | `content:read`                       | Read one version                                                                                 |
-| `POST /api/content-versions/:id/media-jobs`                        | `content:write` + CSRF               | Request governed deterministic fixture media; unavailable while media production is disabled     |
-| `GET /api/media-jobs/:id`                                          | `content:read`                       | Read media job, declared capability, and immutable asset when complete                           |
-| `GET /api/media-assets?contentVersionId=:id`                       | `content:read`                       | List media assets bound to one immutable content version                                         |
-| `GET/POST /api/content/:contentId/variants`                        | `content:read` / `content:write`     | List variants; POST accepts only version/account IDs and renders the payload server-side         |
-| `POST /api/variants/:variantId/audits`                             | `audit:run`                          | Require `{ idempotencyKey }`; run deterministic audit and maybe return one-time authorization    |
-| `GET /api/audits`                                                  | `audit:read`                         | Filter and paginate immutable audit artifacts                                                    |
-| `GET /api/audits/:artifactId`                                      | `audit:read`                         | Read immutable audit artifact                                                                    |
-| `POST /api/audits/:artifactId/manual-publication-package`          | `publish:request` + CSRF             | Export a passed, unexpired audit as a manual-action Dry-run package; this does not publish       |
-| `GET /api/audit-log`                                               | `audit:read`                         | Filter and paginate append-only tenant audit events                                              |
-| `POST /api/publication-requests`                                   | `publish:request`                    | Govern, consume a grant, and enqueue immediately or at optional `scheduledFor`                   |
-| `POST /api/publication-grants/:grantId/revoke`                     | `grant:revoke` + CSRF                | Revoke an unconsumed grant with an audited operator reason                                       |
-| `GET /api/publication-jobs`                                        | `content:read`                       | Tenant publication jobs                                                                          |
-| `GET /api/publication-jobs/:jobId`                                 | `content:read`                       | Job schedule, state, attempt count, and last error                                               |
-| `POST /api/publication-jobs/:jobId/cancel`                         | `publish:cancel` + CSRF              | Cancel an unlocked queued/retry job and dead-letter its pending outbox event                     |
-| `GET /api/publication-jobs/:jobId/attempts`                        | `receipt:read`                       | Ordered immutable execution attempts                                                             |
-| `GET /api/publication-jobs/:jobId/receipts`                        | `receipt:read`                       | Receipts for one job                                                                             |
-| `GET /api/publication-jobs/:jobId/readbacks`                       | `receipt:read`                       | Durable readback state for one job                                                               |
-| `GET /api/receipts`                                                | `receipt:read`                       | Immutable publication receipts                                                                   |
-| `GET /api/receipts/:receiptId`                                     | `receipt:read`                       | Full receipt hashes, external references, and readback declaration                               |
-| `GET /api/readbacks`                                               | `receipt:read`                       | Tenant readback queue/history                                                                    |
-| `GET /api/publication-assisted-handoffs`                           | `content:read`                       | List tenant-scoped Ctrip assisted handoffs without permit or credential material                 |
-| `GET /api/publication-assisted-handoffs/:handoffId`                | `content:read`                       | Read one tenant-scoped Ctrip assisted handoff and its evidence hashes                            |
-| `POST /api/publication-assisted-handoffs/:handoffId/claim`         | `publish:request` + CSRF             | Claim an eligible handoff for 30-300 seconds; defaults to a 120-second operator lease            |
-| `POST /api/publication-assisted-handoffs/:handoffId/heartbeat`     | `publish:request` + CSRF             | Renew only the current operator's unexpired lease for 30-300 seconds                             |
-| `POST /api/publication-assisted-handoffs/:handoffId/cancel`        | `publish:cancel` + CSRF              | Cancel an unconsumed pre-submit handoff with an audited reason                                   |
-| `POST /api/publication-assisted-handoffs/:handoffId/submit-permit` | `publish:request` + CSRF             | Issue one short-lived submit permit to the current operator lease; raw material is returned once |
-| `POST /api/service-principals/ctrip-bridges`                       | `principal:manage` + CSRF            | Create a credential-less, fixed-capability Ctrip bridge identity                                 |
-| `POST /api/visibility-runs`                                        | `visibility:run`                     | Run fixture Doubao/Qwen samples only                                                             |
-| `POST /api/visibility-runs/import`                                 | `visibility:run`                     | Import explicitly manual observations                                                            |
-| `GET /api/visibility-runs`                                         | `visibility:read`                    | Filter and paginate stored fixture/manual visibility runs                                        |
-| `GET /api/visibility-runs/:runId`                                  | `visibility:read`                    | Read one run with raw answers, citations, metrics, and evidence labels                           |
-| `GET /api/visibility/summary`                                      | `visibility:read`                    | Stored provider/method metrics                                                                   |
+| Method/path                                                     | Required capability                  | Purpose                                                                                        |
+| --------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `POST /api/auth/login`                                          | public                               | Establish one tenant session                                                                   |
+| `POST /api/auth/logout`                                         | session + CSRF                       | Revoke server session and clear cookies                                                        |
+| `GET /api/auth/session`                                         | session                              | Return current actor/tenant context                                                            |
+| `GET /api/auth/tenants`                                         | session                              | List current user's memberships, marking inactive tenants/memberships unavailable              |
+| `POST /api/auth/switch-tenant`                                  | session + CSRF                       | Accept `{ tenantSlug }`, revoke the old session and issue a new tenant-scoped session          |
+| `GET /api/tenant`                                               | `tenant:read`                        | Tenant summary                                                                                 |
+| `GET/POST /api/brands`                                          | `tenant:read` / `tenant:manage`      | List tenant brands or create a vertical-neutral brand                                          |
+| `GET /api/brand-agent-profiles`                                 | `content:read`                       | List the current tenant's active immutable Brand Agent Profiles                                |
+| `GET /api/brands/:brandId/agent-profile`                        | `content:read`                       | Read the active Profile for one tenant-scoped brand or return 404                              |
+| `POST /api/brands/:brandId/agent-profile`                       | `tenant:manage` + CSRF               | Validate the strict document, retire the prior active row and create the next version          |
+| `GET/POST /api/members`                                         | `member:manage`                      | List tenant members or create a member with an initial password                                |
+| `PATCH /api/members/:memberId`                                  | `member:manage` + CSRF               | Change a member role/status with an audited reason                                             |
+| `GET/POST /api/policies`                                        | `audit:read` / `tenant:manage`       | List policy bundles or create an immutable, audited draft bundle                               |
+| `POST /api/policies/:policyId/state`                            | `tenant:manage` + CSRF               | Activate or retire a policy with canonical validation and an audited reason                    |
+| `GET/POST /api/query-sets`                                      | `visibility:read` / `visibility:run` | List query sets or create version 1 with provider-neutral prompts                              |
+| `GET/POST /api/query-sets/:querySetId/versions`                 | `visibility:read` / `visibility:run` | List immutable versions or create a reviewed inactive successor                                |
+| `POST /api/query-sets/:querySetId/versions/:versionId/activate` | `visibility:run` + CSRF              | Activate one tenant-scoped version and record the prior active version                         |
+| `POST /api/query-sets/:querySetId/state`                        | `visibility:run` + CSRF              | Retire a query set; retired is terminal                                                        |
+| `GET /api/automation`                                           | `tenant:read`                        | Read tenant automation control and tenant/platform/account circuit status                      |
+| `PUT /api/automation/control`                                   | `automation:manage` + CSRF           | Set tenant mode and the five bounded Worker quotas with an audited operator reason             |
+| `PUT /api/automation/controls/:scopeType/:scopeKey`             | `automation:manage` + CSRF           | Set platform/account/campaign/topic mode, quotas and scoped Kill Switch after ownership checks |
+| `POST /api/automation/circuits/:scopeType/:scopeKey/state`      | `automation:manage` + CSRF           | Manually open or close a tenant/platform/account/campaign/topic circuit with audit evidence    |
+| `POST /api/automation/kill-switch`                              | `automation:manage` + CSRF           | Accept `{ enabled, reason }`, update the tenant switch and append `geo.audit_log`              |
+| `GET /api/contacts`                                             | `tenant:read`                        | Current tenant contacts                                                                        |
+| `GET /api/channel-accounts`                                     | `tenant:read`                        | Platform accounts and declared capabilities                                                    |
+| `GET/POST /api/evidence-sources`                                | `content:read` / `content:write`     | Evidence registry                                                                              |
+| `GET /api/article-templates`                                    | `content:read`                       | Return `{ version: "geo.article-templates.v1", items }` from the shared governed catalog       |
+| `GET /api/agent/capability`                                     | `content:read`                       | Return the current tenant's sanitized Fixture/Pi runner availability, provider and model       |
+| `POST /api/agent/runs`                                          | `content:write` + CSRF               | Run one tenant-scoped article workflow through the server-side Agent gateway at fixed Dry-run  |
+| `GET/POST /api/facts`                                           | `content:read` / `content:write`     | Tenant/brand claims bound to evidence                                                          |
+| `GET /api/capabilities`                                         | `tenant:read`                        | Current role capabilities and connector reports                                                |
+| `POST /api/resource-scope-check`                                | session + CSRF                       | MCP-oriented tenant resource authorization                                                     |
+| `GET/POST /api/campaigns`                                       | `content:read` / `content:write`     | Campaign collection and creation                                                               |
+| `POST /api/campaigns/:campaignId/state`                         | `content:write` + CSRF               | Transition a campaign to `active`, `paused`, or terminal `completed`; append tenant audit log  |
+| `POST /api/campaigns/:campaignId/automation-batches`            | `automation:manage` + CSRF           | Create an idempotent 1-50 slot, 1-3 account-per-slot batch; execution is server-fixed Dry-run  |
+| `GET /api/automation-batches`                                   | `tenant:read`                        | List tenant-scoped batch summaries and aggregate states                                        |
+| `POST /api/automation-batches/:batchId/cancel`                  | `automation:manage` + CSRF           | Cancel uncompleted runs/targets with an audited reason                                         |
+| `GET /api/automation-runs[/:runId]`                             | `tenant:read`                        | List or read durable run, target, checkpoint and lease state                                   |
+| `POST /api/automation-runs/claim`                               | `automation:execute` + CSRF          | Atomically claim eligible runs with actor-scoped Producer identity and tenant gate             |
+| `POST /api/automation-runs/:runId/heartbeat`                    | `automation:execute` + CSRF          | Fence by actor/Producer/attempt, persist stage checkpoint and renew a valid lease              |
+| `POST /api/automation-runs/:runId/draft-checkpoint`             | `automation:execute` + CSRF          | Bind one generated content item/version before target processing                               |
+| `POST /api/automation-runs/:runId/targets/:targetId/checkpoint` | `automation:execute` + CSRF          | Bind variant, real audit run/artifact, job and terminal target state                           |
+| `POST /api/automation-runs/:runId/reconcile`                    | `automation:execute` + CSRF          | Derive run/batch terminal or retry state from persisted targets                                |
+| `GET/POST /api/content`                                         | `content:read` / `content:write`     | Content items and initial version                                                              |
+| `POST /api/content/:contentId/versions`                         | `content:write`                      | Create immutable content version                                                               |
+| `GET /api/content-versions/:contentVersionId`                   | `content:read`                       | Read one version                                                                               |
+| `POST /api/content-versions/:id/media-jobs`                     | `content:write` + CSRF               | Request governed deterministic fixture media; unavailable while media production is disabled   |
+| `GET /api/media-jobs/:id`                                       | `content:read`                       | Read media job, declared capability, and immutable asset when complete                         |
+| `GET /api/media-assets?contentVersionId=:id`                    | `content:read`                       | List media assets bound to one immutable content version                                       |
+| `GET/POST /api/content/:contentId/variants`                     | `content:read` / `content:write`     | List variants; POST accepts only version/account IDs and renders the payload server-side       |
+| `POST /api/variants/:variantId/audits`                          | `audit:run`                          | Require `{ idempotencyKey }`; run deterministic audit and maybe return one-time authorization  |
+| `GET /api/audits`                                               | `audit:read`                         | Filter and paginate immutable audit artifacts                                                  |
+| `GET /api/audits/:artifactId`                                   | `audit:read`                         | Read immutable audit artifact                                                                  |
+| `POST /api/audits/:artifactId/manual-publication-package`       | `publish:request` + CSRF             | Export a passed, unexpired audit as a manual-action Dry-run package; this does not publish     |
+| `GET /api/audit-log`                                            | `audit:read`                         | Filter and paginate append-only tenant audit events                                            |
+| `POST /api/publication-requests`                                | `publish:request`                    | Govern, consume a grant, and enqueue immediately or at optional `scheduledFor`                 |
+| `POST /api/publication-grants/:grantId/revoke`                  | `grant:revoke` + CSRF                | Revoke an unconsumed grant with an audited operator reason                                     |
+| `GET /api/publication-jobs`                                     | `content:read`                       | Tenant publication jobs                                                                        |
+| `GET /api/publication-jobs/:jobId`                              | `content:read`                       | Job schedule, state, attempt count, and last error                                             |
+| `POST /api/publication-jobs/:jobId/cancel`                      | `publish:cancel` + CSRF              | Cancel an unlocked queued/retry job and dead-letter its pending outbox event                   |
+| `GET /api/publication-jobs/:jobId/attempts`                     | `receipt:read`                       | Ordered immutable execution attempts                                                           |
+| `GET /api/publication-jobs/:jobId/receipts`                     | `receipt:read`                       | Receipts for one job                                                                           |
+| `GET /api/publication-jobs/:jobId/readbacks`                    | `receipt:read`                       | Durable readback state for one job                                                             |
+| `GET /api/receipts`                                             | `receipt:read`                       | Immutable publication receipts                                                                 |
+| `GET /api/receipts/:receiptId`                                  | `receipt:read`                       | Full receipt hashes, external references, and readback declaration                             |
+| `GET /api/readbacks`                                            | `receipt:read`                       | Tenant readback queue/history                                                                  |
+| `GET /api/publication-assisted-handoffs`                        | `content:read`                       | List tenant-scoped Ctrip assisted handoffs without permit or credential material               |
+| `GET /api/publication-assisted-handoffs/:handoffId`             | `content:read`                       | Read one tenant-scoped Ctrip assisted handoff and its evidence hashes                          |
+| `POST /api/publication-assisted-handoffs/:handoffId/claim`      | `publish:request` + CSRF             | Claim an eligible handoff for 30-300 seconds; defaults to a 120-second operator lease          |
+| `POST /api/publication-assisted-handoffs/:handoffId/heartbeat`  | `publish:request` + CSRF             | Renew only the current operator's unexpired lease for 30-300 seconds                           |
+| `POST /api/publication-assisted-handoffs/:handoffId/prepare`    | `publish:request` + CSRF             | Ask the bound bridge to prepare the audited draft; requires the current operator lease         |
+| `POST /api/publication-assisted-handoffs/:handoffId/submit`     | `publish:request` + CSRF             | Approve one bridge submit; the API issues and forwards the one-time permit without exposing it |
+| `POST /api/publication-assisted-handoffs/:handoffId/readback`   | `publish:request` + CSRF             | Run independent readback for a submitted handoff; an expired operator lease does not block it  |
+| `POST /api/publication-assisted-handoffs/:handoffId/cancel`     | `publish:cancel` + CSRF              | Cancel an unconsumed pre-submit handoff with an audited reason                                 |
+| `POST /api/service-principals/ctrip-bridges`                    | `principal:manage` + CSRF            | Create a credential-less, fixed-capability Ctrip bridge identity                               |
+| `POST /api/visibility-runs`                                     | `visibility:run`                     | Run fixture Doubao/Qwen samples only                                                           |
+| `POST /api/visibility-runs/import`                              | `visibility:run`                     | Import explicitly manual observations                                                          |
+| `GET /api/visibility-runs`                                      | `visibility:read`                    | Filter and paginate stored fixture/manual visibility runs                                      |
+| `GET /api/visibility-runs/:runId`                               | `visibility:read`                    | Read one run with raw answers, citations, metrics, and evidence labels                         |
+| `GET /api/visibility/summary`                                   | `visibility:read`                    | Stored provider/method metrics                                                                 |
 
 Visibility observations preserve `requestStartedAt`, `responseReceivedAt`, and `observedAt`
 separately, plus sentiment, answer position, canonical competitor mentions, structured
@@ -157,13 +159,16 @@ adapter version. Its explicit state machine distinguishes `draft_prepared`,
 `confirmed`; only independent external readback may supply the external ID/URL and
 reach `confirmed`.
 
-The browser-facing API can list, inspect, claim, heartbeat and cancel handoffs. It
-cannot create a handoff, prepare a draft, issue or consume a submit permit, record a
-submit observation, or promote a row to confirmed. The raw one-time permit is
-returned only by the database security-definer function to the future bridge; only
-its SHA-256 hash is stored, it expires within five minutes, and consumption repeats
-the current operator-lease, audit, account-capability, Kill Switch, scoped-control
-and circuit checks. Claim and heartbeat perform the same governance recheck, and no
+The browser-facing API can list, inspect, claim, heartbeat, prepare, explicitly
+approve submit, run readback and cancel handoffs. It cannot create a handoff, send
+bridge credentials, receive or consume a submit permit, directly record evidence,
+or promote a row to confirmed. The API obtains the raw one-time permit from the
+database only inside the submit handler and forwards it to the exact tenant-bound
+bridge; it is never returned by an HTTP route. Only its SHA-256 hash is stored, it
+expires within five minutes, and bridge consumption repeats the current
+operator-lease, audit, account-capability, Kill Switch, scoped-control and circuit
+checks. A bridge submit observation always creates an unconfirmed receipt plus a
+required readback. Claim and heartbeat perform the same governance recheck, and no
 lease or permit may outlive its handoff. The table is read-only to `geo_runtime`;
 security-definer functions own all writes. Cookies, authorization headers, QR/SMS
 values and raw screenshots are not persisted.
@@ -174,17 +179,20 @@ only when its immutable audit names `ctrip_community`; the database then recheck
 the active `browser_assisted` account, 24-hour evidence freshness, tenant/scoped
 controls, Kill Switches and circuits. The Worker uses an exact tenant/account
 adapter mapping, renders the frozen preview, creates the handoff, and only then
-acknowledges the outbox event. No authenticated Ctrip bridge or independent public
-readback adapter is deployed, so these endpoints cannot publish or prove
-publication.
+acknowledges the outbox event. The optional `ctrip-simulator` Compose profile proves
+the isolated prepare/submit/readback control flow without Ctrip network access.
+Simulation evidence is prohibited from supplying an external ID/URL or reaching
+`confirmed`; simulator readback ends in `needs_review`. No authenticated live Ctrip
+adapter or independent public readback adapter is deployed, so the current module
+cannot publish or prove publication.
 
 ## Important absences
 
 - No email invitation, password reset, or member self-enrollment workflow. Tenant managers can create and update members through the authenticated API; a privileged one-shot owner bootstrap CLI remains for initial/recovery bootstrap.
 - No live Doubao/Qwen provider route; `/api/visibility-runs` is fixture by implementation.
 - No live image-generation provider. Media production defaults to disabled, and fixture output proves only pipeline integrity, not production image quality or external provider availability.
-- No Toutiao/Sohu public/partner API connector and no authenticated Ctrip publisher bridge. All `unattended` and non-Ctrip `assisted` requests fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED`; a governed Ctrip `assisted` request can create only an internal handoff.
-- Ctrip `browser_assisted` now has connector, admission, Worker handoff and durable control-plane contracts, but browser-session operation, platform draft creation, final submit observation, ambiguous-result reconciliation, and external platform readback remain undeployed capabilities. No handoff is a receipt or confirmation.
+- No Toutiao/Sohu public/partner API connector and no authenticated live Ctrip publisher bridge. All `unattended` and non-Ctrip `assisted` requests fail with `422 PUBLICATION_CAPABILITY_UNSUPPORTED`; a governed Ctrip `assisted` request can create an internal handoff and, only when explicitly configured, exercise the no-network simulator.
+- Ctrip `browser_assisted` now has connector, admission, Worker handoff, isolated bridge contracts, simulator submit observation and simulator readback. Real browser-session operation, platform draft creation, final live submit, ambiguous-result reconciliation against Ctrip, and external platform readback remain undeployed capabilities. An assisted receipt stays unconfirmed until valid `platform_readback` evidence matches the frozen payload.
 - The generated OpenAPI document is a route/security inventory, not yet a complete generated payload contract or a multi-version compatibility promise.
 
 These are product gaps, not hidden endpoints.

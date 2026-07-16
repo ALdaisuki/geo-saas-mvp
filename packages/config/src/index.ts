@@ -123,6 +123,8 @@ const serverEnvBaseSchema = z.object({
   AGENT_API_KEY: z.string().min(1).optional(),
   AGENT_GATEWAY_URL: z.string().url().optional(),
   AGENT_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
+  CTRIP_BRIDGE_GATEWAY_URL: z.string().url().optional(),
+  CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
   DOUBAO_ADAPTER: z.literal("fixture").default("fixture"),
   QWEN_ADAPTER: z.literal("fixture").default("fixture"),
   DOUBAO_API_KEY: z.string().min(1).optional(),
@@ -144,6 +146,17 @@ export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, con
       code: "custom",
       message: "AGENT_GATEWAY_URL and AGENT_GATEWAY_CREDENTIALS_JSON must be configured together",
       path: ["AGENT_GATEWAY_URL"],
+    });
+  }
+  if (
+    (environment.CTRIP_BRIDGE_GATEWAY_URL === undefined) !==
+    (environment.CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON === undefined)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "CTRIP_BRIDGE_GATEWAY_URL and CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON must be configured together",
+      path: ["CTRIP_BRIDGE_GATEWAY_URL"],
     });
   }
   if (environment.NODE_ENV !== "production") return;
@@ -168,6 +181,11 @@ export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, con
   rejectPlaceholder(
     environment.AGENT_GATEWAY_CREDENTIALS_JSON,
     "AGENT_GATEWAY_CREDENTIALS_JSON",
+    context,
+  );
+  rejectPlaceholder(
+    environment.CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON,
+    "CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON",
     context,
   );
   rejectPlaceholder(

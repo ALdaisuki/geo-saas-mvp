@@ -26,6 +26,7 @@ import {
   servicePrincipalStatusRequestSchema,
   type ActorContext,
   type Capability,
+  type CtripBridgeResult,
 } from "@geo/contracts";
 import {
   auditPublicationVariant,
@@ -69,6 +70,7 @@ import {
   scopedWorkerId,
 } from "./automation-contracts.js";
 import { AgentRunGatewayError, type AgentRunGateway } from "./agent-run-gateway.js";
+import { CtripBridgeGatewayError, type CtripBridgeGateway } from "./ctrip-bridge-gateway.js";
 import {
   createManualPublicationPackageExport,
   ManualPublicationPackageExportError,
@@ -89,6 +91,8 @@ import {
   type RequestContext,
   type ResolvedSession,
   type PublicationGovernanceAuditInput,
+  type PublicationAssistedHandoffState,
+  type PublicationAssistedHandoffView,
 } from "./repository.js";
 import { assertMemberManagementAllowed, normalizeContactValue } from "./tenant-governance.js";
 
@@ -154,6 +158,7 @@ export interface BuildAppOptions {
   readonly allowedOrigins?: readonly string[];
   readonly publicationGovernanceGate: PublicationGovernanceGate;
   readonly agentRunGateway?: AgentRunGateway;
+  readonly ctripBridgeGateway?: CtripBridgeGateway;
   readonly mediaProduction?: MediaProductionController;
   readonly mediaObjectStore?: Pick<MediaObjectStore, "get">;
 }
@@ -516,6 +521,8 @@ const publicationCommandSchema = z.object({
 const publicationAssistedHandoffLeaseSchema = z.strictObject({
   leaseSeconds: z.number().int().min(30).max(300).default(120),
 });
+
+const publicationAssistedBridgeCommandSchema = z.strictObject({});
 
 const visibilityRunSchema = z.object({
   querySetVersionId: idSchema,
@@ -927,6 +934,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
 
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof CtripBridgeGatewayError) {
+      void reply.status(error.statusCode).send({
+        error: { code: error.code, message: error.message, requestId: request.id },
+      });
+      return;
+    }
     if (error instanceof AgentRunGatewayError) {
       void reply.status(error.statusCode).send({
         error: { code: error.code, message: error.message, requestId: request.id },
@@ -1112,6 +1125,68 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       tenantId: authenticated.actor.tenantId,
       requestId: request.id,
     };
+  }
+
+  function ctripBridgeGateway(): CtripBridgeGateway {
+    if (options.ctripBridgeGateway === undefined) {
+      throw new ApiError(
+        503,
+        "CTRIP_BRIDGE_DISABLED",
+        "Ctrip bridge is not configured for this deployment",
+      );
+    }
+    return options.ctripBridgeGateway;
+  }
+
+  async function requireAssistedHandoff(
+    request: FastifyRequest,
+    allowedStates: readonly PublicationAssistedHandoffState[],
+    requireCurrentLease: boolean,
+  ) {
+    const context = requestContext(request);
+    const handoffId = parseIdParams(request.params, "handoffId");
+    const handoff = await repository.getPublicationAssistedHandoff(context, handoffId);
+    if (handoff === null) {
+      throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+    }
+    if (!allowedStates.includes(handoff.state)) {
+      throw new RepositoryConflictError(
+        `Publication assisted handoff cannot run this bridge command in state ${handoff.state}`,
+      );
+    }
+    if (handoff.bridgeServicePrincipalId === null) {
+      throw new RepositoryConflictError("Publication assisted handoff has no bound bridge");
+    }
+    if (
+      requireCurrentLease &&
+      (handoff.leaseOwnerActorId !== context.actorId ||
+        handoff.leaseExpiresAt === null ||
+        Date.parse(handoff.leaseExpiresAt) < now().getTime())
+    ) {
+      throw new RepositoryConflictError(
+        "Publication assisted handoff requires the current operator lease",
+      );
+    }
+    return { context, handoffId, handoff };
+  }
+
+  function assertBridgeResultScope(
+    tenantId: string,
+    handoff: Readonly<PublicationAssistedHandoffView>,
+    result: Readonly<CtripBridgeResult>,
+  ): void {
+    if (
+      result.tenantId !== tenantId ||
+      result.handoffId !== handoff.id ||
+      result.bridgePrincipalId !== handoff.bridgeServicePrincipalId ||
+      result.adapterVersion !== handoff.adapterVersion
+    ) {
+      throw new ApiError(
+        502,
+        "CTRIP_BRIDGE_RESPONSE_INVALID",
+        "Ctrip bridge returned a response outside the bound handoff scope",
+      );
+    }
   }
 
   async function issueSession(
@@ -2668,6 +2743,103 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
   );
   app.post(
+    "/api/publication-assisted-handoffs/:handoffId/prepare",
+    { preHandler: guard("publish:request", true) },
+    async (request) => {
+      publicationAssistedBridgeCommandSchema.parse(request.body ?? {});
+      const { context, handoffId, handoff } = await requireAssistedHandoff(
+        request,
+        ["handoff_pending", "session_required", "challenge_required"],
+        true,
+      );
+      const bridge = await ctripBridgeGateway().execute({
+        schemaVersion: "geo.ctrip-bridge.command.v1",
+        tenantId: context.tenantId,
+        handoffId,
+        requestId: context.requestId,
+        command: "prepare",
+      });
+      assertBridgeResultScope(context.tenantId, handoff, bridge);
+      const updated = await repository.getPublicationAssistedHandoff(context, handoffId);
+      if (updated === null) {
+        throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+      }
+      return { handoff: updated, bridge };
+    },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/submit",
+    { preHandler: guard("publish:request", true) },
+    async (request) => {
+      publicationAssistedBridgeCommandSchema.parse(request.body ?? {});
+      const { context, handoffId, handoff } = await requireAssistedHandoff(
+        request,
+        ["draft_prepared"],
+        true,
+      );
+      const bridgeGateway = ctripBridgeGateway();
+      const permit = await repository.issuePublicationAssistedSubmitPermit(context, handoffId);
+      try {
+        const bridge = await bridgeGateway.execute({
+          schemaVersion: "geo.ctrip-bridge.command.v1",
+          tenantId: context.tenantId,
+          handoffId,
+          requestId: context.requestId,
+          command: "submit",
+          submitPermit: permit.submitPermit,
+        });
+        assertBridgeResultScope(context.tenantId, handoff, bridge);
+        const updated = await repository.getPublicationAssistedHandoff(context, handoffId);
+        if (updated === null) {
+          throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+        }
+        return { handoff: updated, bridge };
+      } catch (error) {
+        const details = { stateMayHaveChanged: true, handoffId } as const;
+        if (error instanceof CtripBridgeGatewayError) {
+          throw new ApiError(error.statusCode, error.code, error.message, details);
+        }
+        if (error instanceof ApiError) {
+          throw new ApiError(error.statusCode, error.code, error.message, {
+            ...error.details,
+            ...details,
+          });
+        }
+        throw new ApiError(
+          502,
+          "CTRIP_SUBMIT_OUTCOME_UNKNOWN",
+          "Ctrip submit crossed the permit boundary but could not be confirmed",
+          details,
+        );
+      }
+    },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/readback",
+    { preHandler: guard("publish:request", true) },
+    async (request) => {
+      publicationAssistedBridgeCommandSchema.parse(request.body ?? {});
+      const { context, handoffId, handoff } = await requireAssistedHandoff(
+        request,
+        ["readback_pending"],
+        false,
+      );
+      const bridge = await ctripBridgeGateway().execute({
+        schemaVersion: "geo.ctrip-bridge.command.v1",
+        tenantId: context.tenantId,
+        handoffId,
+        requestId: context.requestId,
+        command: "readback",
+      });
+      assertBridgeResultScope(context.tenantId, handoff, bridge);
+      const updated = await repository.getPublicationAssistedHandoff(context, handoffId);
+      if (updated === null) {
+        throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+      }
+      return { handoff: updated, bridge };
+    },
+  );
+  app.post(
     "/api/publication-assisted-handoffs/:handoffId/cancel",
     { preHandler: guard("publish:cancel", true) },
     async (request) => {
@@ -2678,15 +2850,6 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         reason: body.reason,
       });
     },
-  );
-  app.post(
-    "/api/publication-assisted-handoffs/:handoffId/submit-permit",
-    { preHandler: guard("publish:request", true) },
-    async (request) =>
-      repository.issuePublicationAssistedSubmitPermit(
-        requestContext(request),
-        parseIdParams(request.params, "handoffId"),
-      ),
   );
   app.post(
     "/api/visibility-runs",

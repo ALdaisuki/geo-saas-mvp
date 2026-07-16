@@ -139,4 +139,3 @@ submit action.
 - Simulator readback cannot produce `confirmed`, `external_id` or an external URL.
 - Database, API, bridge and Playwright tests cover the successful simulator path,
   uncertain path, cross-tenant denial, disabled gateway and restart-visible state.
-

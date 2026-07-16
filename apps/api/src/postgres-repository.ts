@@ -511,6 +511,16 @@ interface PublicationAssistedHandoffRow {
   readonly submit_permit_consumed_at: Date | null;
   readonly submit_permit_issued_by_actor_id: string | null;
   readonly submit_permit_consumed_by_principal_id: string | null;
+  readonly submit_outcome: PublicationAssistedHandoffView["submitOutcome"];
+  readonly submit_evidence_kind: PublicationAssistedHandoffView["submitEvidenceKind"];
+  readonly submit_observed_at: Date | null;
+  readonly publication_receipt_id: string | null;
+  readonly publication_readback_id: string | null;
+  readonly readback_outcome: PublicationAssistedHandoffView["readbackOutcome"];
+  readonly readback_evidence_kind: PublicationAssistedHandoffView["readbackEvidenceKind"];
+  readonly readback_evidence_hash: string | null;
+  readonly readback_observed_at: Date | null;
+  readonly observed_payload_hash: string | null;
   readonly external_draft_id: string | null;
   readonly external_id: string | null;
   readonly external_url: string | null;
@@ -549,6 +559,16 @@ function publicationAssistedHandoffView(
     submitPermitConsumedAt: toNullableIso(row.submit_permit_consumed_at),
     submitPermitIssuedByActorId: row.submit_permit_issued_by_actor_id,
     submitPermitConsumedByPrincipalId: row.submit_permit_consumed_by_principal_id,
+    submitOutcome: row.submit_outcome,
+    submitEvidenceKind: row.submit_evidence_kind,
+    submitObservedAt: toNullableIso(row.submit_observed_at),
+    publicationReceiptId: row.publication_receipt_id,
+    publicationReadbackId: row.publication_readback_id,
+    readbackOutcome: row.readback_outcome,
+    readbackEvidenceKind: row.readback_evidence_kind,
+    readbackEvidenceHash: row.readback_evidence_hash,
+    readbackObservedAt: toNullableIso(row.readback_observed_at),
+    observedPayloadHash: row.observed_payload_hash,
     externalDraftId: row.external_draft_id,
     externalId: row.external_id,
     externalUrl: row.external_url,
@@ -865,6 +885,11 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
              handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
              handoff.submit_permit_issued_by_actor_id,
              handoff.submit_permit_consumed_by_principal_id,
+             handoff.submit_outcome, handoff.submit_evidence_kind,
+             handoff.submit_observed_at, handoff.publication_receipt_id,
+             handoff.publication_readback_id, handoff.readback_outcome,
+             handoff.readback_evidence_kind, handoff.readback_evidence_hash,
+             handoff.readback_observed_at, handoff.observed_payload_hash,
              handoff.external_draft_id,
              handoff.external_id, handoff.external_url, handoff.expires_at,
              handoff.cancellation_reason, handoff.last_error_code,
@@ -4173,6 +4198,11 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
                  handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
                  handoff.submit_permit_issued_by_actor_id,
                  handoff.submit_permit_consumed_by_principal_id,
+                 handoff.submit_outcome, handoff.submit_evidence_kind,
+                 handoff.submit_observed_at, handoff.publication_receipt_id,
+                 handoff.publication_readback_id, handoff.readback_outcome,
+                 handoff.readback_evidence_kind, handoff.readback_evidence_hash,
+                 handoff.readback_observed_at, handoff.observed_payload_hash,
                  handoff.external_draft_id,
                  handoff.external_id, handoff.external_url, handoff.expires_at,
                  handoff.cancellation_reason, handoff.last_error_code,

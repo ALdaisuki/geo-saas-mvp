@@ -85,6 +85,11 @@ async function installAutomationApiFixture(page: Page): Promise<{
     readonly csrf: string | undefined;
     readonly body: Readonly<Record<string, unknown>>;
   }>;
+  readonly ctripCommandRequests: Array<{
+    readonly command: "prepare" | "submit" | "readback";
+    readonly csrf: string | undefined;
+    readonly body: Readonly<Record<string, unknown>>;
+  }>;
 }> {
   await page
     .context()
@@ -103,8 +108,15 @@ async function installAutomationApiFixture(page: Page): Promise<{
   const contentItemId = "10000000-0000-4000-8000-000000005101";
   const contentVersionId = "10000000-0000-4000-8000-000000005102";
   const variantId = "10000000-0000-4000-8000-000000005103";
+  const ctripAccountId = "10000000-0000-4000-8000-000000000703";
+  const ctripHandoffId = "10000000-0000-4000-8000-000000009001";
   const agentRunRequests: Array<{
     authorization: string | undefined;
+    csrf: string | undefined;
+    body: Readonly<Record<string, unknown>>;
+  }> = [];
+  const ctripCommandRequests: Array<{
+    command: "prepare" | "submit" | "readback";
     csrf: string | undefined;
     body: Readonly<Record<string, unknown>>;
   }> = [];
@@ -143,6 +155,8 @@ async function installAutomationApiFixture(page: Page): Promise<{
         "content:read",
         "content:write",
         "automation:manage",
+        "publish:request",
+        "publish:cancel",
         "receipt:read",
         "visibility:read",
         "visibility:run",
@@ -199,7 +213,7 @@ async function installAutomationApiFixture(page: Page): Promise<{
       lastVerifiedAt: now,
     },
     {
-      id: "10000000-0000-4000-8000-000000000703",
+      id: ctripAccountId,
       platform: "ctrip_community",
       displayName: "中通携程社区",
       capability: "manual_only",
@@ -348,6 +362,51 @@ async function installAutomationApiFixture(page: Page): Promise<{
       },
     ],
   };
+  let ctripHandoff = {
+    id: ctripHandoffId,
+    jobId: "10000000-0000-4000-8000-000000009002",
+    attemptId: "10000000-0000-4000-8000-000000009003",
+    channelAccountId: ctripAccountId,
+    variantId,
+    platform: "ctrip_community",
+    state: "handoff_pending",
+    payloadHash: "3".repeat(64),
+    auditHash: "4".repeat(64),
+    previewHash: "5".repeat(64),
+    adapterVersion: "ctrip-community-simulator-v1",
+    bridgeServicePrincipalId: "10000000-0000-4000-8000-000000009004",
+    leaseOwnerActorId: null as string | null,
+    leaseExpiresAt: null as string | null,
+    heartbeatAt: null as string | null,
+    sessionEvidenceHash: null as string | null,
+    draftEvidenceHash: null as string | null,
+    submitEvidenceHash: null as string | null,
+    submitPermitIssued: false,
+    submitPermitExpiresAt: null as string | null,
+    submitPermitConsumedAt: null as string | null,
+    submitPermitIssuedByActorId: null as string | null,
+    submitPermitConsumedByPrincipalId: null as string | null,
+    submitOutcome: null as "accepted" | "uncertain" | "rejected" | null,
+    submitEvidenceKind: null as "simulation" | "browser" | null,
+    submitObservedAt: null as string | null,
+    publicationReceiptId: null as string | null,
+    publicationReadbackId: null as string | null,
+    readbackOutcome: null as
+      "confirmed" | "not_found" | "mismatch" | "unavailable" | "simulation_only" | null,
+    readbackEvidenceKind: null as "simulation" | "browser" | "platform_readback" | null,
+    readbackEvidenceHash: null as string | null,
+    readbackObservedAt: null as string | null,
+    observedPayloadHash: null as string | null,
+    externalDraftId: null as string | null,
+    externalId: null as string | null,
+    externalUrl: null as string | null,
+    expiresAt: "2099-07-15T09:00:00.000Z",
+    cancellationReason: null as string | null,
+    lastErrorCode: null as string | null,
+    lastErrorMessage: null as string | null,
+    createdAt: now,
+    updatedAt: now,
+  };
 
   const items = (values: readonly unknown[]) => ({ items: values });
   await page.route("**/api/**", async (route) => {
@@ -388,6 +447,118 @@ async function installAutomationApiFixture(page: Page): Promise<{
               "geo_audit_request",
               "geo_publication_request",
             ],
+          },
+        }),
+      });
+      return;
+    }
+    const ctripCommand = url.pathname.match(
+      new RegExp(
+        `^/api/publication-assisted-handoffs/${ctripHandoffId}/(claim|prepare|submit|readback)$`,
+      ),
+    )?.[1];
+    if (ctripCommand !== undefined && route.request().method() === "POST") {
+      if (ctripCommand === "claim") {
+        ctripHandoff = {
+          ...ctripHandoff,
+          leaseOwnerActorId: actorId,
+          leaseExpiresAt: "2099-07-15T08:10:00.000Z",
+          heartbeatAt: now,
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ handoff: ctripHandoff }),
+        });
+        return;
+      }
+      const command = ctripCommand as "prepare" | "submit" | "readback";
+      ctripCommandRequests.push({
+        command,
+        csrf: route.request().headers()["x-csrf-token"],
+        body: route.request().postDataJSON() as Readonly<Record<string, unknown>>,
+      });
+      const bridgeBase = {
+        schemaVersion: "geo.ctrip-bridge.result.v1",
+        tenantId,
+        handoffId: ctripHandoffId,
+        bridgePrincipalId: ctripHandoff.bridgeServicePrincipalId,
+        adapterVersion: ctripHandoff.adapterVersion,
+        observedAt: now,
+        evidenceHash: "6".repeat(64),
+        evidenceKind: "simulation",
+      };
+      if (command === "prepare") {
+        ctripHandoff = {
+          ...ctripHandoff,
+          state: "draft_prepared",
+          draftEvidenceHash: "6".repeat(64),
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            handoff: ctripHandoff,
+            bridge: {
+              ...bridgeBase,
+              command,
+              outcome: "prepared",
+              state: "draft_prepared",
+            },
+          }),
+        });
+        return;
+      }
+      if (command === "submit") {
+        ctripHandoff = {
+          ...ctripHandoff,
+          state: "readback_pending",
+          submitPermitIssued: true,
+          submitPermitConsumedAt: now,
+          submitOutcome: "accepted",
+          submitEvidenceKind: "simulation",
+          submitObservedAt: now,
+          publicationReceiptId: "10000000-0000-4000-8000-000000009005",
+          publicationReadbackId: "10000000-0000-4000-8000-000000009006",
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            handoff: ctripHandoff,
+            bridge: {
+              ...bridgeBase,
+              command,
+              outcome: "accepted",
+              state: "readback_pending",
+              receiptId: ctripHandoff.publicationReceiptId,
+              readbackId: ctripHandoff.publicationReadbackId,
+            },
+          }),
+        });
+        return;
+      }
+      ctripHandoff = {
+        ...ctripHandoff,
+        state: "needs_review",
+        readbackOutcome: "simulation_only",
+        readbackEvidenceKind: "simulation",
+        readbackEvidenceHash: "7".repeat(64),
+        readbackObservedAt: now,
+        observedPayloadHash: ctripHandoff.payloadHash,
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          handoff: ctripHandoff,
+          bridge: {
+            ...bridgeBase,
+            command,
+            outcome: "simulation_only",
+            state: "needs_review",
+            externalId: null,
+            externalUrl: null,
           },
         }),
       });
@@ -506,7 +677,7 @@ async function installAutomationApiFixture(page: Page): Promise<{
       ],
       ["/api/audits", items([])],
       ["/api/publication-jobs", items([])],
-      ["/api/publication-assisted-handoffs", items([])],
+      ["/api/publication-assisted-handoffs", items([ctripHandoff])],
       ["/api/receipts", items([])],
       ["/api/visibility/summary", items([])],
       [
@@ -577,7 +748,7 @@ async function installAutomationApiFixture(page: Page): Promise<{
       body: JSON.stringify(response),
     });
   });
-  return { agentRunRequests };
+  return { agentRunRequests, ctripCommandRequests };
 }
 
 test("demo console keeps every primary workflow truthful and responsive", async ({
@@ -689,6 +860,51 @@ test("live automation operations remain bounded and non-overlapping", async ({
   await expect(page.getByText(/完成是不可逆终态/)).toBeVisible();
   await assertNoPageOverflow(page);
   await assertNoDirectChildOverlap(page, [".modal-header", ".modal-actions"]);
+});
+
+test("live Ctrip simulator flow requires approval and ends in review", async ({
+  page,
+}, testInfo) => {
+  const fixture = await installAutomationApiFixture(page);
+  await page.goto("/publishing");
+
+  await expect(page.getByRole("heading", { level: 1, name: "投放中心" })).toBeVisible();
+  await expect(page.getByText(/当前环境为 Simulator/)).toBeVisible();
+  await page.getByRole("button", { name: /认领交接单/ }).click();
+  await page.getByRole("button", { name: /准备携程草稿/ }).click();
+  await expect(page.getByText("草稿已准备", { exact: true })).toBeVisible();
+  await expect(page.getByText("尚未提交", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: /批准提交/ }).click();
+  const dialog = page.getByRole("dialog", { name: "批准携程提交" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(/当前为 Simulator/)).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "确认提交" })).toBeDisabled();
+  await dialog.getByRole("checkbox", { name: /确认已核对审计/ }).check();
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [
+    ".ctrip-submit-modal .modal-header",
+    ".ctrip-submit-summary",
+    ".ctrip-submit-modal .modal-actions",
+  ]);
+  await attachScreenshot(page, testInfo, "ctrip-submit-approval", false);
+  await dialog.getByRole("button", { name: "确认提交" }).click();
+
+  await expect(page.getByText("模拟接受 · 未确认", { exact: true })).toBeVisible();
+  await expect(page.getByText("等待公开回读", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /执行携程回读/ }).click();
+  await expect(page.getByText("需复核", { exact: true })).toBeVisible();
+  await expect(page.getByText("仅仿真证据 · 未产生真实发布", { exact: true })).toBeVisible();
+
+  expect(fixture.ctripCommandRequests).toEqual([
+    { command: "prepare", csrf: "web-e2e-csrf", body: {} },
+    { command: "submit", csrf: "web-e2e-csrf", body: {} },
+    { command: "readback", csrf: "web-e2e-csrf", body: {} },
+  ]);
+  expect(JSON.stringify(fixture.ctripCommandRequests)).not.toContain("submitPermit");
+  await assertNoPageOverflow(page);
+  await assertNoDirectChildOverlap(page, [".handoff-actions", ".handoff-environment"]);
+  await attachScreenshot(page, testInfo, "ctrip-simulator-reviewed");
 });
 
 test("live governed agent generation stays tenant-scoped and responsive", async ({

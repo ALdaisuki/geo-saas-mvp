@@ -1,8 +1,15 @@
+import { resolve } from "node:path";
+
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@geo/contracts": resolve(import.meta.dirname, "../../packages/contracts/src/index.ts"),
+    },
+  },
   server: {
     port: 4173,
     strictPort: false,

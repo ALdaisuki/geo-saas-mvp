@@ -53,6 +53,7 @@ import {
   type GeoApi,
   type PublicationJob,
   type PolicyBundle,
+  type PublicationAssistedHandoff,
   type PublicationReceipt,
   type QuerySet,
   type ServicePrincipal,
@@ -441,6 +442,39 @@ function stateLabel(state: string): string {
     unavailable: "不可用",
   };
   return labels[state] ?? state;
+}
+
+function ctripEnvironmentLabel(handoff: PublicationAssistedHandoff): "Simulator" | "Live bridge" {
+  return handoff.adapterVersion.toLowerCase().includes("simulator") ||
+    handoff.submitEvidenceKind === "simulation" ||
+    handoff.readbackEvidenceKind === "simulation"
+    ? "Simulator"
+    : "Live bridge";
+}
+
+function ctripSubmitObservation(handoff: PublicationAssistedHandoff): string {
+  if (handoff.submitOutcome === null) return "尚未提交";
+  if (handoff.submitOutcome === "accepted") {
+    return handoff.submitEvidenceKind === "simulation"
+      ? "模拟接受 · 未确认"
+      : "已观察接受 · 未确认";
+  }
+  if (handoff.submitOutcome === "uncertain") return "结果不确定 · 禁止自动重试";
+  return "提交被拒绝 · 需复核";
+}
+
+function ctripReadbackObservation(handoff: PublicationAssistedHandoff): string {
+  if (handoff.readbackOutcome === null) return "尚未回读";
+  if (
+    handoff.readbackOutcome === "simulation_only" ||
+    handoff.readbackEvidenceKind === "simulation"
+  ) {
+    return "仅仿真证据 · 未产生真实发布";
+  }
+  if (handoff.readbackOutcome === "confirmed") return "平台回读已确认";
+  if (handoff.readbackOutcome === "not_found") return "平台未找到 · 需复核";
+  if (handoff.readbackOutcome === "mismatch") return "内容哈希不匹配 · 已阻断";
+  return "平台回读不可用 · 需复核";
 }
 
 function contentTypeLabel(type: string): string {
@@ -1546,6 +1580,78 @@ function ContentView({
   );
 }
 
+function CtripSubmitApprovalDialog({
+  handoff,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  handoff: PublicationAssistedHandoff;
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const [approved, setApproved] = useState(false);
+  const simulator = ctripEnvironmentLabel(handoff) === "Simulator";
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={pending ? undefined : onClose}>
+      <div
+        className="modal ctrip-submit-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ctrip-submit-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div>
+            <h2 id="ctrip-submit-title">批准携程提交</h2>
+            <p>
+              {simulator
+                ? "当前为 Simulator；只记录仿真提交观察，不会产生携程真实帖子。"
+                : "提交可能改变外部平台状态；超时或结果不确定时禁止自动重试。"}
+            </p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" disabled={pending}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="ctrip-submit-summary">
+          <div>
+            <span>交接单</span>
+            <strong>{shortId(handoff.id)}</strong>
+          </div>
+          <div>
+            <span>审计状态</span>
+            <strong>已绑定 {shortId(handoff.auditHash)}</strong>
+          </div>
+          <div>
+            <span>环境</span>
+            <strong>{ctripEnvironmentLabel(handoff)}</strong>
+          </div>
+        </div>
+        <label className="ctrip-submit-check">
+          <input
+            type="checkbox"
+            checked={approved}
+            disabled={pending}
+            onChange={(event) => setApproved(event.target.checked)}
+          />
+          <span>确认已核对审计、草稿和发布账号</span>
+        </label>
+        <div className="modal-actions">
+          <button className="button-secondary" onClick={onClose} disabled={pending}>
+            返回
+          </button>
+          <button className="button-danger" onClick={onConfirm} disabled={pending || !approved}>
+            {pending ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}
+            确认提交
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PublishingView({
   mode,
   api,
@@ -1579,6 +1685,8 @@ function PublishingView({
   const [cancelledJobs, setCancelledJobs] = useState<ReadonlySet<string>>(new Set());
   const [handoffBusyId, setHandoffBusyId] = useState<string | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [handoffNotice, setHandoffNotice] = useState<string | null>(null);
+  const [approveHandoffId, setApproveHandoffId] = useState<string | null>(null);
   const [cancelHandoffId, setCancelHandoffId] = useState<string | null>(null);
   const [cancelHandoffReason, setCancelHandoffReason] = useState("");
   useEffect(() => {
@@ -1586,17 +1694,47 @@ function PublishingView({
     setCancelledJobs(new Set());
     setHandoffBusyId(null);
     setHandoffError(null);
+    setHandoffNotice(null);
+    setApproveHandoffId(null);
     setCancelHandoffId(null);
     setCancelHandoffReason("");
   }, [tenantId]);
-  async function runHandoffAction(handoffId: string, action: "claim" | "heartbeat" | "cancel") {
+  async function runHandoffAction(
+    handoffId: string,
+    action: "claim" | "heartbeat" | "prepare" | "submit" | "readback" | "cancel",
+  ) {
     setHandoffBusyId(handoffId);
     setHandoffError(null);
+    setHandoffNotice(null);
     try {
       if (action === "claim") {
         await api.claimPublicationAssistedHandoff(handoffId);
       } else if (action === "heartbeat") {
         await api.heartbeatPublicationAssistedHandoff(handoffId);
+      } else if (action === "prepare") {
+        const result = await api.preparePublicationAssistedHandoff(handoffId);
+        setHandoffNotice(
+          result.bridge.evidenceKind === "simulation"
+            ? "Simulator 已准备草稿证据；未访问真实携程。"
+            : "草稿准备证据已记录。",
+        );
+      } else if (action === "submit") {
+        const result = await api.submitPublicationAssistedHandoff(handoffId);
+        setApproveHandoffId(null);
+        setHandoffNotice(
+          result.bridge.outcome === "uncertain"
+            ? "提交结果不确定，已停止自动重试；请执行独立回读。"
+            : result.bridge.evidenceKind === "simulation"
+              ? "Simulator 已记录提交观察；该结果不是平台发布确认。"
+              : "提交观察已记录；仍需独立平台回读。",
+        );
+      } else if (action === "readback") {
+        const result = await api.readbackPublicationAssistedHandoff(handoffId);
+        setHandoffNotice(
+          result.bridge.outcome === "simulation_only"
+            ? "回读仅包含仿真证据，交接单已进入人工复核。"
+            : "独立回读证据已记录。",
+        );
       } else {
         await api.cancelPublicationAssistedHandoff(handoffId, cancelHandoffReason);
         setCancelHandoffId(null);
@@ -1604,13 +1742,34 @@ function PublishingView({
       }
       onChanged();
     } catch (error) {
+      const stateMayHaveChanged =
+        action === "submit" &&
+        error instanceof GeoApiError &&
+        error.details?.stateMayHaveChanged === true;
+      if (stateMayHaveChanged) {
+        setApproveHandoffId(null);
+        setHandoffNotice(
+          "提交响应异常且平台状态可能已改变；已停止重试。刷新后若进入等待回读再执行回读，否则转人工复核。",
+        );
+        onChanged();
+      }
       setHandoffError(
-        error instanceof GeoApiError ? `${error.code}: ${error.message}` : "携程交接操作失败",
+        stateMayHaveChanged
+          ? null
+          : error instanceof GeoApiError
+            ? `${error.code}: ${error.message}`
+            : "携程交接操作失败",
       );
     } finally {
       setHandoffBusyId(null);
     }
   }
+  const approvalHandoff =
+    approveHandoffId === null
+      ? null
+      : (dashboard.publicationAssistedHandoffs.data.find(
+          (handoff) => handoff.id === approveHandoffId,
+        ) ?? null);
   return (
     <div className="view-stack">
       {mode === "live" ? (
@@ -1762,6 +1921,20 @@ function PublishingView({
             empty={dashboard.publicationAssistedHandoffs.data.length === 0}
             emptyLabel="暂无携程交接单"
           />
+          {dashboard.publicationAssistedHandoffs.data.some(
+            (handoff) => ctripEnvironmentLabel(handoff) === "Simulator",
+          ) ? (
+            <div className="ops-notice ops-notice-warning ctrip-environment-notice" role="status">
+              <ShieldAlert size={16} />
+              <span>当前环境为 Simulator；所有提交与回读证据均不得视为携程真实发布。</span>
+            </div>
+          ) : null}
+          {handoffNotice === null ? null : (
+            <div className="ops-notice ops-notice-info" role="status">
+              <CheckCircle2 size={16} />
+              <span>{handoffNotice}</span>
+            </div>
+          )}
           {handoffError === null ? null : (
             <div className="ops-inline-error" role="alert">
               <AlertTriangle size={16} />
@@ -1775,7 +1948,9 @@ function PublishingView({
                   <tr>
                     <th>交接单 / 作业</th>
                     <th>状态</th>
-                    <th>适配器</th>
+                    <th>环境 / 适配器</th>
+                    <th>提交观察</th>
+                    <th>回读证据</th>
                     <th>租约</th>
                     <th>截止时间</th>
                     <th />
@@ -1799,6 +1974,15 @@ function PublishingView({
                       "expired",
                       "failed",
                     ].includes(handoff.state);
+                    const canPrepare =
+                      owned &&
+                      ["handoff_pending", "session_required", "challenge_required"].includes(
+                        handoff.state,
+                      );
+                    const canSubmit = owned && handoff.state === "draft_prepared";
+                    const canReadback =
+                      handoff.state === "readback_pending" &&
+                      capabilities.includes("publish:request");
                     return (
                       <tr key={handoff.id}>
                         <td>
@@ -1820,7 +2004,28 @@ function PublishingView({
                             {stateLabel(handoff.state)}
                           </StatusBadge>
                         </td>
-                        <td className="mono">{handoff.adapterVersion}</td>
+                        <td>
+                          <div className="handoff-environment">
+                            <StatusBadge
+                              tone={
+                                ctripEnvironmentLabel(handoff) === "Simulator" ? "warning" : "info"
+                              }
+                            >
+                              {ctripEnvironmentLabel(handoff)}
+                            </StatusBadge>
+                            <span className="mono">{handoff.adapterVersion}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="handoff-observation">
+                            {ctripSubmitObservation(handoff)}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="handoff-observation">
+                            {ctripReadbackObservation(handoff)}
+                          </span>
+                        </td>
                         <td>
                           {owned
                             ? "当前操作员"
@@ -1831,6 +2036,47 @@ function PublishingView({
                         <td>{formatDateTime(handoff.expiresAt)}</td>
                         <td>
                           <div className="handoff-actions">
+                            {canPrepare ? (
+                              <button
+                                className="button-secondary handoff-command"
+                                aria-label={`准备携程草稿 ${handoff.id}`}
+                                disabled={handoffBusyId !== null}
+                                onClick={() => void runHandoffAction(handoff.id, "prepare")}
+                              >
+                                {handoffBusyId === handoff.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <FileCheck2 size={16} />
+                                )}
+                                准备草稿
+                              </button>
+                            ) : null}
+                            {canSubmit ? (
+                              <button
+                                className="button-danger handoff-command"
+                                aria-label={`批准提交 ${handoff.id}`}
+                                disabled={handoffBusyId !== null}
+                                onClick={() => setApproveHandoffId(handoff.id)}
+                              >
+                                <Send size={16} />
+                                批准提交
+                              </button>
+                            ) : null}
+                            {canReadback ? (
+                              <button
+                                className="button-secondary handoff-command"
+                                aria-label={`执行携程回读 ${handoff.id}`}
+                                disabled={handoffBusyId !== null}
+                                onClick={() => void runHandoffAction(handoff.id, "readback")}
+                              >
+                                {handoffBusyId === handoff.id ? (
+                                  <LoaderCircle className="spin" size={16} />
+                                ) : (
+                                  <Search size={16} />
+                                )}
+                                回读
+                              </button>
+                            ) : null}
                             {owned ? (
                               <button
                                 className="icon-button"
@@ -1935,6 +2181,14 @@ function PublishingView({
                 </button>
               </div>
             </form>
+          )}
+          {approvalHandoff === null ? null : (
+            <CtripSubmitApprovalDialog
+              handoff={approvalHandoff}
+              pending={handoffBusyId === approvalHandoff.id}
+              onClose={() => setApproveHandoffId(null)}
+              onConfirm={() => void runHandoffAction(approvalHandoff.id, "submit")}
+            />
           )}
           <SourceCaption
             endpoint="GET /api/publication-assisted-handoffs"

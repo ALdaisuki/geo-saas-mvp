@@ -56,6 +56,8 @@ services:
       - AGENT_MODEL=${AGENT_MODEL:-fixture-geo-writer-v1}
       - AGENT_BASE_URL
       - AGENT_API_KEY
+      - CTRIP_BRIDGE_GATEWAY_URL
+      - CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON
       - GEO_BOOTSTRAP_PASSWORD
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - DOUBAO_API_KEY
@@ -244,6 +246,9 @@ services:
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - AGENT_GATEWAY_URL=http://127.0.0.1:9021
       - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
+      # Omitted by default. Set both only with the explicit ctrip-simulator profile.
+      - CTRIP_BRIDGE_GATEWAY_URL
+      - CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON
       - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
       - GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}
       - GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media
@@ -358,6 +363,39 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    network_mode: service:api
+
+  ctrip-bridge:
+    <<: *node-security
+    profiles:
+      - ctrip-simulator
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-ctrip-bridge:${GEO_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ctrip-bridge
+    restart: unless-stopped
+    environment:
+      CTRIP_BRIDGE_MODE: simulator
+      CTRIP_BRIDGE_HOST: 127.0.0.1
+      CTRIP_BRIDGE_PORT: "9030"
+      CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:-[]}
+      DATABASE_URL: postgresql://${GEO_API_DB_USER:-geo_api}:${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:9030/health/live').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    depends_on:
+      api:
+        condition: service_started
+      db-bootstrap:
+        condition: service_completed_successfully
     network_mode: service:api
 
   web:

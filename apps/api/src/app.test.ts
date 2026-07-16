@@ -22,6 +22,7 @@ import {
   type PublicationGovernanceGate,
 } from "./app.js";
 import type { AgentRunGateway, AgentRunRequest } from "./agent-run-gateway.js";
+import type { CtripBridgeGateway } from "./ctrip-bridge-gateway.js";
 import type {
   AutomationBatchView,
   AutomationRunView,
@@ -1804,6 +1805,37 @@ class FakeRepository implements ApiRepository {
       submitPermitConsumedAt: null,
       submitPermitIssuedByActorId: null,
       submitPermitConsumedByPrincipalId: null,
+      submitOutcome:
+        this.assistedHandoffState === "readback_pending" ||
+        this.assistedHandoffState === "needs_review"
+          ? "accepted"
+          : null,
+      submitEvidenceKind:
+        this.assistedHandoffState === "readback_pending" ||
+        this.assistedHandoffState === "needs_review"
+          ? "simulation"
+          : null,
+      submitObservedAt:
+        this.assistedHandoffState === "readback_pending" ||
+        this.assistedHandoffState === "needs_review"
+          ? fixedNow.toISOString()
+          : null,
+      publicationReceiptId:
+        this.assistedHandoffState === "readback_pending" ||
+        this.assistedHandoffState === "needs_review"
+          ? "10000000-0000-4000-8000-000000000715"
+          : null,
+      publicationReadbackId:
+        this.assistedHandoffState === "readback_pending" ||
+        this.assistedHandoffState === "needs_review"
+          ? "10000000-0000-4000-8000-000000000716"
+          : null,
+      readbackOutcome: this.assistedHandoffState === "needs_review" ? "simulation_only" : null,
+      readbackEvidenceKind: this.assistedHandoffState === "needs_review" ? "simulation" : null,
+      readbackEvidenceHash: this.assistedHandoffState === "needs_review" ? "1".repeat(64) : null,
+      readbackObservedAt:
+        this.assistedHandoffState === "needs_review" ? fixedNow.toISOString() : null,
+      observedPayloadHash: this.assistedHandoffState === "needs_review" ? "a".repeat(64) : null,
       externalDraftId: null,
       externalId: null,
       externalUrl: null,
@@ -1986,6 +2018,7 @@ async function testApp(
   },
   mediaProduction?: MediaProductionController,
   agentRunGateway?: AgentRunGateway,
+  ctripBridgeGateway?: CtripBridgeGateway,
 ) {
   const app = await buildApp({
     repository,
@@ -2000,6 +2033,7 @@ async function testApp(
     allowedOrigins: ["https://console.example.test"],
     publicationGovernanceGate: governanceGate,
     ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
+    ...(ctripBridgeGateway === undefined ? {} : { ctripBridgeGateway }),
     ...(mediaProduction === undefined ? {} : { mediaProduction }),
   });
   apps.push(app);
@@ -3891,7 +3925,7 @@ describe("Fastify API security and vertical publication flow", () => {
       headers: writeHeaders,
       payload: { leaseSeconds: 180 },
     });
-    const permit = await app.inject({
+    const permitEndpoint = await app.inject({
       method: "POST",
       url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit-permit`,
       headers: writeHeaders,
@@ -3929,11 +3963,7 @@ describe("Fastify API security and vertical publication flow", () => {
       handoff: { leaseOwnerActorId: ids.actor, state: "handoff_pending" },
     });
     expect(heartbeat.statusCode).toBe(200);
-    expect(permit.statusCode).toBe(200);
-    expect(permit.json()).toEqual({
-      submitPermit: "f".repeat(64),
-      expiresAt: "2026-07-14T01:05:00.000Z",
-    });
+    expect(permitEndpoint.statusCode).toBe(404);
     expect(cancelled.statusCode).toBe(200);
     expect(cancelled.json()).toMatchObject({
       handoff: { state: "cancelled", leaseOwnerActorId: null },
@@ -3950,13 +3980,210 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.assistedHandoffHeartbeats).toEqual([
       { handoffId: ids.assistedHandoff, leaseSeconds: 180 },
     ]);
-    expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
+    expect(repository.assistedHandoffPermitIssues).toEqual([]);
     expect(repository.assistedHandoffCancellations).toEqual([
       {
         handoffId: ids.assistedHandoff,
         reason: "Operator cancelled before any submit permit was consumed",
       },
     ]);
+  });
+
+  it("runs the integrated Ctrip simulator flow without exposing the submit permit", async () => {
+    const repository = new FakeRepository();
+    const commands: Parameters<CtripBridgeGateway["execute"]>[0][] = [];
+    const gateway: CtripBridgeGateway = {
+      execute: async (command) => {
+        commands.push(command);
+        const common = {
+          schemaVersion: "geo.ctrip-bridge.result.v1" as const,
+          tenantId: ids.tenant,
+          handoffId: ids.assistedHandoff,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000000802",
+          adapterVersion: "ctrip-community-web-v1",
+          observedAt: fixedNow.toISOString(),
+          evidenceHash: "1".repeat(64),
+          evidenceKind: "simulation" as const,
+        };
+        switch (command.command) {
+          case "prepare":
+            repository.assistedHandoffState = "draft_prepared";
+            return {
+              ...common,
+              command: "prepare",
+              outcome: "prepared",
+              state: "draft_prepared",
+            };
+          case "submit":
+            repository.assistedHandoffState = "readback_pending";
+            return {
+              ...common,
+              command: "submit",
+              outcome: "accepted",
+              state: "readback_pending",
+              receiptId: "10000000-0000-4000-8000-000000000715",
+              readbackId: "10000000-0000-4000-8000-000000000716",
+            };
+          case "readback":
+            repository.assistedHandoffState = "needs_review";
+            return {
+              ...common,
+              command: "readback",
+              outcome: "simulation_only",
+              state: "needs_review",
+              externalId: null,
+              externalUrl: null,
+            };
+        }
+      },
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, gateway);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/claim`,
+      headers,
+      payload: { leaseSeconds: 120 },
+    });
+    const prepared = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/prepare`,
+      headers,
+      payload: {},
+    });
+    const submitted = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit`,
+      headers,
+      payload: {},
+    });
+    const readback = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/readback`,
+      headers,
+      payload: {},
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json()).toMatchObject({
+      handoff: { state: "draft_prepared" },
+      bridge: { command: "prepare", evidenceKind: "simulation" },
+    });
+    expect(submitted.statusCode).toBe(200);
+    expect(submitted.json()).toMatchObject({
+      handoff: {
+        state: "readback_pending",
+        submitOutcome: "accepted",
+        submitEvidenceKind: "simulation",
+      },
+      bridge: { command: "submit", outcome: "accepted" },
+    });
+    expect(JSON.stringify(submitted.json())).not.toContain('"submitPermit":');
+    expect(JSON.stringify(submitted.json())).not.toContain("f".repeat(64));
+    expect(readback.statusCode).toBe(200);
+    expect(readback.json()).toMatchObject({
+      handoff: {
+        state: "needs_review",
+        readbackOutcome: "simulation_only",
+        externalId: null,
+        externalUrl: null,
+      },
+      bridge: { command: "readback", outcome: "simulation_only" },
+    });
+    expect(commands.map((command) => command.command)).toEqual(["prepare", "submit", "readback"]);
+    expect(commands[1]).toMatchObject({ submitPermit: "f".repeat(64) });
+    expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
+  });
+
+  it("marks every post-permit submit failure as potentially state-changing", async () => {
+    const repository = new FakeRepository();
+    const gateway: CtripBridgeGateway = {
+      execute: async () => ({
+        schemaVersion: "geo.ctrip-bridge.result.v1" as const,
+        tenantId: ids.tenant,
+        handoffId: ids.assistedHandoff,
+        bridgePrincipalId: "10000000-0000-4000-8000-000000000899",
+        adapterVersion: "ctrip-community-web-v1",
+        observedAt: fixedNow.toISOString(),
+        evidenceHash: "1".repeat(64),
+        evidenceKind: "simulation" as const,
+        command: "submit" as const,
+        outcome: "accepted" as const,
+        state: "readback_pending" as const,
+        receiptId: "10000000-0000-4000-8000-000000000715",
+        readbackId: "10000000-0000-4000-8000-000000000716",
+      }),
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, gateway);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/claim`,
+      headers,
+      payload: { leaseSeconds: 120 },
+    });
+    repository.assistedHandoffState = "draft_prepared";
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit`,
+      headers,
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "CTRIP_BRIDGE_RESPONSE_INVALID",
+        details: { stateMayHaveChanged: true, handoffId: ids.assistedHandoff },
+      },
+    });
+    expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
+  });
+
+  it("keeps Ctrip bridge commands disabled when no bridge gateway is configured", async () => {
+    const repository = new FakeRepository();
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+    await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/claim`,
+      headers,
+      payload: { leaseSeconds: 120 },
+    });
+
+    const prepareResponse = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/prepare`,
+      headers,
+      payload: {},
+    });
+    repository.assistedHandoffState = "draft_prepared";
+    const submitResponse = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit`,
+      headers,
+      payload: {},
+    });
+
+    expect(prepareResponse.statusCode).toBe(503);
+    expect(prepareResponse.json()).toMatchObject({ error: { code: "CTRIP_BRIDGE_DISABLED" } });
+    expect(submitResponse.statusCode).toBe(503);
+    expect(submitResponse.json()).toMatchObject({ error: { code: "CTRIP_BRIDGE_DISABLED" } });
+    expect(repository.assistedHandoffPermitIssues).toEqual([]);
   });
 
   it("rejects publication schedules outside the bounded window before governance evaluation", async () => {

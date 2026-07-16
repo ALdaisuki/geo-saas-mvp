@@ -1216,6 +1216,16 @@ describe("HttpGeoApi", () => {
       submitPermitConsumedAt: null,
       submitPermitIssuedByActorId: null,
       submitPermitConsumedByPrincipalId: null,
+      submitOutcome: null,
+      submitEvidenceKind: null,
+      submitObservedAt: null,
+      publicationReceiptId: null,
+      publicationReadbackId: null,
+      readbackOutcome: null,
+      readbackEvidenceKind: null,
+      readbackEvidenceHash: null,
+      readbackObservedAt: null,
+      observedPayloadHash: null,
       externalDraftId: null,
       externalId: null,
       externalUrl: null,
@@ -1237,12 +1247,72 @@ describe("HttpGeoApi", () => {
       state: "cancelled",
       cancellationReason: "operator cancelled before submit",
     };
+    const prepared = {
+      ...claimed,
+      state: "draft_prepared",
+      draftEvidenceHash: "d".repeat(64),
+    };
+    const submitted = {
+      ...prepared,
+      state: "readback_pending",
+      submitPermitIssued: true,
+      submitPermitConsumedAt: "2026-07-15T02:01:00.000Z",
+      submitOutcome: "accepted",
+      submitEvidenceKind: "simulation",
+      submitObservedAt: "2026-07-15T02:01:00.000Z",
+      publicationReceiptId: "10000000-0000-4000-8000-000000001406",
+      publicationReadbackId: "10000000-0000-4000-8000-000000001407",
+    };
+    const reviewed = {
+      ...submitted,
+      state: "needs_review",
+      readbackOutcome: "simulation_only",
+      readbackEvidenceKind: "simulation",
+      readbackEvidenceHash: "e".repeat(64),
+      readbackObservedAt: "2026-07-15T02:02:00.000Z",
+      observedPayloadHash: handoff.payloadHash,
+    };
+    const bridgeBase = {
+      schemaVersion: "geo.ctrip-bridge.result.v1",
+      tenantId: loginBody.tenant.id,
+      handoffId: handoff.id,
+      bridgePrincipalId: handoff.bridgeServicePrincipalId,
+      adapterVersion: "ctrip-community-simulator-v1",
+      observedAt: "2026-07-15T02:01:00.000Z",
+      evidenceHash: "9".repeat(64),
+      evidenceKind: "simulation",
+    };
     const responses = [
       jsonResponse(loginBody),
       jsonResponse({ items: [handoff] }),
       jsonResponse({ handoff: claimed }),
       jsonResponse({ handoff: claimed }),
-      jsonResponse({ submitPermit: "f".repeat(64), expiresAt: "2026-07-15T02:05:00.000Z" }),
+      jsonResponse({
+        handoff: prepared,
+        bridge: { ...bridgeBase, command: "prepare", outcome: "prepared", state: "draft_prepared" },
+      }),
+      jsonResponse({
+        handoff: submitted,
+        bridge: {
+          ...bridgeBase,
+          command: "submit",
+          outcome: "accepted",
+          state: "readback_pending",
+          receiptId: submitted.publicationReceiptId,
+          readbackId: submitted.publicationReadbackId,
+        },
+      }),
+      jsonResponse({
+        handoff: reviewed,
+        bridge: {
+          ...bridgeBase,
+          command: "readback",
+          outcome: "simulation_only",
+          state: "needs_review",
+          externalId: null,
+          externalUrl: null,
+        },
+      }),
       jsonResponse({ handoff: cancelled, wasChanged: true }),
       jsonResponse(cancelled),
     ];
@@ -1257,7 +1327,9 @@ describe("HttpGeoApi", () => {
     const listed = await api.getPublicationAssistedHandoffs();
     await api.claimPublicationAssistedHandoff(handoff.id, 120);
     await api.heartbeatPublicationAssistedHandoff(handoff.id, 180);
-    const permit = await api.issuePublicationAssistedSubmitPermit(handoff.id);
+    const preparation = await api.preparePublicationAssistedHandoff(handoff.id);
+    const submission = await api.submitPublicationAssistedHandoff(handoff.id);
+    const readback = await api.readbackPublicationAssistedHandoff(handoff.id);
     const cancellation = await api.cancelPublicationAssistedHandoff(
       handoff.id,
       "operator cancelled before submit",
@@ -1273,9 +1345,17 @@ describe("HttpGeoApi", () => {
       handoff: { state: "cancelled" },
       wasChanged: true,
     });
-    expect(permit).toEqual({
-      submitPermit: "f".repeat(64),
-      expiresAt: "2026-07-15T02:05:00.000Z",
+    expect(preparation).toMatchObject({
+      handoff: { state: "draft_prepared" },
+      bridge: { command: "prepare", evidenceKind: "simulation" },
+    });
+    expect(submission).toMatchObject({
+      handoff: { state: "readback_pending", submitOutcome: "accepted" },
+      bridge: { command: "submit", outcome: "accepted" },
+    });
+    expect(readback).toMatchObject({
+      handoff: { state: "needs_review", readbackOutcome: "simulation_only" },
+      bridge: { command: "readback", outcome: "simulation_only" },
     });
     expect(detail.state).toBe("cancelled");
     expect(calls.map((call) => call.input)).toEqual([
@@ -1283,11 +1363,13 @@ describe("HttpGeoApi", () => {
       "/api/publication-assisted-handoffs",
       `/api/publication-assisted-handoffs/${handoff.id}/claim`,
       `/api/publication-assisted-handoffs/${handoff.id}/heartbeat`,
-      `/api/publication-assisted-handoffs/${handoff.id}/submit-permit`,
+      `/api/publication-assisted-handoffs/${handoff.id}/prepare`,
+      `/api/publication-assisted-handoffs/${handoff.id}/submit`,
+      `/api/publication-assisted-handoffs/${handoff.id}/readback`,
       `/api/publication-assisted-handoffs/${handoff.id}/cancel`,
       `/api/publication-assisted-handoffs/${handoff.id}`,
     ]);
-    for (const call of calls.slice(2, 6)) {
+    for (const call of calls.slice(2, 8)) {
       expect(new Headers(call.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
     }
   });

@@ -1,7 +1,9 @@
 import {
   ARTICLE_TEMPLATE_CATALOG_VERSION,
+  ctripBridgeResultSchema,
   type ArticleTemplate,
   type ArticleTemplateCategory,
+  type CtripBridgeResult,
   type GovernedEditorialProfile,
 } from "@geo/contracts";
 
@@ -445,7 +447,19 @@ export interface PublicationAssistedHandoff {
   readonly channelAccountId: string;
   readonly variantId: string;
   readonly platform: "ctrip_community";
-  readonly state: string;
+  readonly state:
+    | "handoff_pending"
+    | "session_required"
+    | "challenge_required"
+    | "draft_prepared"
+    | "awaiting_operator_submit"
+    | "submitted_unconfirmed"
+    | "readback_pending"
+    | "confirmed"
+    | "needs_review"
+    | "cancelled"
+    | "expired"
+    | "failed";
   readonly payloadHash: string;
   readonly auditHash: string;
   readonly previewHash: string;
@@ -462,6 +476,17 @@ export interface PublicationAssistedHandoff {
   readonly submitPermitConsumedAt: string | null;
   readonly submitPermitIssuedByActorId: string | null;
   readonly submitPermitConsumedByPrincipalId: string | null;
+  readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
+  readonly submitEvidenceKind: "simulation" | "browser" | null;
+  readonly submitObservedAt: string | null;
+  readonly publicationReceiptId: string | null;
+  readonly publicationReadbackId: string | null;
+  readonly readbackOutcome:
+    "confirmed" | "not_found" | "mismatch" | "unavailable" | "simulation_only" | null;
+  readonly readbackEvidenceKind: "simulation" | "browser" | "platform_readback" | null;
+  readonly readbackEvidenceHash: string | null;
+  readonly readbackObservedAt: string | null;
+  readonly observedPayloadHash: string | null;
   readonly externalDraftId: string | null;
   readonly externalId: string | null;
   readonly externalUrl: string | null;
@@ -471,6 +496,11 @@ export interface PublicationAssistedHandoff {
   readonly lastErrorMessage: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface PublicationAssistedBridgeActionResult {
+  readonly handoff: PublicationAssistedHandoff;
+  readonly bridge: CtripBridgeResult;
 }
 
 export interface AuditFinding {
@@ -1076,10 +1106,15 @@ export interface GeoApi {
     readonly handoff: PublicationAssistedHandoff;
     readonly wasChanged: boolean;
   }>;
-  issuePublicationAssistedSubmitPermit(handoffId: string): Promise<{
-    readonly submitPermit: string;
-    readonly expiresAt: string;
-  }>;
+  preparePublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult>;
+  submitPublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult>;
+  readbackPublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult>;
   getReceipts(): Promise<readonly PublicationReceipt[]>;
   getReceipt(receiptId: string): Promise<PublicationReceipt>;
   getVisibilitySummary(): Promise<readonly VisibilityProviderSummary[]>;
@@ -1201,6 +1236,15 @@ function stringEnumValue<T extends string>(
     throw protocolError(`unsupported ${key}: ${value}`);
   }
   return value as T;
+}
+
+function nullableEnumValue<T extends string>(
+  record: Record<string, unknown>,
+  key: string,
+  supported: readonly T[],
+): T | null {
+  if (record[key] === null) return null;
+  return stringEnumValue(record, key, supported);
 }
 
 function optionalString(record: Record<string, unknown>, key: string): string | null {
@@ -1901,7 +1945,20 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     channelAccountId: stringValue(item, "channelAccountId"),
     variantId: stringValue(item, "variantId"),
     platform,
-    state: stringValue(item, "state"),
+    state: stringEnumValue(item, "state", [
+      "handoff_pending",
+      "session_required",
+      "challenge_required",
+      "draft_prepared",
+      "awaiting_operator_submit",
+      "submitted_unconfirmed",
+      "readback_pending",
+      "confirmed",
+      "needs_review",
+      "cancelled",
+      "expired",
+      "failed",
+    ]),
     payloadHash: stringValue(item, "payloadHash"),
     auditHash: stringValue(item, "auditHash"),
     previewHash: stringValue(item, "previewHash"),
@@ -1921,6 +1978,26 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
       item,
       "submitPermitConsumedByPrincipalId",
     ),
+    submitOutcome: nullableEnumValue(item, "submitOutcome", ["accepted", "uncertain", "rejected"]),
+    submitEvidenceKind: nullableEnumValue(item, "submitEvidenceKind", ["simulation", "browser"]),
+    submitObservedAt: nullableStringValue(item, "submitObservedAt"),
+    publicationReceiptId: nullableStringValue(item, "publicationReceiptId"),
+    publicationReadbackId: nullableStringValue(item, "publicationReadbackId"),
+    readbackOutcome: nullableEnumValue(item, "readbackOutcome", [
+      "confirmed",
+      "not_found",
+      "mismatch",
+      "unavailable",
+      "simulation_only",
+    ]),
+    readbackEvidenceKind: nullableEnumValue(item, "readbackEvidenceKind", [
+      "simulation",
+      "browser",
+      "platform_readback",
+    ]),
+    readbackEvidenceHash: nullableStringValue(item, "readbackEvidenceHash"),
+    readbackObservedAt: nullableStringValue(item, "readbackObservedAt"),
+    observedPayloadHash: nullableStringValue(item, "observedPayloadHash"),
     externalDraftId: nullableStringValue(item, "externalDraftId"),
     externalId: nullableStringValue(item, "externalId"),
     externalUrl: nullableStringValue(item, "externalUrl"),
@@ -1930,6 +2007,21 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     lastErrorMessage: nullableStringValue(item, "lastErrorMessage"),
     createdAt: stringValue(item, "createdAt"),
     updatedAt: stringValue(item, "updatedAt"),
+  };
+}
+
+function parsePublicationAssistedBridgeAction(
+  value: unknown,
+  expectedCommand: CtripBridgeResult["command"],
+): PublicationAssistedBridgeActionResult {
+  const item = recordValue(value, "publication assisted bridge action");
+  const parsedBridge = ctripBridgeResultSchema.safeParse(item.bridge);
+  if (!parsedBridge.success || parsedBridge.data.command !== expectedCommand) {
+    throw protocolError(`invalid assisted bridge ${expectedCommand} result`);
+  }
+  return {
+    handoff: parsePublicationAssistedHandoff(item.handoff),
+    bridge: parsedBridge.data,
   };
 }
 
@@ -3039,22 +3131,43 @@ export class HttpGeoApi implements GeoApi {
     };
   }
 
-  async issuePublicationAssistedSubmitPermit(handoffId: string): Promise<{
-    readonly submitPermit: string;
-    readonly expiresAt: string;
-  }> {
-    const item = recordValue(
+  async preparePublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult> {
+    return parsePublicationAssistedBridgeAction(
       await this.request(
-        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/submit-permit`,
-        { method: "POST" },
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/prepare`,
+        { method: "POST", body: JSON.stringify({}) },
         true,
       ),
-      "assisted handoff submit permit",
+      "prepare",
     );
-    return {
-      submitPermit: stringValue(item, "submitPermit"),
-      expiresAt: stringValue(item, "expiresAt"),
-    };
+  }
+
+  async submitPublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult> {
+    return parsePublicationAssistedBridgeAction(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/submit`,
+        { method: "POST", body: JSON.stringify({}) },
+        true,
+      ),
+      "submit",
+    );
+  }
+
+  async readbackPublicationAssistedHandoff(
+    handoffId: string,
+  ): Promise<PublicationAssistedBridgeActionResult> {
+    return parsePublicationAssistedBridgeAction(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/readback`,
+        { method: "POST", body: JSON.stringify({}) },
+        true,
+      ),
+      "readback",
+    );
   }
 
   async getReceipts(): Promise<readonly PublicationReceipt[]> {

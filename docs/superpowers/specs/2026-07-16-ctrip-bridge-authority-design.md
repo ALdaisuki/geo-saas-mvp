@@ -100,9 +100,10 @@ next increment must add an explicit bridge submit observation before
 
 - `POST /api/service-principals/ctrip-bridges` creates a credential-less bridge
   identity; credential distribution stays an operations concern.
-- `POST /api/publication-assisted-handoffs/:handoffId/submit-permit` requires
-  `publish:request`, CSRF and the current operator lease. It returns the raw permit
-  exactly once and never includes it in list/get responses or logs.
+- `POST /api/publication-assisted-handoffs/:handoffId/submit` requires
+  `publish:request`, CSRF and the current operator lease. The API issues the raw
+  permit internally and forwards it once to the bound bridge; browsers never
+  receive it, and list/get responses and logs never include it.
 
 ## Acceptance Criteria
 

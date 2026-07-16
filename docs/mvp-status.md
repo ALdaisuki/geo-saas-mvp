@@ -16,7 +16,7 @@ The authoritative scope is `docs/superpowers/specs/2026-07-13-geo-saas-mvp-desig
 | Query-set lifecycle                              | catalog, prompt editor, version history, activate and retire controls                                          | immutable versions, explicit activation, terminal retirement and audit hashes      | provider-neutral query discovery remains evidence-labelled        | Complete                          |
 | API contract discovery                           | settings and operators use the same versioned API                                                              | generated OpenAPI 3.1 route/security inventory and `x-geo-api-version` negotiation | unsupported API versions fail before authenticated route handling | Complete for MVP route inventory  |
 | Manual distribution handoff                      | export from a passed audit                                                                                     | hash-verified article/media package marked not published                           | no connector/network write                                        | Complete                          |
-| Ctrip supervised publishing control plane        | tenant queue with state, adapter, lease and expiry visibility                                                  | narrow assisted admission, tenant-RLS handoffs, leases and repeated governance     | Worker creates deterministic durable handoffs; bridge not wired   | Handoff intake complete           |
+| Ctrip supervised publishing control plane        | tenant queue, claim, prepare, explicit submit approval, observation and readback evidence                      | tenant-RLS handoffs, internal permits, unconfirmed receipts and required readbacks | Worker creates handoffs; isolated simulator bridge proves flow    | Simulator workflow complete       |
 | Visibility measurement                           | fixture and manual evidence views                                                                              | repeated sample storage and provider/method labels                                 | fixture request tool only                                         | Complete within evidence boundary |
 
 ## Included MVP scope
@@ -26,8 +26,8 @@ All included first-release control-plane paths have implementation, automated ve
 ## Explicitly deferred production capabilities
 
 - Real Doubao/Qwen evaluation calls.
-- Real Toutiao/Sohu publication connectors; authenticated Ctrip bridge, platform
-  draft/submit observation and independent public readback.
+- Real Toutiao/Sohu publication connectors; authenticated live Ctrip adapter,
+  platform draft/final submit and independent Ctrip public readback.
 - Production image generation.
 - Automatic positive/negative feedback into long-term brand memory.
 
@@ -39,8 +39,11 @@ short-lived one-time permit whose consumption rechecks governance and current le
 ownership. The publication API now admits only governed Ctrip `assisted` grants,
 and the Worker freezes the shared Ctrip preview and creates the durable handoff
 before acknowledging the outbox event. Missing or stale tenant/account adapter
-mapping remains retryable and fail closed. An authenticated publisher bridge and
-independent public readback are still absent, so this is not a live or hidden Ctrip
-publishing path.
+mapping remains retryable and fail closed. An isolated tenant-authenticated bridge
+now executes the complete flow only through `ctrip-community-simulator-v1`.
+Simulator submit creates an unconfirmed receipt and required readback; simulator
+readback can only enter `needs_review`, never `confirmed`. A live Ctrip adapter and
+independent Ctrip public readback are still absent, so this is not a live or hidden
+Ctrip publishing path.
 
 These deferred items are not configuration flags or hidden endpoints. Real Pi mode is available for article orchestration when a supported provider/model/key is configured, but article quality must still be evaluated against tenant facts, audit results and human review samples before production use.

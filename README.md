@@ -63,6 +63,8 @@ Plastic Promise MCP 是 API 与 `agent-mcp` 的必需外部治理依赖。两者
 
 启动链为 `Plastic Promise(外部) + postgres -> db-migrate -> db-bootstrap -> api/worker -> agent-mcp/web`。`db-seed` 属于显式 `fixture-seed` profile，不在生产重启链中；它会写入示例租户并重置示例自动化控制，只能在全新演示数据库上按需执行：`docker compose --profile fixture-seed run --rm db-seed`。默认只绑定 `127.0.0.1`：web `4173`、API `4100`、MCP `9021`。生产 API 强制 Secure Cookie，必须由外部 TLS 入口访问；直接 HTTP 端口只用于本机健康诊断，不能作为登录入口。
 
+携程 bridge 默认不启动，API 也不配置 gateway。仅本地仿真时，先在 `.env` 同时设置 `CTRIP_BRIDGE_GATEWAY_URL`、`CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON` 与 `CTRIP_BRIDGE_TENANTS_JSON`，确保两个 JSON 使用同一租户 token 和已激活的 `ctrip_bridge` principal，再显式运行 `docker compose --profile ctrip-simulator up -d --build`。该 profile 只加载 `ctrip-community-simulator-v1`，与 API 共享 loopback 网络命名空间，没有真实携程适配器或外部发布能力；仿真 readback 只能进入 `needs_review`。
+
 ```powershell
 Invoke-RestMethod http://127.0.0.1:4100/health/live
 Invoke-RestMethod http://127.0.0.1:4100/health/ready

@@ -18,8 +18,9 @@ browser or execute a final submit.
   `expired` and `failed` explicitly.
 - Store evidence hashes and redacted references only. Never store cookies,
   authorization headers, QR/SMS values or raw screenshots.
-- Store only a submit-permit hash. The raw random permit is returned once and
-  becomes invalid after one successful consume or five minutes.
+- Store only a submit-permit hash. The raw random permit is forwarded once from
+  the API to the bound bridge, is never returned to the browser, and becomes
+  invalid after one successful consume or five minutes.
 
 ## Tasks
 

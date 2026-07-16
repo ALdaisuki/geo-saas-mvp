@@ -58,6 +58,30 @@ describe("serverEnvSchema", () => {
     );
   });
 
+  it("requires the Ctrip bridge URL and tenant credentials together", () => {
+    const base = {
+      DATABASE_URL: "postgresql://localhost/geo",
+      SESSION_SECRET: "a-secure-test-secret-that-is-long-enough",
+      APP_ORIGIN: "http://127.0.0.1:4173",
+    };
+    expect(() =>
+      serverEnvSchema.parse({
+        ...base,
+        CTRIP_BRIDGE_GATEWAY_URL: "http://127.0.0.1:9030",
+      }),
+    ).toThrow(/configured together/iu);
+    expect(() =>
+      serverEnvSchema.parse({ ...base, CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: "[]" }),
+    ).toThrow(/configured together/iu);
+    expect(
+      serverEnvSchema.parse({
+        ...base,
+        CTRIP_BRIDGE_GATEWAY_URL: "http://127.0.0.1:9030",
+        CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: "[]",
+      }),
+    ).toMatchObject({ CTRIP_BRIDGE_GATEWAY_URL: "http://127.0.0.1:9030" });
+  });
+
   it("requires an API key and base URL for an OpenAI-compatible Pi provider", () => {
     const base = {
       DATABASE_URL: "postgresql://localhost/geo",

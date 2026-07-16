@@ -105,6 +105,7 @@ export class FakeTenantJobStore implements TenantJobStore {
         id: input.handoffId,
         jobId: input.jobId,
         attemptId: input.attemptId,
+        bridgePrincipalId: input.bridgePrincipalId,
         channelAccountId: work.account.id,
         variantId: work.variant.id,
         platform: "ctrip_community",

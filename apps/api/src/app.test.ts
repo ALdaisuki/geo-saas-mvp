@@ -195,6 +195,7 @@ class FakeRepository implements ApiRepository {
   readonly assistedHandoffCancellations: Parameters<
     ApiRepository["cancelPublicationAssistedHandoff"]
   >[1][] = [];
+  readonly assistedHandoffPermitIssues: string[] = [];
   readonly governanceDecisions: PublicationGovernanceAuditInput[] = [];
   readonly manualPublicationPackageExports: RecordManualPublicationPackageExportInput[] = [];
   readonly evidenceSourceInputs: Parameters<ApiRepository["createEvidenceSource"]>[1][] = [];
@@ -226,6 +227,9 @@ class FakeRepository implements ApiRepository {
   readonly channelAccountUpdateInputs: Parameters<ApiRepository["updateChannelAccount"]>[1][] = [];
   readonly servicePrincipalCreateInputs: Parameters<
     ApiRepository["createAutomationServicePrincipal"]
+  >[1][] = [];
+  readonly ctripBridgePrincipalCreateInputs: Parameters<
+    ApiRepository["createCtripBridgeServicePrincipal"]
   >[1][] = [];
   readonly servicePrincipalStatusInputs: Parameters<
     ApiRepository["setServicePrincipalStatus"]
@@ -953,6 +957,26 @@ class FakeRepository implements ApiRepository {
         "receipt:read" as const,
         "automation:execute" as const,
       ],
+      status: "active" as const,
+      credentialStatus: "not_issued" as const,
+      lastUsedAt: null,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+    };
+  }
+
+  async createCtripBridgeServicePrincipal(
+    context: RequestContext,
+    input: Parameters<ApiRepository["createCtripBridgeServicePrincipal"]>[1],
+  ) {
+    this.ctripBridgePrincipalCreateInputs.push(input);
+    return {
+      id: input.id,
+      tenantId: context.tenantId,
+      name: input.name,
+      kind: "integration" as const,
+      profile: "ctrip_bridge" as const,
+      capabilities: ["tenant:read" as const, "content:read" as const, "publish:bridge" as const],
       status: "active" as const,
       credentialStatus: "not_issued" as const,
       lastUsedAt: null,
@@ -1708,6 +1732,14 @@ class FakeRepository implements ApiRepository {
     return { handoff: this.publicationAssistedHandoff(), wasChanged: true };
   }
 
+  async issuePublicationAssistedSubmitPermit(_context: RequestContext, handoffId: string) {
+    this.assistedHandoffPermitIssues.push(handoffId);
+    return {
+      submitPermit: "f".repeat(64),
+      expiresAt: "2026-07-14T01:05:00.000Z",
+    };
+  }
+
   private publicationJob(): PublicationJobView {
     return {
       id: "10000000-0000-4000-8000-000000000991",
@@ -1760,6 +1792,7 @@ class FakeRepository implements ApiRepository {
       auditHash: "d".repeat(64),
       previewHash: "e".repeat(64),
       adapterVersion: "ctrip-community-web-v1",
+      bridgeServicePrincipalId: "10000000-0000-4000-8000-000000000802",
       leaseOwnerActorId: this.assistedHandoffLeaseOwner,
       leaseExpiresAt: this.assistedHandoffLeaseOwner === null ? null : "2026-07-14T01:02:00.000Z",
       heartbeatAt: this.assistedHandoffLeaseOwner === null ? null : fixedNow.toISOString(),
@@ -1769,6 +1802,9 @@ class FakeRepository implements ApiRepository {
       submitPermitIssued: false,
       submitPermitExpiresAt: null,
       submitPermitConsumedAt: null,
+      submitPermitIssuedByActorId: null,
+      submitPermitConsumedByPrincipalId: null,
+      externalDraftId: null,
       externalId: null,
       externalUrl: null,
       expiresAt: "2026-07-14T01:30:00.000Z",
@@ -3855,6 +3891,11 @@ describe("Fastify API security and vertical publication flow", () => {
       headers: writeHeaders,
       payload: { leaseSeconds: 180 },
     });
+    const permit = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit-permit`,
+      headers: writeHeaders,
+    });
     const cancelled = await app.inject({
       method: "POST",
       url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/cancel`,
@@ -3888,6 +3929,11 @@ describe("Fastify API security and vertical publication flow", () => {
       handoff: { leaseOwnerActorId: ids.actor, state: "handoff_pending" },
     });
     expect(heartbeat.statusCode).toBe(200);
+    expect(permit.statusCode).toBe(200);
+    expect(permit.json()).toEqual({
+      submitPermit: "f".repeat(64),
+      expiresAt: "2026-07-14T01:05:00.000Z",
+    });
     expect(cancelled.statusCode).toBe(200);
     expect(cancelled.json()).toMatchObject({
       handoff: { state: "cancelled", leaseOwnerActorId: null },
@@ -3904,6 +3950,7 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.assistedHandoffHeartbeats).toEqual([
       { handoffId: ids.assistedHandoff, leaseSeconds: 180 },
     ]);
+    expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
     expect(repository.assistedHandoffCancellations).toEqual([
       {
         handoffId: ids.assistedHandoff,
@@ -4639,6 +4686,32 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.servicePrincipalCreateInputs[0]).toEqual({
       id: principal.id,
       name: "producer-second",
+    });
+
+    const bridgeCreated = await app.inject({
+      method: "POST",
+      url: "/api/service-principals/ctrip-bridges",
+      headers,
+      payload: { name: "ctrip-bridge-zhongtong" },
+    });
+    expect(bridgeCreated.statusCode).toBe(201);
+    const bridge = bridgeCreated.json<{
+      id: string;
+      kind: string;
+      profile: string;
+      capabilities: string[];
+      credentialStatus: string;
+    }>();
+    expect(bridge).toMatchObject({
+      kind: "integration",
+      profile: "ctrip_bridge",
+      capabilities: ["tenant:read", "content:read", "publish:bridge"],
+      credentialStatus: "not_issued",
+    });
+    expect(bridge.capabilities).not.toContain("publish:request");
+    expect(repository.ctripBridgePrincipalCreateInputs[0]).toEqual({
+      id: bridge.id,
+      name: "ctrip-bridge-zhongtong",
     });
 
     const disabled = await app.inject({

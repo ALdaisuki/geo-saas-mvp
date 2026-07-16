@@ -1,4 +1,8 @@
-import { automationProducerCapabilities, capabilitiesForRole } from "@geo/authz";
+import {
+  automationProducerCapabilities,
+  capabilitiesForRole,
+  ctripBridgeCapabilities,
+} from "@geo/authz";
 import {
   capabilitySchema,
   tenantContactSchema,
@@ -775,6 +779,51 @@ export function createPostgresTenantGovernanceRepository(runtimeDatabase: Kysely
           const row = result.rows[0];
           if (row === undefined) {
             throw new RepositoryConflictError("Automation service principal was not created");
+          }
+          const principal = servicePrincipalView(row);
+          await insertAudit(transaction, context, {
+            action: "service_principal.created",
+            resourceType: "service_principal",
+            resourceId: principal.id,
+            before: null,
+            after: principal,
+            details: {
+              profile: principal.profile,
+              capabilities: principal.capabilities,
+              credentialIssued: false,
+            },
+          });
+          return principal;
+        } catch (error) {
+          if (error instanceof RepositoryConflictError) throw error;
+          if (sqlState(error) === "23505") {
+            throw new RepositoryConflictError("Service principal name already exists");
+          }
+          throw error;
+        }
+      });
+    },
+
+    async createCtripBridgeServicePrincipal(
+      context: RequestContext,
+      input: Parameters<ApiRepository["createCtripBridgeServicePrincipal"]>[1],
+    ): Promise<ServicePrincipalView> {
+      return tenant(runtimeDatabase, context, async (transaction) => {
+        try {
+          const result = await sql<ServicePrincipalRow>`
+            insert into geo.service_principals (
+              tenant_id, id, name, kind, profile, capabilities, status
+            ) values (
+              ${context.tenantId}, ${input.id}, ${input.name}, 'integration', 'ctrip_bridge',
+              ${jsonText(ctripBridgeCapabilities)}::jsonb, 'active'
+            )
+            returning id, tenant_id, name, kind, profile, capabilities, status,
+                      'not_issued'::text as credential_status,
+                      last_used_at, created_at, updated_at
+          `.execute(transaction);
+          const row = result.rows[0];
+          if (row === undefined) {
+            throw new RepositoryConflictError("Ctrip bridge service principal was not created");
           }
           const principal = servicePrincipalView(row);
           await insertAudit(transaction, context, {

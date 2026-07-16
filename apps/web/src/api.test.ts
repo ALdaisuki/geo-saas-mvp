@@ -1204,6 +1204,7 @@ describe("HttpGeoApi", () => {
       auditHash: "b".repeat(64),
       previewHash: "c".repeat(64),
       adapterVersion: "ctrip-community-web-v1",
+      bridgeServicePrincipalId: "10000000-0000-4000-8000-000000001405",
       leaseOwnerActorId: null,
       leaseExpiresAt: null,
       heartbeatAt: null,
@@ -1213,6 +1214,9 @@ describe("HttpGeoApi", () => {
       submitPermitIssued: false,
       submitPermitExpiresAt: null,
       submitPermitConsumedAt: null,
+      submitPermitIssuedByActorId: null,
+      submitPermitConsumedByPrincipalId: null,
+      externalDraftId: null,
       externalId: null,
       externalUrl: null,
       expiresAt: "2026-07-15T03:00:00.000Z",
@@ -1238,6 +1242,7 @@ describe("HttpGeoApi", () => {
       jsonResponse({ items: [handoff] }),
       jsonResponse({ handoff: claimed }),
       jsonResponse({ handoff: claimed }),
+      jsonResponse({ submitPermit: "f".repeat(64), expiresAt: "2026-07-15T02:05:00.000Z" }),
       jsonResponse({ handoff: cancelled, wasChanged: true }),
       jsonResponse(cancelled),
     ];
@@ -1252,6 +1257,7 @@ describe("HttpGeoApi", () => {
     const listed = await api.getPublicationAssistedHandoffs();
     await api.claimPublicationAssistedHandoff(handoff.id, 120);
     await api.heartbeatPublicationAssistedHandoff(handoff.id, 180);
+    const permit = await api.issuePublicationAssistedSubmitPermit(handoff.id);
     const cancellation = await api.cancelPublicationAssistedHandoff(
       handoff.id,
       "operator cancelled before submit",
@@ -1267,16 +1273,21 @@ describe("HttpGeoApi", () => {
       handoff: { state: "cancelled" },
       wasChanged: true,
     });
+    expect(permit).toEqual({
+      submitPermit: "f".repeat(64),
+      expiresAt: "2026-07-15T02:05:00.000Z",
+    });
     expect(detail.state).toBe("cancelled");
     expect(calls.map((call) => call.input)).toEqual([
       "/api/auth/login",
       "/api/publication-assisted-handoffs",
       `/api/publication-assisted-handoffs/${handoff.id}/claim`,
       `/api/publication-assisted-handoffs/${handoff.id}/heartbeat`,
+      `/api/publication-assisted-handoffs/${handoff.id}/submit-permit`,
       `/api/publication-assisted-handoffs/${handoff.id}/cancel`,
       `/api/publication-assisted-handoffs/${handoff.id}`,
     ]);
-    for (const call of calls.slice(2, 5)) {
+    for (const call of calls.slice(2, 6)) {
       expect(new Headers(call.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
     }
   });
@@ -1342,6 +1353,14 @@ describe("HttpGeoApi", () => {
       createdAt: "2026-07-15T00:00:00.000Z",
       updatedAt: "2026-07-15T00:00:00.000Z",
     };
+    const bridgePrincipal = {
+      ...principal,
+      id: "10000000-0000-4000-8000-000000000802",
+      name: "ctrip-bridge-zhongtong",
+      kind: "integration",
+      profile: "ctrip_bridge",
+      capabilities: ["tenant:read", "content:read", "publish:bridge"],
+    };
     const responses = [
       jsonResponse(loginBody),
       jsonResponse(contact, 201),
@@ -1354,6 +1373,7 @@ describe("HttpGeoApi", () => {
       jsonResponse({ ...account, status: "active" }),
       jsonResponse({ items: [principal] }),
       jsonResponse(principal, 201),
+      jsonResponse(bridgePrincipal, 201),
       jsonResponse({ principal: { ...principal, status: "disabled" }, wasChanged: true }),
     ];
     const api = new HttpGeoApi("", async (input, init) => {
@@ -1402,6 +1422,9 @@ describe("HttpGeoApi", () => {
     });
     const listedPrincipals = await api.getServicePrincipals();
     await api.createAutomationServicePrincipal({ name: principal.name });
+    const createdBridge = await api.createCtripBridgeServicePrincipal({
+      name: "ctrip-bridge-zhongtong",
+    });
     await api.setServicePrincipalStatus(principalId, {
       status: "disabled",
       reason: "轮换机器身份",
@@ -1410,6 +1433,11 @@ describe("HttpGeoApi", () => {
     expect(listedPrincipals[0]).toMatchObject({
       profile: "automation_producer",
       credentialStatus: "not_issued",
+    });
+    expect(createdBridge).toMatchObject({
+      kind: "integration",
+      profile: "ctrip_bridge",
+      capabilities: ["tenant:read", "content:read", "publish:bridge"],
     });
     expect(calls.map((call) => call.input)).toEqual([
       "/api/auth/login",
@@ -1423,6 +1451,7 @@ describe("HttpGeoApi", () => {
       `/api/channel-accounts/${accountId}`,
       "/api/service-principals",
       "/api/service-principals/automation-producers",
+      "/api/service-principals/ctrip-bridges",
       `/api/service-principals/${principalId}/status`,
     ]);
     for (const call of calls.slice(1).filter((item) => item.init?.method !== undefined)) {
@@ -1434,5 +1463,8 @@ describe("HttpGeoApi", () => {
       reason: "建立下一版审计策略草案",
     });
     expect(JSON.parse(String(calls[10]?.init?.body))).toEqual({ name: principal.name });
+    expect(JSON.parse(String(calls[11]?.init?.body))).toEqual({
+      name: "ctrip-bridge-zhongtong",
+    });
   });
 });

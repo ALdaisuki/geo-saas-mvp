@@ -27,6 +27,7 @@ export const capabilitySchema = z.enum([
   "audit:run",
   "grant:revoke",
   "publish:request",
+  "publish:bridge",
   "publish:cancel",
   "receipt:read",
   "visibility:read",
@@ -375,7 +376,11 @@ export const channelAccountUpdateRequestSchema = z
   );
 export type ChannelAccountUpdateRequest = z.infer<typeof channelAccountUpdateRequestSchema>;
 
-export const servicePrincipalProfileSchema = z.enum(["custom", "automation_producer"]);
+export const servicePrincipalProfileSchema = z.enum([
+  "custom",
+  "automation_producer",
+  "ctrip_bridge",
+]);
 export type ServicePrincipalProfile = z.infer<typeof servicePrincipalProfileSchema>;
 
 export const servicePrincipalStatusSchema = z.enum(["active", "disabled"]);
@@ -401,6 +406,13 @@ export const automationServicePrincipalCreateRequestSchema = z.strictObject({
 });
 export type AutomationServicePrincipalCreateRequest = z.infer<
   typeof automationServicePrincipalCreateRequestSchema
+>;
+
+export const ctripBridgeServicePrincipalCreateRequestSchema = z.strictObject({
+  name: z.string().trim().min(1).max(200),
+});
+export type CtripBridgeServicePrincipalCreateRequest = z.infer<
+  typeof ctripBridgeServicePrincipalCreateRequestSchema
 >;
 
 export const servicePrincipalStatusRequestSchema = z.strictObject({

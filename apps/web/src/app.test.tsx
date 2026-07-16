@@ -120,6 +120,7 @@ function liveApi(): GeoApi {
     auditHash: "c".repeat(64),
     previewHash: "d".repeat(64),
     adapterVersion: "ctrip-community-web-v1",
+    bridgeServicePrincipalId: "10000000-0000-4000-8000-000000001302",
     leaseOwnerActorId: session.actor.id,
     leaseExpiresAt: "2000-01-01T00:00:00.000Z",
     heartbeatAt: "1999-12-31T23:59:00.000Z",
@@ -129,6 +130,9 @@ function liveApi(): GeoApi {
     submitPermitIssued: false,
     submitPermitExpiresAt: null,
     submitPermitConsumedAt: null,
+    submitPermitIssuedByActorId: null,
+    submitPermitConsumedByPrincipalId: null,
+    externalDraftId: null,
     externalId: null,
     externalUrl: null,
     expiresAt: "2026-07-14T08:30:00.000Z",
@@ -336,6 +340,9 @@ function liveApi(): GeoApi {
     createAutomationServicePrincipal: async () => {
       throw new Error("not used by this App fixture");
     },
+    createCtripBridgeServicePrincipal: async () => {
+      throw new Error("not used by this App fixture");
+    },
     setServicePrincipalStatus: async () => {
       throw new Error("not used by this App fixture");
     },
@@ -500,6 +507,10 @@ function liveApi(): GeoApi {
       };
       return { handoff: assistedHandoff, wasChanged: true };
     },
+    issuePublicationAssistedSubmitPermit: async () => ({
+      submitPermit: "f".repeat(64),
+      expiresAt: "2026-07-14T08:05:00.000Z",
+    }),
     getReceipts: async () => [publicationReceipt],
     getReceipt: async () => publicationReceipt,
     getVisibilitySummary: async () => [

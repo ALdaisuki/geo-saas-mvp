@@ -391,7 +391,7 @@ export interface ServicePrincipalView {
   readonly tenantId: string;
   readonly name: string;
   readonly kind: "api" | "worker" | "agent" | "integration";
-  readonly profile: "custom" | "automation_producer";
+  readonly profile: "custom" | "automation_producer" | "ctrip_bridge";
   readonly capabilities: readonly Capability[];
   readonly status: "active" | "disabled";
   readonly credentialStatus: "not_issued" | "active" | "expired" | "revoked";
@@ -401,6 +401,11 @@ export interface ServicePrincipalView {
 }
 
 export interface CreateAutomationServicePrincipalInput {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface CreateCtripBridgeServicePrincipalInput {
   readonly id: string;
   readonly name: string;
 }
@@ -885,6 +890,7 @@ export interface PublicationAssistedHandoffView {
   readonly auditHash: string;
   readonly previewHash: string;
   readonly adapterVersion: string;
+  readonly bridgeServicePrincipalId: string | null;
   readonly leaseOwnerActorId: string | null;
   readonly leaseExpiresAt: string | null;
   readonly heartbeatAt: string | null;
@@ -894,6 +900,9 @@ export interface PublicationAssistedHandoffView {
   readonly submitPermitIssued: boolean;
   readonly submitPermitExpiresAt: string | null;
   readonly submitPermitConsumedAt: string | null;
+  readonly submitPermitIssuedByActorId: string | null;
+  readonly submitPermitConsumedByPrincipalId: string | null;
+  readonly externalDraftId: string | null;
   readonly externalId: string | null;
   readonly externalUrl: string | null;
   readonly expiresAt: string;
@@ -912,6 +921,11 @@ export interface PublicationAssistedHandoffLeaseInput {
 export interface CancelPublicationAssistedHandoffInput {
   readonly handoffId: string;
   readonly reason: string;
+}
+
+export interface PublicationAssistedSubmitPermitResult {
+  readonly submitPermit: string;
+  readonly expiresAt: string;
 }
 
 export interface VisibilityProviderSummary {
@@ -1108,6 +1122,10 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
     context: RequestContext,
     input: CreateAutomationServicePrincipalInput,
   ): Promise<ServicePrincipalView>;
+  createCtripBridgeServicePrincipal(
+    context: RequestContext,
+    input: CreateCtripBridgeServicePrincipalInput,
+  ): Promise<ServicePrincipalView>;
   setServicePrincipalStatus(
     context: RequestContext,
     input: SetServicePrincipalStatusInput,
@@ -1234,6 +1252,10 @@ export interface ApiRepository extends AutomationRepository, ManualPublicationPa
     context: RequestContext,
     input: CancelPublicationAssistedHandoffInput,
   ): Promise<{ readonly handoff: PublicationAssistedHandoffView; readonly wasChanged: boolean }>;
+  issuePublicationAssistedSubmitPermit(
+    context: RequestContext,
+    handoffId: string,
+  ): Promise<PublicationAssistedSubmitPermitResult>;
   findVisibilityRunByIdempotency(
     context: RequestContext,
     idempotencyKey: string,

@@ -153,6 +153,9 @@ const ids = {
   ctripAssistedContentItem: "30000000-0000-4000-8000-000000000105",
   ctripAssistedContentVersion: "30000000-0000-4000-8000-000000000106",
   ctripAssistedOtherActor: "30000000-0000-4000-8000-000000000107",
+  ctripBridgePrincipal: "30000000-0000-4000-8000-000000000108",
+  ctripDisabledBridgePrincipal: "30000000-0000-4000-8000-000000000109",
+  ctripCrossTenantBridgePrincipal: "30000000-0000-4000-8000-000000000110",
 };
 
 const payloadHash = "a".repeat(64);
@@ -919,6 +922,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0016_brand_agent_profiles",
       "0017_ctrip_assisted_handoffs",
       "0018_ctrip_assisted_admission",
+      "0019_ctrip_bridge_authority",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2307,6 +2311,24 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         [tenantId, actorId],
       );
       await adminClient.query(
+        `INSERT INTO geo.service_principals
+           (tenant_id, id, name, kind, profile, capabilities, status)
+         VALUES
+           ($1, $2, 'ctrip-bridge-integration', 'integration', 'ctrip_bridge',
+            '["tenant:read","content:read","publish:bridge"]'::jsonb, 'active'),
+           ($1, $3, 'ctrip-bridge-disabled', 'integration', 'ctrip_bridge',
+            '["tenant:read","content:read","publish:bridge"]'::jsonb, 'disabled'),
+           ($4, $5, 'ctrip-bridge-cross-tenant', 'integration', 'ctrip_bridge',
+            '["tenant:read","content:read","publish:bridge"]'::jsonb, 'active')`,
+        [
+          tenantId,
+          ids.ctripBridgePrincipal,
+          ids.ctripDisabledBridgePrincipal,
+          syntheticTenantId,
+          ids.ctripCrossTenantBridgePrincipal,
+        ],
+      );
+      await adminClient.query(
         `UPDATE geo.channel_accounts
          SET capability = 'browser_assisted',
              supported_execution_levels = ARRAY['dry_run', 'assisted']::text[],
@@ -2558,22 +2580,31 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     const functionPrivilege = await adminClient.query<{ allowed: boolean }>(
       `SELECT has_function_privilege(
          'geo_runtime',
-         'geo.create_publication_assisted_handoff(uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+         'geo.create_publication_assisted_handoff(uuid,uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
          'EXECUTE'
        ) AS allowed`,
     );
     expect(functionPrivilege.rows[0]?.allowed).toBe(true);
+    const legacyFunctionPrivilege = await adminClient.query<{ allowed: boolean }>(
+      `SELECT has_function_privilege(
+         'geo_runtime',
+         'geo.create_publication_assisted_handoff(uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+         'EXECUTE'
+       ) AS allowed`,
+    );
+    expect(legacyFunctionPrivilege.rows[0]?.allowed).toBe(false);
 
     const created = await runtimeTransaction((client) =>
       client.query<{ publication_assisted_handoff_id: string; was_created: boolean }>(
         `SELECT * FROM geo.create_publication_assisted_handoff(
-           $1::uuid, $2::uuid, $3::uuid, $4::geo.sha256_hex, $5, $6,
+           $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::geo.sha256_hex, $6, $7,
            clock_timestamp() + interval '30 minutes'
          )`,
         [
           ids.ctripAssistedHandoff,
           ctripJobId,
           ids.ctripAssistedAttempt,
+          ids.ctripBridgePrincipal,
           previewHash,
           "ctrip-community-web-v1",
           "ctrip-handoff-integration",
@@ -2630,11 +2661,77 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       await client.query("SELECT geo.heartbeat_publication_assisted_handoff($1, 180)", [
         ids.ctripAssistedHandoff,
       ]);
-      await client.query(
-        "SELECT geo.record_publication_assisted_draft($1, $2::geo.sha256_hex, $3::geo.sha256_hex)",
-        [ids.ctripAssistedHandoff, sessionEvidenceHash, draftEvidenceHash],
-      );
     });
+
+    await runtimeTransaction(
+      async (client) => {
+        await client.query("SAVEPOINT challenge_report");
+        await client.query(
+          `SELECT geo.record_publication_assisted_bridge_status(
+             $1, 'challenge_required', $2::geo.sha256_hex, $3, NULL
+           )`,
+          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+        );
+        const challengeCircuit = await client.query<{ state: string; reason: string }>(
+          `SELECT state, reason FROM geo.circuit_breakers
+           WHERE scope_type = 'account' AND scope_key = $1`,
+          [SEED_IDS.zhongtong.ctrip],
+        );
+        expect(challengeCircuit.rows[0]).toEqual({
+          state: "open",
+          reason: "ASSISTED_CHALLENGE_REQUIRED",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT challenge_report");
+
+        await client.query("SAVEPOINT drift_report");
+        await client.query(
+          `SELECT geo.record_publication_assisted_bridge_status(
+             $1, 'failed', $2::geo.sha256_hex, $3, 'ASSISTED_ADAPTER_DRIFT'
+           )`,
+          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+        );
+        const driftCircuit = await client.query<{ state: string; reason: string }>(
+          `SELECT state, reason FROM geo.circuit_breakers
+           WHERE scope_type = 'account' AND scope_key = $1`,
+          [SEED_IDS.zhongtong.ctrip],
+        );
+        expect(driftCircuit.rows[0]).toEqual({
+          state: "open",
+          reason: "ASSISTED_ADAPTER_DRIFT",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT drift_report");
+
+        await client.query(
+          `SELECT geo.record_publication_assisted_bridge_status(
+             $1, 'session_required', $2::geo.sha256_hex, $3, NULL
+           )`,
+          [ids.ctripAssistedHandoff, sessionEvidenceHash, "ctrip-community-web-v1"],
+        );
+        await client.query(
+          `SELECT geo.record_publication_assisted_draft(
+             $1, $2::geo.sha256_hex, $3::geo.sha256_hex, $4, $5
+           )`,
+          [
+            ids.ctripAssistedHandoff,
+            sessionEvidenceHash,
+            draftEvidenceHash,
+            "ctrip-draft-integration-001",
+            "ctrip-community-web-v1",
+          ],
+        );
+      },
+      { actor: ids.ctripBridgePrincipal },
+    );
+
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT * FROM geo.issue_publication_assisted_submit_permit($1)", [
+            ids.ctripAssistedHandoff,
+          ]),
+        { actor: ids.ctripBridgePrincipal },
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
 
     const boundedLease = await adminClient.query<{ bounded: boolean }>(
       `SELECT lease_expires_at <= expires_at AS bounded
@@ -2683,21 +2780,80 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           ]),
         { actor: ids.ctripAssistedOtherActor },
       ),
-    ).rejects.toMatchObject({ code: "55006" });
+    ).rejects.toMatchObject({ code: "42501" });
 
-    const consumed = await runtimeTransaction((client) =>
-      client.query<{ value: boolean }>(
-        "SELECT geo.consume_publication_assisted_submit_permit($1, $2) AS value",
-        [ids.ctripAssistedHandoff, permit],
-      ),
-    );
-    expect(consumed.rows[0]?.value).toBe(true);
     await expect(
       runtimeTransaction((client) =>
         client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
           ids.ctripAssistedHandoff,
           permit,
         ]),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+            ids.ctripAssistedHandoff,
+            permit,
+          ]),
+        { actor: SEED_IDS.zhongtong.workerPrincipal },
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+            ids.ctripAssistedHandoff,
+            permit,
+          ]),
+        {
+          tenant: syntheticTenantId,
+          actor: ids.ctripCrossTenantBridgePrincipal,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+
+    await adminClient.query(
+      `UPDATE geo.service_principals SET status = 'disabled'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripBridgePrincipal],
+    );
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+            ids.ctripAssistedHandoff,
+            permit,
+          ]),
+        { actor: ids.ctripBridgePrincipal },
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await adminClient.query(
+      `UPDATE geo.service_principals SET status = 'active'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripBridgePrincipal],
+    );
+
+    const consumed = await runtimeTransaction(
+      (client) =>
+        client.query<{ value: boolean }>(
+          "SELECT geo.consume_publication_assisted_submit_permit($1, $2) AS value",
+          [ids.ctripAssistedHandoff, permit],
+        ),
+      { actor: ids.ctripBridgePrincipal },
+    );
+    expect(consumed.rows[0]?.value).toBe(true);
+    await expect(
+      runtimeTransaction(
+        (client) =>
+          client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
+            ids.ctripAssistedHandoff,
+            permit,
+          ]),
+        { actor: ids.ctripBridgePrincipal },
       ),
     ).rejects.toMatchObject({ code: "42501" });
     await expect(
@@ -2713,10 +2869,17 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       state: string;
       submit_permit_hash: string;
       submit_permit_consumed_at: Date | null;
+      bridge_service_principal_id: string;
+      external_draft_id: string;
+      submit_permit_issued_by_actor_id: string;
+      submit_permit_consumed_by_principal_id: string;
       external_id: string | null;
       external_url: string | null;
     }>(
       `SELECT state, submit_permit_hash, submit_permit_consumed_at,
+              bridge_service_principal_id, external_draft_id,
+              submit_permit_issued_by_actor_id,
+              submit_permit_consumed_by_principal_id,
               external_id, external_url
        FROM geo.publication_assisted_handoffs
        WHERE tenant_id = $1 AND id = $2`,
@@ -2726,10 +2889,24 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       state: "awaiting_operator_submit",
       submit_permit_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
       submit_permit_consumed_at: expect.any(Date),
+      bridge_service_principal_id: ids.ctripBridgePrincipal,
+      external_draft_id: "ctrip-draft-integration-001",
+      submit_permit_issued_by_actor_id: actorId,
+      submit_permit_consumed_by_principal_id: ids.ctripBridgePrincipal,
       external_id: null,
       external_url: null,
     });
     expect(persisted.rows[0]?.submit_permit_hash).not.toBe(permit);
+    const leakedPermit = await adminClient.query<{ leaked: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM geo.audit_log
+         WHERE tenant_id = $1
+           AND resource_id = $2
+           AND (details::text LIKE '%' || $3 || '%' OR action LIKE '%' || $3 || '%')
+       ) AS leaked`,
+      [tenantId, ids.ctripAssistedHandoff, permit],
+    );
+    expect(leakedPermit.rows[0]?.leaked).toBe(false);
 
     const finished = await runtimeTransaction((client) =>
       client.query<{ circuits_opened: number; circuits_closed: number }>(

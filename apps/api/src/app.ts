@@ -14,6 +14,7 @@ import {
   channelAccountUpdateRequestSchema,
   contactCreateRequestSchema,
   contactExpireRequestSchema,
+  ctripBridgeServicePrincipalCreateRequestSchema,
   executionLevelSchema,
   idSchema,
   isoDateTimeSchema,
@@ -1686,6 +1687,18 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
   );
   app.post(
+    "/api/service-principals/ctrip-bridges",
+    { preHandler: guard("principal:manage", true) },
+    async (request, reply) => {
+      const body = ctripBridgeServicePrincipalCreateRequestSchema.parse(request.body);
+      const principal = await repository.createCtripBridgeServicePrincipal(
+        requestContext(request),
+        { id: uuid(), name: body.name },
+      );
+      return reply.status(201).send(principal);
+    },
+  );
+  app.post(
     "/api/service-principals/:servicePrincipalId/status",
     { preHandler: guard("principal:manage", true) },
     async (request, reply) => {
@@ -2665,6 +2678,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         reason: body.reason,
       });
     },
+  );
+  app.post(
+    "/api/publication-assisted-handoffs/:handoffId/submit-permit",
+    { preHandler: guard("publish:request", true) },
+    async (request) =>
+      repository.issuePublicationAssistedSubmitPermit(
+        requestContext(request),
+        parseIdParams(request.params, "handoffId"),
+      ),
   );
   app.post(
     "/api/visibility-runs",

@@ -81,13 +81,16 @@ GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.research_allowed_hosts_valid(text[]) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.publication_assisted_block_reason(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(
-  uuid, uuid, uuid, geo.sha256_hex, text, text, timestamptz
+  uuid, uuid, uuid, uuid, geo.sha256_hex, text, text, timestamptz
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.claim_publication_assisted_handoff(uuid, integer) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.heartbeat_publication_assisted_handoff(uuid, integer)
   TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(
-  uuid, geo.sha256_hex, geo.sha256_hex
+  uuid, geo.sha256_hex, geo.sha256_hex, text, text
+) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(
+  uuid, text, geo.sha256_hex, text, text
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.issue_publication_assisted_submit_permit(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)
@@ -186,7 +189,27 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime',
+       'geo.create_publication_assisted_handoff(uuid,uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'geo_runtime',
        'geo.create_publication_assisted_handoff(uuid,uuid,uuid,geo.sha256_hex,text,text,timestamptz)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.record_publication_assisted_draft(uuid,geo.sha256_hex,geo.sha256_hex,text,text)',
+       'EXECUTE'
+     )
+     OR has_function_privilege(
+       'geo_runtime',
+       'geo.record_publication_assisted_draft(uuid,geo.sha256_hex,geo.sha256_hex)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.record_publication_assisted_bridge_status(uuid,text,geo.sha256_hex,text,text)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(

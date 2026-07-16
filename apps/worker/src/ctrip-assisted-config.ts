@@ -1,6 +1,7 @@
 export interface CtripAssistedAccountConfig {
   readonly tenantId: string;
   readonly channelAccountId: string;
+  readonly bridgePrincipalId: string;
   readonly adapterVersion: string;
   readonly evidenceExpiresAt: string;
   readonly handoffTtlSeconds: number;
@@ -10,6 +11,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const ALLOWED_KEYS = new Set([
   "tenantId",
   "channelAccountId",
+  "bridgePrincipalId",
   "adapterVersion",
   "evidenceExpiresAt",
   "handoffTtlSeconds",
@@ -53,11 +55,18 @@ export function parseCtripAssistedAccounts(
     }
     const tenantId = stringField(value, "tenantId", index);
     const channelAccountId = stringField(value, "channelAccountId", index);
+    const bridgePrincipalId = stringField(value, "bridgePrincipalId", index);
     const adapterVersion = stringField(value, "adapterVersion", index);
     const evidenceExpiresAt = stringField(value, "evidenceExpiresAt", index);
     const handoffTtlSeconds = value.handoffTtlSeconds ?? 900;
-    if (!UUID_PATTERN.test(tenantId) || !UUID_PATTERN.test(channelAccountId)) {
-      throw new TypeError(`Ctrip assisted account ${index} must use UUID tenant/account ids`);
+    if (
+      !UUID_PATTERN.test(tenantId) ||
+      !UUID_PATTERN.test(channelAccountId) ||
+      !UUID_PATTERN.test(bridgePrincipalId)
+    ) {
+      throw new TypeError(
+        `Ctrip assisted account ${index} must use UUID tenant/account/bridge principal ids`,
+      );
     }
     if (adapterVersion.length > 100) {
       throw new TypeError(`Ctrip assisted account ${index}.adapterVersion is too long`);
@@ -80,6 +89,13 @@ export function parseCtripAssistedAccounts(
       throw new TypeError(`Duplicate Ctrip assisted account mapping for ${scopeKey}`);
     }
     seen.add(scopeKey);
-    return { tenantId, channelAccountId, adapterVersion, evidenceExpiresAt, handoffTtlSeconds };
+    return {
+      tenantId,
+      channelAccountId,
+      bridgePrincipalId,
+      adapterVersion,
+      evidenceExpiresAt,
+      handoffTtlSeconds,
+    };
   });
 }

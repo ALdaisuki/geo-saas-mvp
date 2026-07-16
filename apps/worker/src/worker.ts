@@ -435,6 +435,7 @@ export class OutboxWorker {
     if (
       handoff === null ||
       handoff.jobId !== work.job.id ||
+      handoff.bridgePrincipalId.length === 0 ||
       handoff.channelAccountId !== work.account.id ||
       handoff.variantId !== work.variant.id ||
       handoff.platform !== "ctrip_community" ||
@@ -482,6 +483,7 @@ export class OutboxWorker {
       handoffId,
       jobId: work.job.id,
       attemptId,
+      bridgePrincipalId: config.bridgePrincipalId,
       previewHash: renderedDraft.previewHash,
       adapterVersion: config.adapterVersion,
       idempotencyKey: `ctrip-handoff:${work.job.id}`,

@@ -499,6 +499,7 @@ interface PublicationAssistedHandoffRow {
   readonly audit_hash: string;
   readonly preview_hash: string;
   readonly adapter_version: string;
+  readonly bridge_service_principal_id: string | null;
   readonly lease_owner_actor_id: string | null;
   readonly lease_expires_at: Date | null;
   readonly heartbeat_at: Date | null;
@@ -508,6 +509,9 @@ interface PublicationAssistedHandoffRow {
   readonly submit_permit_issued: boolean;
   readonly submit_permit_expires_at: Date | null;
   readonly submit_permit_consumed_at: Date | null;
+  readonly submit_permit_issued_by_actor_id: string | null;
+  readonly submit_permit_consumed_by_principal_id: string | null;
+  readonly external_draft_id: string | null;
   readonly external_id: string | null;
   readonly external_url: string | null;
   readonly expires_at: Date;
@@ -533,6 +537,7 @@ function publicationAssistedHandoffView(
     auditHash: row.audit_hash,
     previewHash: row.preview_hash,
     adapterVersion: row.adapter_version,
+    bridgeServicePrincipalId: row.bridge_service_principal_id,
     leaseOwnerActorId: row.lease_owner_actor_id,
     leaseExpiresAt: toNullableIso(row.lease_expires_at),
     heartbeatAt: toNullableIso(row.heartbeat_at),
@@ -542,6 +547,9 @@ function publicationAssistedHandoffView(
     submitPermitIssued: row.submit_permit_issued,
     submitPermitExpiresAt: toNullableIso(row.submit_permit_expires_at),
     submitPermitConsumedAt: toNullableIso(row.submit_permit_consumed_at),
+    submitPermitIssuedByActorId: row.submit_permit_issued_by_actor_id,
+    submitPermitConsumedByPrincipalId: row.submit_permit_consumed_by_principal_id,
+    externalDraftId: row.external_draft_id,
     externalId: row.external_id,
     externalUrl: row.external_url,
     expiresAt: toIso(row.expires_at),
@@ -849,11 +857,15 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
              handoff.channel_account_id, handoff.variant_id, handoff.platform,
              handoff.state, handoff.payload_hash, handoff.audit_hash,
              handoff.preview_hash, handoff.adapter_version,
+             handoff.bridge_service_principal_id,
              handoff.lease_owner_actor_id, handoff.lease_expires_at,
              handoff.heartbeat_at, handoff.session_evidence_hash,
              handoff.draft_evidence_hash, handoff.submit_evidence_hash,
              (handoff.submit_permit_hash is not null) as submit_permit_issued,
              handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
+             handoff.submit_permit_issued_by_actor_id,
+             handoff.submit_permit_consumed_by_principal_id,
+             handoff.external_draft_id,
              handoff.external_id, handoff.external_url, handoff.expires_at,
              handoff.cancellation_reason, handoff.last_error_code,
              handoff.last_error_message, handoff.created_at, handoff.updated_at
@@ -4153,11 +4165,15 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
                  handoff.channel_account_id, handoff.variant_id, handoff.platform,
                  handoff.state, handoff.payload_hash, handoff.audit_hash,
                  handoff.preview_hash, handoff.adapter_version,
+                 handoff.bridge_service_principal_id,
                  handoff.lease_owner_actor_id, handoff.lease_expires_at,
                  handoff.heartbeat_at, handoff.session_evidence_hash,
                  handoff.draft_evidence_hash, handoff.submit_evidence_hash,
                  (handoff.submit_permit_hash is not null) as submit_permit_issued,
                  handoff.submit_permit_expires_at, handoff.submit_permit_consumed_at,
+                 handoff.submit_permit_issued_by_actor_id,
+                 handoff.submit_permit_consumed_by_principal_id,
+                 handoff.external_draft_id,
                  handoff.external_id, handoff.external_url, handoff.expires_at,
                  handoff.cancellation_reason, handoff.last_error_code,
                  handoff.last_error_message, handoff.created_at, handoff.updated_at
@@ -4269,6 +4285,41 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           throw new RepositoryNotFoundError("Publication assisted handoff was not found");
         }
         return { handoff, wasChanged };
+      });
+    },
+
+    async issuePublicationAssistedSubmitPermit(context, handoffId) {
+      return tenant(context, async (transaction) => {
+        try {
+          const result = await sql<{
+            submit_permit: string;
+            submit_permit_expires_at: Date;
+          }>`
+            select submit_permit, submit_permit_expires_at
+            from geo.issue_publication_assisted_submit_permit(${handoffId}::uuid)
+          `.execute(transaction);
+          const row = result.rows[0];
+          if (row === undefined) {
+            throw new RepositoryConflictError("Submit permit issuance returned no permit");
+          }
+          return {
+            submitPermit: row.submit_permit,
+            expiresAt: toIso(row.submit_permit_expires_at),
+          };
+        } catch (error) {
+          if (error instanceof RepositoryConflictError) throw error;
+          if (sqlState(error) === "P0002") {
+            throw new RepositoryNotFoundError("Publication assisted handoff was not found");
+          }
+          if (
+            sqlState(error) === "42501" ||
+            sqlState(error) === "55006" ||
+            sqlState(error) === "55000"
+          ) {
+            throw new RepositoryConflictError("Publication submit permit cannot be issued");
+          }
+          throw error;
+        }
       });
     },
 

@@ -199,7 +199,7 @@ export interface ServicePrincipal {
   readonly tenantId: string;
   readonly name: string;
   readonly kind: "api" | "worker" | "agent" | "integration";
-  readonly profile: "custom" | "automation_producer";
+  readonly profile: "custom" | "automation_producer" | "ctrip_bridge";
   readonly capabilities: readonly string[];
   readonly status: "active" | "disabled";
   readonly credentialStatus: "not_issued" | "active" | "expired" | "revoked";
@@ -450,6 +450,7 @@ export interface PublicationAssistedHandoff {
   readonly auditHash: string;
   readonly previewHash: string;
   readonly adapterVersion: string;
+  readonly bridgeServicePrincipalId: string | null;
   readonly leaseOwnerActorId: string | null;
   readonly leaseExpiresAt: string | null;
   readonly heartbeatAt: string | null;
@@ -459,6 +460,9 @@ export interface PublicationAssistedHandoff {
   readonly submitPermitIssued: boolean;
   readonly submitPermitExpiresAt: string | null;
   readonly submitPermitConsumedAt: string | null;
+  readonly submitPermitIssuedByActorId: string | null;
+  readonly submitPermitConsumedByPrincipalId: string | null;
+  readonly externalDraftId: string | null;
   readonly externalId: string | null;
   readonly externalUrl: string | null;
   readonly expiresAt: string;
@@ -980,6 +984,7 @@ export interface GeoApi {
   transitionPolicy(policyId: string, input: PolicyTransitionInput): Promise<PolicyTransitionResult>;
   getServicePrincipals(): Promise<readonly ServicePrincipal[]>;
   createAutomationServicePrincipal(input: { readonly name: string }): Promise<ServicePrincipal>;
+  createCtripBridgeServicePrincipal(input: { readonly name: string }): Promise<ServicePrincipal>;
   setServicePrincipalStatus(
     principalId: string,
     input: { readonly status: "active" | "disabled"; readonly reason: string },
@@ -1070,6 +1075,10 @@ export interface GeoApi {
   ): Promise<{
     readonly handoff: PublicationAssistedHandoff;
     readonly wasChanged: boolean;
+  }>;
+  issuePublicationAssistedSubmitPermit(handoffId: string): Promise<{
+    readonly submitPermit: string;
+    readonly expiresAt: string;
   }>;
   getReceipts(): Promise<readonly PublicationReceipt[]>;
   getReceipt(receiptId: string): Promise<PublicationReceipt>;
@@ -1444,7 +1453,7 @@ function parseServicePrincipal(value: unknown): ServicePrincipal {
   if (!["api", "worker", "agent", "integration"].includes(kind)) {
     throw protocolError(`unsupported service principal kind: ${kind}`);
   }
-  if (profile !== "custom" && profile !== "automation_producer") {
+  if (!["custom", "automation_producer", "ctrip_bridge"].includes(profile)) {
     throw protocolError(`unsupported service principal profile: ${profile}`);
   }
   if (status !== "active" && status !== "disabled") {
@@ -1897,6 +1906,7 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     auditHash: stringValue(item, "auditHash"),
     previewHash: stringValue(item, "previewHash"),
     adapterVersion: stringValue(item, "adapterVersion"),
+    bridgeServicePrincipalId: nullableStringValue(item, "bridgeServicePrincipalId"),
     leaseOwnerActorId: nullableStringValue(item, "leaseOwnerActorId"),
     leaseExpiresAt: nullableStringValue(item, "leaseExpiresAt"),
     heartbeatAt: nullableStringValue(item, "heartbeatAt"),
@@ -1906,6 +1916,12 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     submitPermitIssued: booleanValue(item, "submitPermitIssued"),
     submitPermitExpiresAt: nullableStringValue(item, "submitPermitExpiresAt"),
     submitPermitConsumedAt: nullableStringValue(item, "submitPermitConsumedAt"),
+    submitPermitIssuedByActorId: nullableStringValue(item, "submitPermitIssuedByActorId"),
+    submitPermitConsumedByPrincipalId: nullableStringValue(
+      item,
+      "submitPermitConsumedByPrincipalId",
+    ),
+    externalDraftId: nullableStringValue(item, "externalDraftId"),
     externalId: nullableStringValue(item, "externalId"),
     externalUrl: nullableStringValue(item, "externalUrl"),
     expiresAt: stringValue(item, "expiresAt"),
@@ -2652,6 +2668,18 @@ export class HttpGeoApi implements GeoApi {
     );
   }
 
+  async createCtripBridgeServicePrincipal(input: {
+    readonly name: string;
+  }): Promise<ServicePrincipal> {
+    return parseServicePrincipal(
+      await this.request(
+        "/api/service-principals/ctrip-bridges",
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
+    );
+  }
+
   async setServicePrincipalStatus(
     principalId: string,
     input: { readonly status: "active" | "disabled"; readonly reason: string },
@@ -3008,6 +3036,24 @@ export class HttpGeoApi implements GeoApi {
     return {
       handoff: parsePublicationAssistedHandoff(item.handoff),
       wasChanged: booleanValue(item, "wasChanged"),
+    };
+  }
+
+  async issuePublicationAssistedSubmitPermit(handoffId: string): Promise<{
+    readonly submitPermit: string;
+    readonly expiresAt: string;
+  }> {
+    const item = recordValue(
+      await this.request(
+        `/api/publication-assisted-handoffs/${encodeURIComponent(handoffId)}/submit-permit`,
+        { method: "POST" },
+        true,
+      ),
+      "assisted handoff submit permit",
+    );
+    return {
+      submitPermit: stringValue(item, "submitPermit"),
+      expiresAt: stringValue(item, "expiresAt"),
     };
   }
 

@@ -98,6 +98,7 @@ export interface PublicationWork {
     id: string;
     jobId: string;
     attemptId: string;
+    bridgePrincipalId: string;
     channelAccountId: string;
     variantId: string;
     platform: "ctrip_community";
@@ -149,6 +150,7 @@ export interface CreateAssistedHandoffInput {
   handoffId: string;
   jobId: string;
   attemptId: string;
+  bridgePrincipalId: string;
   previewHash: string;
   adapterVersion: string;
   idempotencyKey: string;

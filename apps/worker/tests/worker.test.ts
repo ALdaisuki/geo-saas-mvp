@@ -20,6 +20,7 @@ const tenantId = "10000000-0000-4000-8000-000000000001";
 const actorId = "10000000-0000-4000-8000-000000000101";
 const variantId = "10000000-0000-4000-8000-000000001001";
 const accountId = "10000000-0000-4000-8000-000000001002";
+const bridgePrincipalId = "10000000-0000-4000-8000-000000001003";
 
 const payload: PublicationVariantPayload = {
   title: "日本跟团游选择指南",
@@ -565,6 +566,7 @@ it("creates a durable Ctrip handoff without invoking connector session or publis
       {
         tenantId,
         channelAccountId: accountId,
+        bridgePrincipalId,
         adapterVersion: "ctrip-community-web-v1",
         evidenceExpiresAt: "2026-07-15T00:00:00.000Z",
         handoffTtlSeconds: 900,
@@ -579,6 +581,7 @@ it("creates a durable Ctrip handoff without invoking connector session or publis
   expect(jobs.completions).toHaveLength(0);
   expect(jobs.assistedHandoffs[0]).toMatchObject({
     jobId: work.job.id,
+    bridgePrincipalId,
     adapterVersion: "ctrip-community-web-v1",
     expiresAt: new Date("2026-07-14T00:15:00.000Z"),
   });
@@ -614,6 +617,7 @@ it("acknowledges a redelivered Ctrip event after validating its existing handoff
     id: "30000000-0000-4000-8000-000000000111",
     jobId: work.job.id,
     attemptId: "30000000-0000-4000-8000-000000000112",
+    bridgePrincipalId,
     channelAccountId: work.account.id,
     variantId: work.variant.id,
     platform: "ctrip_community",

@@ -80,6 +80,7 @@ interface WorkRow {
   artifact_expires_at: Date;
   assisted_handoff_id: string | null;
   assisted_handoff_attempt_id: string | null;
+  assisted_handoff_bridge_principal_id: string | null;
   assisted_handoff_account_id: string | null;
   assisted_handoff_variant_id: string | null;
   assisted_handoff_platform: "ctrip_community" | null;
@@ -295,6 +296,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
           artifact.expires_at as artifact_expires_at,
           assisted_handoff.id as assisted_handoff_id,
           assisted_handoff.attempt_id as assisted_handoff_attempt_id,
+          assisted_handoff.bridge_service_principal_id as assisted_handoff_bridge_principal_id,
           assisted_handoff.channel_account_id as assisted_handoff_account_id,
           assisted_handoff.variant_id as assisted_handoff_variant_id,
           assisted_handoff.platform as assisted_handoff_platform,
@@ -402,6 +404,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
         assistedHandoff:
           row.assisted_handoff_id === null ||
           row.assisted_handoff_attempt_id === null ||
+          row.assisted_handoff_bridge_principal_id === null ||
           row.assisted_handoff_account_id === null ||
           row.assisted_handoff_variant_id === null ||
           row.assisted_handoff_platform === null ||
@@ -415,6 +418,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
                 id: row.assisted_handoff_id,
                 jobId: row.job_id,
                 attemptId: row.assisted_handoff_attempt_id,
+                bridgePrincipalId: row.assisted_handoff_bridge_principal_id,
                 channelAccountId: row.assisted_handoff_account_id,
                 variantId: row.assisted_handoff_variant_id,
                 platform: row.assisted_handoff_platform,
@@ -462,6 +466,7 @@ export class PostgresTenantJobStore implements TenantJobStore {
           ${input.handoffId}::uuid,
           ${input.jobId}::uuid,
           ${input.attemptId}::uuid,
+          ${input.bridgePrincipalId}::uuid,
           ${input.previewHash}::geo.sha256_hex,
           ${input.adapterVersion},
           ${input.idempotencyKey},

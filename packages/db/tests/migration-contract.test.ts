@@ -736,4 +736,52 @@ describe("PostgreSQL migration contract", () => {
       /REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER\s+ON TABLE geo\.publication_assisted_handoffs/u,
     );
   });
+
+  it("separates Ctrip operator approval from exact bridge execution authority", () => {
+    const create = functionOverloadDefinition(
+      "create_publication_assisted_handoff",
+      "p_bridge_service_principal_id uuid",
+    );
+    const bridgeStatus = latestFunctionDefinition("record_publication_assisted_bridge_status");
+    const draft = functionOverloadDefinition(
+      "record_publication_assisted_draft",
+      "p_external_draft_id text",
+    );
+    const issuePermit = latestFunctionDefinition("issue_publication_assisted_submit_permit");
+    const consumePermit = latestFunctionDefinition("consume_publication_assisted_submit_permit");
+
+    for (const column of [
+      "bridge_service_principal_id",
+      "external_draft_id",
+      "submit_permit_issued_by_actor_id",
+      "submit_permit_consumed_by_principal_id",
+    ]) {
+      expect(migrationSql).toContain(`ADD COLUMN ${column}`);
+    }
+    expect(migrationSql).toContain("'ctrip_bridge'");
+    expect(migrationSql).toContain('"publish:bridge"');
+    expect(create).toContain("geo.require_ctrip_bridge_principal");
+    expect(create).toContain("bridge_service_principal_id");
+    expect(bridgeStatus).toContain("geo.require_bound_ctrip_bridge");
+    expect(bridgeStatus).toContain("'challenge_required'");
+    expect(bridgeStatus).toContain("INSERT INTO geo.circuit_breakers");
+    expect(draft).toContain("geo.require_bound_ctrip_bridge");
+    expect(draft).toContain("p_external_draft_id");
+    expect(issuePermit).toContain("geo.require_publication_operator");
+    expect(issuePermit).toContain("submit_permit_issued_by_actor_id = actor_value");
+    expect(consumePermit).toContain("geo.require_bound_ctrip_bridge");
+    expect(consumePermit).toContain(
+      "submit_permit_issued_by_actor_id <> handoff.lease_owner_actor_id",
+    );
+    expect(consumePermit).toContain("submit_permit_consumed_by_principal_id = actor_value");
+    expect(migrationSql).toMatch(
+      /REVOKE EXECUTE ON FUNCTION geo\.create_publication_assisted_handoff\(\s*uuid, uuid, uuid, geo\.sha256_hex, text, text, timestamptz\s*\) FROM geo_runtime/u,
+    );
+    expect(migrationSql).toContain(
+      "publication_assisted_handoff_permit_actor_consistency\n    CHECK",
+    );
+    expect(migrationSql).toMatch(
+      /publication_assisted_handoff_permit_actor_consistency[\s\S]*?\) NOT VALID,/u,
+    );
+  });
 });

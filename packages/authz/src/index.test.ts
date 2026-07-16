@@ -4,6 +4,7 @@ import {
   automationProducerCapabilities,
   AuthorizationError,
   capabilitiesForRole,
+  ctripBridgeCapabilities,
   requireCapability,
   requireTenantScope,
 } from "./index.js";
@@ -53,6 +54,14 @@ describe("tenant authorization", () => {
     expect(automationProducerCapabilities).not.toContain("member:manage");
     expect(automationProducerCapabilities).not.toContain("principal:manage");
     expect(automationProducerCapabilities).not.toContain("automation:manage");
+  });
+
+  it("reserves Ctrip bridge execution for the fixed integration profile", () => {
+    expect(ctripBridgeCapabilities).toEqual(["tenant:read", "content:read", "publish:bridge"]);
+    for (const role of ["owner", "admin", "editor", "auditor", "publisher", "viewer"] as const) {
+      expect(capabilitiesForRole(role)).not.toContain("publish:bridge");
+    }
+    expect(automationProducerCapabilities).not.toContain("publish:bridge");
   });
 
   it("rejects cross-tenant resource scope before repository access", () => {

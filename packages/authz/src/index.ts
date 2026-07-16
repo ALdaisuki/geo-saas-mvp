@@ -30,6 +30,12 @@ export const automationProducerCapabilities = [
   "automation:execute",
 ] as const satisfies readonly Capability[];
 
+export const ctripBridgeCapabilities = [
+  "tenant:read",
+  "content:read",
+  "publish:bridge",
+] as const satisfies readonly Capability[];
+
 export const roleCapabilities: Readonly<Record<TenantRole, ReadonlySet<Capability>>> = {
   owner: new Set(allCapabilities),
   admin: new Set(allCapabilities),

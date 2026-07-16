@@ -82,6 +82,11 @@ describe("replayable application ACL contract", () => {
       "GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime",
     );
     expect(aclSql).toContain("GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(");
+    expect(aclSql).toContain("uuid, uuid, uuid, uuid, geo.sha256_hex, text, text, timestamptz");
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(",
+    );
+    expect(aclSql).toContain("uuid, geo.sha256_hex, geo.sha256_hex, text, text");
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)",
     );

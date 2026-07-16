@@ -4,6 +4,7 @@ import {
   auditArtifactSchema,
   automationBatchCreateRequestSchema,
   automationServicePrincipalCreateRequestSchema,
+  ctripBridgeServicePrincipalCreateRequestSchema,
   automationRunStateSchema,
   automationRunTargetStateSchema,
   brandAgentProfileDocumentSchema,
@@ -686,5 +687,17 @@ describe("tenant governance contracts", () => {
         reason: "轮换自动化身份",
       }),
     ).toMatchObject({ status: "disabled" });
+  });
+
+  it("provisions Ctrip bridge identities without accepting client-selected authority", () => {
+    expect(
+      ctripBridgeServicePrincipalCreateRequestSchema.parse({ name: "ctrip-bridge-zhongtong" }),
+    ).toEqual({ name: "ctrip-bridge-zhongtong" });
+    expect(
+      ctripBridgeServicePrincipalCreateRequestSchema.safeParse({
+        name: "ctrip-bridge-zhongtong",
+        capabilities: ["publish:request"],
+      }).success,
+    ).toBe(false);
   });
 });

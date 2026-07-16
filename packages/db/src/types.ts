@@ -65,6 +65,8 @@ export interface TenantMembershipsTable extends TenantRow, CreatedRow {
 export interface ServicePrincipalsTable extends TenantRow, MutableRow {
   name: string;
   kind: "api" | "worker" | "agent" | "integration";
+  profile: "custom" | "automation_producer" | "ctrip_bridge";
+  capabilities: JsonColumn<JsonValue[]>;
   status: Generated<"active" | "disabled">;
   last_used_at: NullableDbTimestamp;
 }
@@ -606,6 +608,7 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   audit_hash: string;
   preview_hash: string;
   adapter_version: string;
+  bridge_service_principal_id: string | null;
   idempotency_key: string;
   lease_owner_actor_id: string | null;
   lease_expires_at: NullableDbTimestamp;
@@ -616,6 +619,9 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   submit_permit_hash: string | null;
   submit_permit_expires_at: NullableDbTimestamp;
   submit_permit_consumed_at: NullableDbTimestamp;
+  submit_permit_issued_by_actor_id: string | null;
+  submit_permit_consumed_by_principal_id: string | null;
+  external_draft_id: string | null;
   external_id: string | null;
   external_url: string | null;
   expires_at: RequiredDbTimestamp;

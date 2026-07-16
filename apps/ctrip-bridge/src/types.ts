@@ -54,6 +54,16 @@ export interface CtripBridgePreparedEvidence {
   readonly evidenceKind: "simulation" | "browser";
 }
 
+export interface CtripBridgePreparationBlocker {
+  readonly outcome: "session_required" | "challenge_required" | "adapter_drift";
+  readonly sessionEvidenceHash: string;
+  readonly evidenceHash: string;
+  readonly observedAt: string;
+  readonly evidenceKind: "simulation" | "browser";
+}
+
+export type CtripBridgePrepareResult = CtripBridgePreparedEvidence | CtripBridgePreparationBlocker;
+
 export interface CtripBridgeMediaAsset {
   readonly contentVersionId: string;
   readonly position: number;
@@ -102,6 +112,11 @@ export interface CtripBridgeControlPlane {
     handoff: CtripBridgeHandoffDraft,
     evidence: CtripBridgePreparedEvidence,
   ): Promise<void>;
+  recordPreparationBlocker(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    blocker: CtripBridgePreparationBlocker,
+  ): Promise<void>;
   consumeSubmitPermit(
     context: CtripBridgeExecutionContext,
     handoffId: string,
@@ -135,7 +150,7 @@ export interface CtripFixedAdapter {
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,
     media: readonly CtripTrustedMediaAttachment[],
-  ): Promise<CtripBridgePreparedEvidence>;
+  ): Promise<CtripBridgePrepareResult>;
   submit(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,

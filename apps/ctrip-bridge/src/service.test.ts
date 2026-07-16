@@ -7,6 +7,7 @@ import {
   CTRIP_SIMULATOR_ADAPTER_VERSION,
   type CtripBridgeControlPlane,
   type CtripBridgeHandoffDraft,
+  type CtripFixedAdapter,
 } from "./types.js";
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
@@ -61,6 +62,7 @@ function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeC
     recordPrepared: vi.fn(async () => {
       current.value = handoff("draft_prepared");
     }),
+    recordPreparationBlocker: vi.fn(async () => undefined),
     consumeSubmitPermit: vi.fn(async () => {
       current.value = handoff("awaiting_operator_submit");
     }),
@@ -124,6 +126,50 @@ describe("CtripBridgeCommandService", () => {
     });
     expect(port.recordPrepared).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ["session_required", "session_required"],
+    ["challenge_required", "challenge_required"],
+    ["adapter_drift", "failed"],
+  ] as const)(
+    "persists a %s preflight blocker before returning it",
+    async (outcome, expectedState) => {
+      const current = { value: handoff("handoff_pending") };
+      const basePort = controlPlane(current);
+      const recordPreparationBlocker = vi.fn(async () => undefined);
+      const port = { ...basePort, recordPreparationBlocker };
+      const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+      const adapter = {
+        version: CTRIP_SIMULATOR_ADAPTER_VERSION,
+        evidenceKind: "browser",
+        prepare: vi.fn(async () => ({
+          outcome,
+          sessionEvidenceHash: "b".repeat(64),
+          evidenceHash: "c".repeat(64),
+          observedAt: now,
+          evidenceKind: "browser",
+        })),
+        submit: simulator.submit.bind(simulator),
+        readback: simulator.readback.bind(simulator),
+      } as unknown as CtripFixedAdapter;
+      const service = new CtripBridgeCommandService({
+        tenantId,
+        bridgePrincipalId,
+        controlPlane: port,
+        mediaObjectStore: emptyMediaObjectStore(),
+        adapter,
+      });
+
+      await expect(service.execute(command("prepare"))).resolves.toMatchObject({
+        command: "prepare",
+        outcome,
+        state: expectedState,
+        evidenceKind: "browser",
+      });
+      expect(recordPreparationBlocker).toHaveBeenCalledOnce();
+      expect(basePort.recordPrepared).not.toHaveBeenCalled();
+    },
+  );
 
   it("consumes the one-time permit before invoking submit and records required readback", async () => {
     const current = { value: handoff("handoff_pending") };

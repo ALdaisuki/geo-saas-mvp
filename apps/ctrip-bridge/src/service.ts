@@ -172,6 +172,26 @@ export class CtripBridgeCommandService {
       case "prepare": {
         const media = await this.#loadTrustedMedia(loaded.context, loaded.handoff);
         const evidence = await this.#adapter.prepare(loaded.handoff, loaded.draft, media);
+        if ("outcome" in evidence) {
+          await this.#controlPlane.recordPreparationBlocker(
+            loaded.context,
+            loaded.handoff,
+            evidence,
+          );
+          return ctripBridgeResultSchema.parse({
+            schemaVersion: "geo.ctrip-bridge.result.v1",
+            tenantId: loaded.context.tenantId,
+            handoffId: loaded.handoff.id,
+            bridgePrincipalId: loaded.context.bridgePrincipalId,
+            adapterVersion: this.#adapter.version,
+            observedAt: evidence.observedAt,
+            evidenceHash: evidence.evidenceHash,
+            evidenceKind: evidence.evidenceKind,
+            command: "prepare",
+            outcome: evidence.outcome,
+            state: evidence.outcome === "adapter_drift" ? "failed" : evidence.outcome,
+          });
+        }
         await this.#controlPlane.recordPrepared(loaded.context, loaded.handoff, evidence);
         return ctripBridgeResultSchema.parse({
           schemaVersion: "geo.ctrip-bridge.result.v1",

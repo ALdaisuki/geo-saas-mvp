@@ -168,6 +168,7 @@ function runtime(
         externalDraftId: evidence.externalDraftId,
       };
     }),
+    recordPreparationBlocker: vi.fn(async () => undefined),
     consumeSubmitPermit: vi.fn(async () => {
       current.value = { ...current.value, state: "awaiting_operator_submit" };
     }),

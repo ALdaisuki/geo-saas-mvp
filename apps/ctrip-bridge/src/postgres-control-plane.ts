@@ -8,6 +8,7 @@ import type {
   CtripBridgeExecutionContext,
   CtripBridgeHandoffDraft,
   CtripBridgeMediaAsset,
+  CtripBridgePreparationBlocker,
   CtripBridgePreparedEvidence,
   CtripBridgeReadbackObservation,
   CtripBridgeSubmitObservation,
@@ -256,6 +257,26 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
           ${evidence.draftEvidenceHash}::geo.sha256_hex,
           ${evidence.externalDraftId},
           ${handoff.adapterVersion}
+        )
+      `.execute(transaction);
+    });
+  }
+
+  recordPreparationBlocker(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    blocker: CtripBridgePreparationBlocker,
+  ): Promise<void> {
+    return this.#transaction(context, async (transaction) => {
+      const status = blocker.outcome === "adapter_drift" ? "failed" : blocker.outcome;
+      const errorCode = blocker.outcome === "adapter_drift" ? "ASSISTED_ADAPTER_DRIFT" : null;
+      await sql`
+        select geo.record_publication_assisted_bridge_status(
+          ${handoff.id}::uuid,
+          ${status},
+          ${blocker.sessionEvidenceHash}::geo.sha256_hex,
+          ${handoff.adapterVersion},
+          ${errorCode}
         )
       `.execute(transaction);
     });

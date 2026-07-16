@@ -75,6 +75,7 @@ function runtime() {
     recordPrepared: vi.fn(async () => {
       current.value = { ...current.value, state: "draft_prepared" };
     }),
+    recordPreparationBlocker: vi.fn(async () => undefined),
     consumeSubmitPermit: vi.fn(async () => undefined),
     recordSubmitObservation: vi.fn(async () => ({
       receiptId: "10000000-0000-4000-8000-000000000006",

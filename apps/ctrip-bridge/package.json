@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
+    "review:surface": "tsx src/review-cli.ts",
     "start": "node dist/cli.js",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -24,6 +25,7 @@
     "@geo/db": "workspace:*",
     "@geo/media": "workspace:*",
     "kysely": "0.28.8",
+    "playwright-core": "1.61.1",
     "zod": "catalog:"
   },
   "devDependencies": {

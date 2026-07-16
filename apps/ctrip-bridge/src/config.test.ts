@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCtripBridgeTenantConfigs, requireSimulatorHost } from "./config.js";
+import {
+  parseCtripBridgeTenantConfigs,
+  requireLocalCdpEndpoint,
+  requireLocalCdpWebSocketEndpoint,
+  requireRuntimeTmpRoot,
+  requireSimulatorHost,
+  resolveLocalCdpWebSocketEndpoint,
+} from "./config.js";
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const bridgePrincipalId = "10000000-0000-4000-8000-000000000002";
@@ -36,5 +43,61 @@ describe("Ctrip bridge startup configuration", () => {
   it("binds simulator mode to loopback only", () => {
     expect(requireSimulatorHost("127.0.0.1")).toBe("127.0.0.1");
     expect(() => requireSimulatorHost("0.0.0.0")).toThrow(/loopback/iu);
+  });
+
+  it("accepts only a credential-free local HTTP CDP endpoint", () => {
+    expect(requireLocalCdpEndpoint("http://127.0.0.1:9222")).toBe("http://127.0.0.1:9222/");
+    expect(requireLocalCdpEndpoint("http://localhost:9222/")).toBe("http://localhost:9222/");
+    expect(() => requireLocalCdpEndpoint("https://127.0.0.1:9222")).toThrow();
+    expect(() => requireLocalCdpEndpoint("http://example.com:9222")).toThrow();
+    expect(() => requireLocalCdpEndpoint("http://user:secret@127.0.0.1:9222")).toThrow();
+    expect(() => requireLocalCdpEndpoint("http://127.0.0.1:9222/devtools/browser/id")).toThrow();
+    expect(() => requireLocalCdpEndpoint("http://127.0.0.1:9222/?token=secret")).toThrow();
+  });
+
+  it("keeps the discovered CDP WebSocket on the same local endpoint", async () => {
+    expect(
+      requireLocalCdpWebSocketEndpoint(
+        "ws://127.0.0.1:9222/devtools/browser/review-session",
+        "http://127.0.0.1:9222/",
+      ),
+    ).toBe("ws://127.0.0.1:9222/devtools/browser/review-session");
+    expect(() =>
+      requireLocalCdpWebSocketEndpoint(
+        "wss://remote.example/devtools/browser/review-session",
+        "http://127.0.0.1:9222/",
+      ),
+    ).toThrow();
+    expect(() =>
+      requireLocalCdpWebSocketEndpoint(
+        "ws://127.0.0.1:9333/devtools/browser/review-session",
+        "http://127.0.0.1:9222/",
+      ),
+    ).toThrow(/same local/iu);
+
+    const requests: unknown[][] = [];
+    const fetcher = async (...args: unknown[]) => {
+      requests.push(args);
+      return new Response(
+        JSON.stringify({
+          Browser: "Chrome",
+          webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/review-session",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    await expect(resolveLocalCdpWebSocketEndpoint("http://127.0.0.1:9222/", fetcher)).resolves.toBe(
+      "ws://127.0.0.1:9222/devtools/browser/review-session",
+    );
+    expect(requests[0]?.[0]).toBe("http://127.0.0.1:9222/json/version");
+    expect(requests[0]?.[1]).toMatchObject({ redirect: "error" });
+  });
+
+  it("requires an explicit non-system-drive runtime temp root", () => {
+    expect(requireRuntimeTmpRoot("D:\\GEO\\.runtime\\tmp")).toBe("D:\\GEO\\.runtime\\tmp");
+    expect(() => requireRuntimeTmpRoot("C:\\Users\\operator\\AppData\\Local\\Temp")).toThrow(
+      /system drive/iu,
+    );
+    expect(() => requireRuntimeTmpRoot("relative/tmp")).toThrow(/absolute/iu);
   });
 });

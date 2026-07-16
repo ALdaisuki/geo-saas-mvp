@@ -21,6 +21,7 @@ interface SimulatorDraft {
 
 export class CtripCommunitySimulator implements CtripFixedAdapter {
   readonly version = CTRIP_SIMULATOR_ADAPTER_VERSION;
+  readonly evidenceKind = "simulation" as const;
   readonly #drafts = new Map<string, SimulatorDraft>();
   readonly #now: () => Date;
   readonly #nextSubmitOutcome: () => CtripBridgeSubmitObservation["outcome"];

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ARTICLE_TEMPLATE_CATALOG_VERSION, ARTICLE_TEMPLATES } from "@geo/contracts";
 
 import {
@@ -9,6 +9,7 @@ import {
   type GeoApi,
   GeoApiError,
   type PublicationAssistedHandoff,
+  type PublicationAssistedBridgeActionResult,
   type SessionSnapshot,
 } from "./api.js";
 import { App } from "./app.js";
@@ -1313,6 +1314,60 @@ describe("GEO operator console", () => {
     expect(document.body.textContent).not.toContain("f".repeat(64));
     expect(document.body.textContent).not.toContain("submitPermit");
     expect(document.body.textContent).not.toContain("submit_permit");
+  });
+
+  it("offers reconciliation without retry after a Ctrip submit permit was consumed", async () => {
+    const api = liveApi();
+    const [baseHandoff] = await api.getPublicationAssistedHandoffs();
+    if (baseHandoff === undefined) throw new Error("Ctrip handoff fixture is missing");
+    if (baseHandoff.bridgeServicePrincipalId === null) {
+      throw new Error("Ctrip bridge principal fixture is missing");
+    }
+    const bridgePrincipalId = baseHandoff.bridgeServicePrincipalId;
+    const consumedHandoff: PublicationAssistedHandoff = {
+      ...baseHandoff,
+      state: "awaiting_operator_submit",
+      submitPermitIssued: true,
+      submitPermitConsumedAt: "2026-07-14T08:02:00.000Z",
+      submitPermitIssuedByActorId: session.actor.id,
+      submitPermitConsumedByPrincipalId: baseHandoff.bridgeServicePrincipalId,
+    };
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "publish:request", "publish:cancel"],
+      },
+    });
+    api.getPublicationAssistedHandoffs = async () => [consumedHandoff];
+    api.getPublicationAssistedHandoff = async () => consumedHandoff;
+    api.readbackPublicationAssistedHandoff = vi.fn(
+      async (): Promise<PublicationAssistedBridgeActionResult> => ({
+        handoff: { ...consumedHandoff, state: "needs_review" as const },
+        bridge: {
+          schemaVersion: "geo.ctrip-bridge.result.v1",
+          tenantId: session.tenant.id,
+          handoffId: consumedHandoff.id,
+          bridgePrincipalId,
+          command: "readback",
+          outcome: "simulation_only",
+          evidenceKind: "simulation",
+          state: "needs_review",
+          externalId: null,
+          externalUrl: null,
+          adapterVersion: consumedHandoff.adapterVersion,
+          observedAt: "2026-07-14T08:03:00.000Z",
+          evidenceHash: "9".repeat(64),
+        },
+      }),
+    );
+    renderApp({ path: "/publishing", api });
+
+    expect(await screen.findByText("许可已消费 · 禁止重试 · 等待对账")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /批准提交/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /取消交接单/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /执行携程回读/ }));
+    await waitFor(() => expect(api.readbackPublicationAssistedHandoff).toHaveBeenCalledOnce());
   });
 
   it("clears the selected publication job when the tenant changes", async () => {

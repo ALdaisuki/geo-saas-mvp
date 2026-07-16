@@ -2821,9 +2821,14 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       publicationAssistedBridgeCommandSchema.parse(request.body ?? {});
       const { context, handoffId, handoff } = await requireAssistedHandoff(
         request,
-        ["readback_pending"],
+        ["awaiting_operator_submit", "readback_pending"],
         false,
       );
+      if (handoff.state === "awaiting_operator_submit" && handoff.submitPermitConsumedAt === null) {
+        throw new RepositoryConflictError(
+          "Publication assisted readback recovery requires a consumed submit permit",
+        );
+      }
       const bridge = await ctripBridgeGateway().execute({
         schemaVersion: "geo.ctrip-bridge.command.v1",
         tenantId: context.tenantId,

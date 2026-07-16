@@ -93,6 +93,9 @@ describe("replayable application ACL contract", () => {
     expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_submit_observation(",
     );
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.recover_publication_assisted_submit_uncertain(",
+    );
     expect(aclSql).toContain("GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(");
     expect(aclSql).toContain(
       "REVOKE ALL ON geo.media_generation_jobs, geo.media_generation_attempts",

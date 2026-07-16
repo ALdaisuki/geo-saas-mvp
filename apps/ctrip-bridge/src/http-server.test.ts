@@ -60,6 +60,7 @@ function runtime() {
     externalDraftId: null,
     submitOutcome: null,
     submitEvidenceKind: null,
+    submitPermitConsumedAt: null,
     payload,
   };
   const simulator = new CtripCommunitySimulator({
@@ -73,6 +74,10 @@ function runtime() {
     }),
     consumeSubmitPermit: vi.fn(async () => undefined),
     recordSubmitObservation: vi.fn(async () => ({
+      receiptId: "10000000-0000-4000-8000-000000000006",
+      readbackId: "10000000-0000-4000-8000-000000000007",
+    })),
+    recoverSubmitObservation: vi.fn(async () => ({
       receiptId: "10000000-0000-4000-8000-000000000006",
       readbackId: "10000000-0000-4000-8000-000000000007",
     })),

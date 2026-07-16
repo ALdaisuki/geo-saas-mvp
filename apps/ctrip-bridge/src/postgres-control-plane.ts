@@ -39,6 +39,7 @@ const handoffRowSchema = z.strictObject({
   external_draft_id: z.string().nullable(),
   submit_outcome: z.enum(["accepted", "uncertain", "rejected"]).nullable(),
   submit_evidence_kind: z.enum(["simulation", "browser"]).nullable(),
+  submit_permit_consumed_at: z.coerce.date().nullable(),
   payload: publicationVariantPayloadSchema,
 });
 
@@ -58,6 +59,7 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     externalDraftId: parsed.external_draft_id,
     submitOutcome: parsed.submit_outcome,
     submitEvidenceKind: parsed.submit_evidence_kind,
+    submitPermitConsumedAt: parsed.submit_permit_consumed_at?.toISOString() ?? null,
     payload: parsed.payload,
   };
 }
@@ -95,6 +97,7 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
                handoff.preview_hash, handoff.payload_hash, handoff.adapter_version,
                handoff.bridge_service_principal_id, handoff.external_draft_id,
                handoff.submit_outcome, handoff.submit_evidence_kind,
+               handoff.submit_permit_consumed_at,
                variant.payload
         from geo.publication_assisted_handoffs as handoff
         join geo.publication_variants as variant
@@ -160,6 +163,27 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
       `.execute(transaction);
       const row = result.rows[0];
       if (row === undefined) throw new Error("Submit observation returned no evidence identity");
+      return { receiptId: row.publication_receipt_id, readbackId: row.publication_readback_id };
+    });
+  }
+
+  recoverSubmitObservation(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    evidenceKind: "simulation" | "browser",
+  ): Promise<{ readonly receiptId: string; readonly readbackId: string }> {
+    return this.#transaction(context, async (transaction) => {
+      const result = await sql<{
+        publication_receipt_id: string;
+        publication_readback_id: string;
+      }>`
+        select * from geo.recover_publication_assisted_submit_uncertain(
+          ${handoff.id}::uuid,
+          ${evidenceKind}
+        )
+      `.execute(transaction);
+      const row = result.rows[0];
+      if (row === undefined) throw new Error("Submit recovery returned no evidence identity");
       return { receiptId: row.publication_receipt_id, readbackId: row.publication_readback_id };
     });
   }

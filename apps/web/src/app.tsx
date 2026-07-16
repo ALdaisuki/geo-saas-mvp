@@ -453,6 +453,9 @@ function ctripEnvironmentLabel(handoff: PublicationAssistedHandoff): "Simulator"
 }
 
 function ctripSubmitObservation(handoff: PublicationAssistedHandoff): string {
+  if (handoff.submitOutcome === null && handoff.submitPermitConsumedAt !== null) {
+    return "许可已消费 · 禁止重试 · 等待对账";
+  }
   if (handoff.submitOutcome === null) return "尚未提交";
   if (handoff.submitOutcome === "accepted") {
     return handoff.submitEvidenceKind === "simulation"
@@ -1965,15 +1968,18 @@ function PublishingView({
                     const leaseActive = Number.isFinite(leaseExpiry) && leaseExpiry > Date.now();
                     const owned =
                       leaseActive && actorId !== null && handoff.leaseOwnerActorId === actorId;
-                    const terminal = [
-                      "submitted_unconfirmed",
-                      "readback_pending",
-                      "confirmed",
-                      "needs_review",
-                      "cancelled",
-                      "expired",
-                      "failed",
-                    ].includes(handoff.state);
+                    const submitBoundaryCrossed = handoff.submitPermitConsumedAt !== null;
+                    const terminal =
+                      submitBoundaryCrossed ||
+                      [
+                        "submitted_unconfirmed",
+                        "readback_pending",
+                        "confirmed",
+                        "needs_review",
+                        "cancelled",
+                        "expired",
+                        "failed",
+                      ].includes(handoff.state);
                     const canPrepare =
                       owned &&
                       ["handoff_pending", "session_required", "challenge_required"].includes(
@@ -1981,7 +1987,8 @@ function PublishingView({
                       );
                     const canSubmit = owned && handoff.state === "draft_prepared";
                     const canReadback =
-                      handoff.state === "readback_pending" &&
+                      (handoff.state === "readback_pending" ||
+                        (handoff.state === "awaiting_operator_submit" && submitBoundaryCrossed)) &&
                       capabilities.includes("publish:request");
                     return (
                       <tr key={handoff.id}>

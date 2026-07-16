@@ -787,6 +787,7 @@ describe("PostgreSQL migration contract", () => {
 
   it("records Ctrip submit observations before independent readback confirmation", () => {
     const submit = latestFunctionDefinition("record_publication_assisted_submit_observation");
+    const recover = latestFunctionDefinition("recover_publication_assisted_submit_uncertain");
     const readback = latestFunctionDefinition("record_publication_assisted_readback");
     const transition = latestFunctionDefinition("enforce_publication_assisted_handoff_transition");
 
@@ -814,6 +815,12 @@ describe("PostgreSQL migration contract", () => {
     expect(submit).toContain("'pending', true, 'assisted_publication_unconfirmed'");
     expect(submit).toContain("state = 'readback_pending'");
     expect(submit).toContain("publication_assisted_handoff.submit_observed");
+    expect(recover).toContain("geo.require_bound_ctrip_bridge");
+    expect(recover).toContain("FOR UPDATE");
+    expect(recover).toContain("submit_permit_consumed_at IS NULL");
+    expect(recover).toContain("geo.record_publication_assisted_submit_observation");
+    expect(recover).toContain("'uncertain'");
+    expect(recover).toContain("publication_assisted_handoff.submit_observation_recovered");
     expect(readback).toContain("geo.require_bound_ctrip_bridge");
     expect(readback).toContain("p_evidence_kind <> 'platform_readback'");
     expect(readback).toContain("p_observed_payload_hash IS DISTINCT FROM handoff.payload_hash");
@@ -825,6 +832,9 @@ describe("PostgreSQL migration contract", () => {
     expect(transition).toContain("'readback_evidence_hash'");
     expect(migrationSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_submit_observation(",
+    );
+    expect(migrationSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.recover_publication_assisted_submit_uncertain(",
     );
     expect(migrationSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(",

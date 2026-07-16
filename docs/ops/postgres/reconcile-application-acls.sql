@@ -98,6 +98,9 @@ GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, t
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_submit_observation(
   uuid, text, text, geo.sha256_hex, timestamptz
 ) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.recover_publication_assisted_submit_uncertain(
+  uuid, text
+) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(
   uuid, text, text, geo.sha256_hex, geo.sha256_hex, text, text, timestamptz
 ) TO geo_runtime;
@@ -226,6 +229,11 @@ BEGIN
      OR NOT has_function_privilege(
        'geo_runtime',
        'geo.record_publication_assisted_submit_observation(uuid,text,text,geo.sha256_hex,timestamptz)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.recover_publication_assisted_submit_uncertain(uuid,text)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(

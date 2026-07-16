@@ -273,6 +273,7 @@ class FakeRepository implements ApiRepository {
   publicationJobState: PublicationJobView["state"] = "queued";
   assistedHandoffState: PublicationAssistedHandoffView["state"] = "handoff_pending";
   assistedHandoffLeaseOwner: string | null = null;
+  assistedSubmitPermitConsumedAt: string | null = null;
   publicationRequestError: (Error & { code?: string }) | null = null;
   publicationGovernancePlatform: AuditArtifact["platform"] = "toutiao";
   publicationReplayResult: Awaited<ReturnType<ApiRepository["resolvePublicationReplay"]>> = null;
@@ -1802,7 +1803,7 @@ class FakeRepository implements ApiRepository {
       submitEvidenceHash: null,
       submitPermitIssued: false,
       submitPermitExpiresAt: null,
-      submitPermitConsumedAt: null,
+      submitPermitConsumedAt: this.assistedSubmitPermitConsumedAt,
       submitPermitIssuedByActorId: null,
       submitPermitConsumedByPrincipalId: null,
       submitOutcome:
@@ -4098,6 +4099,59 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(commands.map((command) => command.command)).toEqual(["prepare", "submit", "readback"]);
     expect(commands[1]).toMatchObject({ submitPermit: "f".repeat(64) });
     expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
+  });
+
+  it("allows readback recovery only after the Ctrip submit permit was consumed", async () => {
+    const repository = new FakeRepository();
+    repository.assistedHandoffState = "awaiting_operator_submit";
+    const commands: Parameters<CtripBridgeGateway["execute"]>[0][] = [];
+    const gateway: CtripBridgeGateway = {
+      execute: async (command) => {
+        commands.push(command);
+        repository.assistedHandoffState = "needs_review";
+        return {
+          schemaVersion: "geo.ctrip-bridge.result.v1" as const,
+          tenantId: ids.tenant,
+          handoffId: ids.assistedHandoff,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000000802",
+          adapterVersion: "ctrip-community-web-v1",
+          observedAt: fixedNow.toISOString(),
+          evidenceHash: "1".repeat(64),
+          evidenceKind: "simulation" as const,
+          command: "readback" as const,
+          outcome: "simulation_only" as const,
+          state: "needs_review" as const,
+          externalId: null,
+          externalUrl: null,
+        };
+      },
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, gateway);
+    const authenticated = await login(app);
+    const headers = {
+      cookie: authenticated.cookie,
+      "x-csrf-token": authenticated.body.csrfToken,
+    };
+
+    const beforeConsumption = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/readback`,
+      headers,
+      payload: {},
+    });
+    expect(beforeConsumption.statusCode).toBe(409);
+    expect(commands).toEqual([]);
+
+    repository.assistedSubmitPermitConsumedAt = fixedNow.toISOString();
+    const afterConsumption = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/readback`,
+      headers,
+      payload: {},
+    });
+    expect(afterConsumption.statusCode).toBe(200);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ command: "readback", handoffId: ids.assistedHandoff });
   });
 
   it("marks every post-permit submit failure as potentially state-changing", async () => {

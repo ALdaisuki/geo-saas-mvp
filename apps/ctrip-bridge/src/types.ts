@@ -35,6 +35,7 @@ export interface CtripBridgeHandoffDraft {
   readonly externalDraftId: string | null;
   readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
   readonly submitEvidenceKind: "simulation" | "browser" | null;
+  readonly submitPermitConsumedAt: string | null;
   readonly payload: PublicationVariantPayload;
 }
 
@@ -84,6 +85,11 @@ export interface CtripBridgeControlPlane {
     handoff: CtripBridgeHandoffDraft,
     observation: CtripBridgeSubmitObservation,
   ): Promise<{ readonly receiptId: string; readonly readbackId: string }>;
+  recoverSubmitObservation(
+    context: CtripBridgeExecutionContext,
+    handoff: CtripBridgeHandoffDraft,
+    evidenceKind: "simulation" | "browser",
+  ): Promise<{ readonly receiptId: string; readonly readbackId: string }>;
   recordReadback(
     context: CtripBridgeExecutionContext,
     handoff: CtripBridgeHandoffDraft,
@@ -97,6 +103,7 @@ export interface CtripBridgeControlPlane {
 
 export interface CtripFixedAdapter {
   readonly version: string;
+  readonly evidenceKind: "simulation" | "browser";
   prepare(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,

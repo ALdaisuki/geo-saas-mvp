@@ -47,6 +47,7 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     externalDraftId: state === "handoff_pending" ? null : `sim-draft-${handoffId}`,
     submitOutcome: state === "readback_pending" ? "accepted" : null,
     submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
+    submitPermitConsumedAt: null,
     payload,
   };
 }
@@ -62,6 +63,17 @@ function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeC
     }),
     recordSubmitObservation: vi.fn(async () => {
       current.value = handoff("readback_pending");
+      return {
+        receiptId: "10000000-0000-4000-8000-000000000006",
+        readbackId: "10000000-0000-4000-8000-000000000007",
+      };
+    }),
+    recoverSubmitObservation: vi.fn(async () => {
+      current.value = {
+        ...handoff("readback_pending"),
+        submitOutcome: "uncertain",
+        submitPermitConsumedAt: now,
+      };
       return {
         receiptId: "10000000-0000-4000-8000-000000000006",
         readbackId: "10000000-0000-4000-8000-000000000007",
@@ -209,6 +221,33 @@ describe("CtripBridgeCommandService", () => {
       externalId: null,
       externalUrl: null,
     });
+  });
+
+  it("recovers a consumed but unobserved submit before readback without submitting again", async () => {
+    const current = {
+      value: {
+        ...handoff("awaiting_operator_submit"),
+        submitPermitConsumedAt: now,
+      },
+    };
+    const port = controlPlane(current);
+    const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+    const submit = vi.spyOn(simulator, "submit");
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      adapter: simulator,
+    });
+
+    await expect(service.execute(command("readback"))).resolves.toMatchObject({
+      command: "readback",
+      outcome: "simulation_only",
+      state: "needs_review",
+    });
+    expect(port.recoverSubmitObservation).toHaveBeenCalledOnce();
+    expect(port.loadHandoff).toHaveBeenCalledTimes(2);
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("rejects a tenant, principal, preview or adapter mismatch before adapter work", async () => {

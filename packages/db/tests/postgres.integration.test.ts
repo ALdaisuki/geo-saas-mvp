@@ -924,6 +924,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0018_ctrip_assisted_admission",
       "0019_ctrip_bridge_authority",
       "0020_ctrip_submit_observations",
+      "0021_ctrip_submit_recovery",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2775,6 +2776,19 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     await expect(
       runtimeTransaction(
         (client) =>
+          client.query(
+            `SELECT * FROM geo.recover_publication_assisted_submit_uncertain(
+               $1, 'simulation'
+             )`,
+            [ids.ctripAssistedHandoff],
+          ),
+        { actor: ids.ctripBridgePrincipal },
+      ),
+    ).rejects.toMatchObject({ code: "55000" });
+
+    await expect(
+      runtimeTransaction(
+        (client) =>
           client.query("SELECT geo.consume_publication_assisted_submit_permit($1, $2)", [
             ids.ctripAssistedHandoff,
             permit,
@@ -2865,6 +2879,90 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         ]),
       ),
     ).rejects.toMatchObject({ code: "55000" });
+
+    await runtimeTransaction(
+      async (client) => {
+        await client.query("SAVEPOINT recover_consumed_submit");
+        const recovered = await client.query<{
+          publication_receipt_id: string;
+          publication_readback_id: string;
+        }>(
+          `SELECT * FROM geo.recover_publication_assisted_submit_uncertain(
+             $1, 'simulation'
+           )`,
+          [ids.ctripAssistedHandoff],
+        );
+        const replay = await client.query<{
+          publication_receipt_id: string;
+          publication_readback_id: string;
+        }>(
+          `SELECT * FROM geo.recover_publication_assisted_submit_uncertain(
+             $1, 'simulation'
+           )`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(replay.rows[0]).toEqual(recovered.rows[0]);
+
+        const recoveryEvidence = await client.query<{
+          state: string;
+          submit_outcome: string;
+          submit_evidence_kind: string;
+          confirmed: boolean;
+          receipt_outcome: string;
+          readback_status: string;
+          readback_required: boolean;
+          recovery_events: string;
+        }>(
+          `SELECT handoff.state, handoff.submit_outcome, handoff.submit_evidence_kind,
+                  receipt.confirmed, receipt.payload ->> 'outcome' AS receipt_outcome,
+                  readback.status AS readback_status,
+                  readback.required AS readback_required,
+                  (SELECT count(*)::text FROM geo.audit_log AS audit
+                   WHERE audit.tenant_id = handoff.tenant_id
+                     AND audit.resource_id = handoff.id
+                     AND audit.action =
+                       'publication_assisted_handoff.submit_observation_recovered')
+                    AS recovery_events
+           FROM geo.publication_assisted_handoffs AS handoff
+           JOIN geo.publication_receipts AS receipt
+             ON receipt.tenant_id = handoff.tenant_id
+            AND receipt.id = handoff.publication_receipt_id
+           JOIN geo.publication_readbacks AS readback
+             ON readback.tenant_id = handoff.tenant_id
+            AND readback.id = handoff.publication_readback_id
+           WHERE handoff.id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(recoveryEvidence.rows[0]).toEqual({
+          state: "readback_pending",
+          submit_outcome: "uncertain",
+          submit_evidence_kind: "simulation",
+          confirmed: false,
+          receipt_outcome: "uncertain",
+          readback_status: "pending",
+          readback_required: true,
+          recovery_events: "1",
+        });
+
+        await client.query("SAVEPOINT reject_recovery_overwrite");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_submit_observation(
+               $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, "c".repeat(64)],
+          ),
+        ).rejects.toMatchObject({ code: "23505" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_recovery_overwrite");
+        const stillRecovered = await client.query<{ submit_outcome: string }>(
+          `SELECT submit_outcome FROM geo.publication_assisted_handoffs WHERE id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(stillRecovered.rows[0]?.submit_outcome).toBe("uncertain");
+        await client.query("ROLLBACK TO SAVEPOINT recover_consumed_submit");
+      },
+      { actor: ids.ctripBridgePrincipal },
+    );
 
     const submitEvidenceHash = "a".repeat(64);
     await expect(

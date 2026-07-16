@@ -139,17 +139,43 @@ export class CtripBridgeCommandService {
         });
       }
       case "readback": {
-        const observation = await this.#adapter.readback(loaded.handoff, loaded.draft);
+        let readbackTarget = loaded;
+        if (readbackTarget.handoff.state === "awaiting_operator_submit") {
+          if (readbackTarget.handoff.submitPermitConsumedAt === null) {
+            throw new CtripBridgeServiceError(
+              409,
+              "CTRIP_SUBMIT_NOT_CONSUMED",
+              "Readback recovery requires a consumed submit permit",
+            );
+          }
+          await this.#controlPlane.recoverSubmitObservation(
+            readbackTarget.context,
+            readbackTarget.handoff,
+            this.#adapter.evidenceKind,
+          );
+          readbackTarget = await this.#load(command);
+        }
+        if (readbackTarget.handoff.state !== "readback_pending") {
+          throw new CtripBridgeServiceError(
+            409,
+            "CTRIP_READBACK_NOT_READY",
+            "Ctrip handoff is not ready for readback",
+          );
+        }
+        const observation = await this.#adapter.readback(
+          readbackTarget.handoff,
+          readbackTarget.draft,
+        );
         const recorded = await this.#controlPlane.recordReadback(
-          loaded.context,
-          loaded.handoff,
+          readbackTarget.context,
+          readbackTarget.handoff,
           observation,
         );
         return ctripBridgeResultSchema.parse({
           schemaVersion: "geo.ctrip-bridge.result.v1",
-          tenantId: loaded.context.tenantId,
-          handoffId: loaded.handoff.id,
-          bridgePrincipalId: loaded.context.bridgePrincipalId,
+          tenantId: readbackTarget.context.tenantId,
+          handoffId: readbackTarget.handoff.id,
+          bridgePrincipalId: readbackTarget.context.bridgePrincipalId,
           adapterVersion: this.#adapter.version,
           observedAt: observation.observedAt,
           evidenceHash: observation.evidenceHash,

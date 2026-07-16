@@ -39,6 +39,11 @@ After the submit control is activated, every bridge outcome must therefore enter
 transition. No path from that state may return to submit. Reconciliation is
 read-only.
 
+Permit consumption itself is also part of that boundary. If the bridge stops
+before it can persist an observation, the consumed permit must be recovered as a
+durable `uncertain` observation before readback. Recovery must never invoke the
+external submit action again.
+
 Source: https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/
 
 ### Observation before interpretation

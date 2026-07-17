@@ -614,7 +614,7 @@ export interface PublicationRequestInput {
   readonly grantId: string;
   readonly token: string;
   readonly idempotencyKey: string;
-  readonly executionLevel: "dry_run";
+  readonly executionLevel: "dry_run" | "assisted";
   readonly scheduledFor?: string;
 }
 
@@ -939,6 +939,23 @@ export type AgentRunCapability =
       readonly reason: "tenant_not_configured" | "runner_disabled" | "service_unavailable";
     };
 
+export interface CustomerSetupReadiness {
+  readonly schemaVersion: "geo.customer-setup-readiness.v1";
+  readonly deploymentProfile: "standard" | "customer_demo";
+  readonly governanceMode: "external" | "demo_fixture";
+  readonly articleGenerationReady: boolean;
+  readonly ctripSimulationReady: boolean;
+  readonly externalPublishingEnabled: false;
+  readonly checks: {
+    readonly agent: boolean;
+    readonly ctripAccount: boolean;
+    readonly assistedEvidence: boolean;
+    readonly bridgeIdentity: boolean;
+    readonly bridgeRuntime: boolean;
+    readonly prePublicationAudit: boolean;
+  };
+}
+
 export interface RunAgentInput {
   readonly brandId: string;
   readonly campaignId: string;
@@ -1054,6 +1071,7 @@ export interface GeoApi {
     readonly wasChanged: boolean;
   }>;
   getArticleTemplates(): Promise<ArticleTemplateCatalogView>;
+  getSetupReadiness(): Promise<CustomerSetupReadiness>;
   getAgentCapability(): Promise<AgentRunCapability>;
   runAgent(input: RunAgentInput): Promise<AgentRunResponse>;
   getEvidenceSources(): Promise<readonly EvidenceSource[]>;
@@ -1391,6 +1409,37 @@ function parseAgentCapability(value: unknown): AgentRunCapability {
       "runner_disabled",
       "service_unavailable",
     ] as const),
+  };
+}
+
+function parseCustomerSetupReadiness(value: unknown): CustomerSetupReadiness {
+  const item = recordValue(value, "customer setup readiness");
+  const checks = recordValue(item.checks, "customer setup checks");
+  const schemaVersion = stringValue(item, "schemaVersion");
+  if (schemaVersion !== "geo.customer-setup-readiness.v1") {
+    throw protocolError(`unsupported customer setup schema: ${schemaVersion}`);
+  }
+  if (item.externalPublishingEnabled !== false) {
+    throw protocolError("customer setup cannot report external publishing as enabled");
+  }
+  return {
+    schemaVersion,
+    deploymentProfile: stringEnumValue(item, "deploymentProfile", [
+      "standard",
+      "customer_demo",
+    ] as const),
+    governanceMode: stringEnumValue(item, "governanceMode", ["external", "demo_fixture"] as const),
+    articleGenerationReady: booleanValue(item, "articleGenerationReady"),
+    ctripSimulationReady: booleanValue(item, "ctripSimulationReady"),
+    externalPublishingEnabled: false,
+    checks: {
+      agent: booleanValue(checks, "agent"),
+      ctripAccount: booleanValue(checks, "ctripAccount"),
+      assistedEvidence: booleanValue(checks, "assistedEvidence"),
+      bridgeIdentity: booleanValue(checks, "bridgeIdentity"),
+      bridgeRuntime: booleanValue(checks, "bridgeRuntime"),
+      prePublicationAudit: booleanValue(checks, "prePublicationAudit"),
+    },
   };
 }
 
@@ -2883,6 +2932,10 @@ export class HttpGeoApi implements GeoApi {
 
   async getArticleTemplates(): Promise<ArticleTemplateCatalogView> {
     return parseArticleTemplateCatalog(await this.request("/api/article-templates"));
+  }
+
+  async getSetupReadiness(): Promise<CustomerSetupReadiness> {
+    return parseCustomerSetupReadiness(await this.request("/api/setup/readiness"));
   }
 
   async getAgentCapability(): Promise<AgentRunCapability> {

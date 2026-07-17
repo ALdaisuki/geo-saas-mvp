@@ -867,7 +867,9 @@ class FakeRepository implements ApiRepository {
     return { ...existing, validUntil: input.validUntil };
   }
 
-  async listChannelAccounts(context: RequestContext) {
+  async listChannelAccounts(
+    context: RequestContext,
+  ): ReturnType<ApiRepository["listChannelAccounts"]> {
     this.lastContext = context;
     return [
       {
@@ -920,7 +922,9 @@ class FakeRepository implements ApiRepository {
     };
   }
 
-  async listServicePrincipals(context: RequestContext) {
+  async listServicePrincipals(
+    context: RequestContext,
+  ): ReturnType<ApiRepository["listServicePrincipals"]> {
     return [
       {
         id: "10000000-0000-4000-8000-000000000801",
@@ -2027,6 +2031,10 @@ async function testApp(
   mediaProduction?: MediaProductionController,
   agentRunGateway?: AgentRunGateway,
   ctripBridgeGateway?: CtripBridgeGateway,
+  deployment?: {
+    readonly deploymentProfile: "standard" | "customer_demo";
+    readonly governanceMode: "external" | "demo_fixture";
+  },
 ) {
   const app = await buildApp({
     repository,
@@ -2040,6 +2048,7 @@ async function testApp(
     publicationTokenFactory: () => tokenValue,
     allowedOrigins: ["https://console.example.test"],
     publicationGovernanceGate: governanceGate,
+    ...(deployment ?? {}),
     ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
     ...(ctripBridgeGateway === undefined ? {} : { ctripBridgeGateway }),
     ...(mediaProduction === undefined ? {} : { mediaProduction }),
@@ -2054,6 +2063,80 @@ afterEach(async () => {
 });
 
 describe("Fastify API security and vertical publication flow", () => {
+  it("reports customer readiness without exposing deployment credentials", async () => {
+    const repository = new FakeRepository();
+    const bridgePrincipalId = "10000000-0000-4000-8000-000000000103";
+    repository.listChannelAccounts = (async () => [
+      {
+        id: ids.account,
+        platform: "ctrip_community" as const,
+        displayName: "Ctrip customer demo",
+        capability: "browser_assisted" as const,
+        supportedExecutionLevels: ["dry_run" as const, "assisted" as const],
+        evidenceType: "preview" as const,
+        evidenceRefs: ["customer-demo:ctrip-simulator-v1"],
+        status: "active",
+        lastVerifiedAt: fixedNow.toISOString(),
+      },
+    ]) as ApiRepository["listChannelAccounts"];
+    repository.listServicePrincipals = (async (context) => [
+      {
+        id: bridgePrincipalId,
+        tenantId: context.tenantId,
+        name: "customer-demo-ctrip-bridge",
+        kind: "integration" as const,
+        profile: "ctrip_bridge" as const,
+        capabilities: ["publish:bridge" as const],
+        status: "active" as const,
+        credentialStatus: "not_issued" as const,
+        lastUsedAt: null,
+        createdAt: fixedNow.toISOString(),
+        updatedAt: fixedNow.toISOString(),
+      },
+    ]) as ApiRepository["listServicePrincipals"];
+    const gateway: AgentRunGateway = {
+      getCapability: async () => ({
+        available: true,
+        mode: "fixture",
+        provider: "fixture",
+        model: "fixture-geo-writer-v1",
+      }),
+      run: async () => {
+        throw new Error("not used");
+      },
+    };
+    const bridge: CtripBridgeGateway = {
+      execute: async () => {
+        throw new Error("not used");
+      },
+      health: async () => true,
+    };
+    const app = await testApp(repository, undefined, undefined, gateway, bridge, {
+      deploymentProfile: "customer_demo",
+      governanceMode: "demo_fixture",
+    });
+
+    const anonymous = await app.inject({ method: "GET", url: "/api/setup/readiness" });
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/setup/readiness",
+      headers: { cookie: authenticated.cookie },
+    });
+
+    expect(anonymous.statusCode).toBe(401);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      deploymentProfile: "customer_demo",
+      governanceMode: "demo_fixture",
+      articleGenerationReady: true,
+      ctripSimulationReady: true,
+      externalPublishingEnabled: false,
+    });
+    expect(response.body).not.toContain("accessToken");
+    expect(response.body).not.toContain(bridgePrincipalId);
+  });
+
   it("proxies tenant-scoped agent runs only through a content writer session and CSRF", async () => {
     const repository = new FakeRepository();
     const runInputs: AgentRunRequest[] = [];

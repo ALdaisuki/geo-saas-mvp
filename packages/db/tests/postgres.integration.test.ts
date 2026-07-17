@@ -14,6 +14,7 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  configureCustomerDemo,
   createDatabase,
   defaultMigrationDirectory,
   migrateToLatest,
@@ -4995,5 +4996,55 @@ describe("real PostgreSQL tenant and publication invariants", () => {
     } finally {
       await database.destroy();
     }
+  });
+
+  it("configures the explicit customer demo without enabling external publishing", async () => {
+    if (adminClient === undefined || postgresPort === undefined) {
+      throw new Error("PostgreSQL test client is not initialized");
+    }
+    const connectionString = `postgresql://postgres:${encodeURIComponent(password)}@127.0.0.1:${postgresPort}/${databaseName}`;
+    const database = createDatabase({
+      connectionString,
+      applicationName: "geo-customer-demo-integration",
+      maxConnections: 1,
+    });
+    try {
+      await configureCustomerDemo(database);
+    } finally {
+      await database.destroy();
+    }
+
+    const account = await adminClient.query<{
+      capability: string;
+      supported_execution_levels: string[];
+      capability_evidence_refs: unknown;
+    }>(
+      `SELECT capability, supported_execution_levels, capability_evidence_refs
+       FROM geo.channel_accounts WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, SEED_IDS.zhongtong.ctrip],
+    );
+    const principal = await adminClient.query<{ profile: string; capabilities: string[] }>(
+      `SELECT profile, capabilities FROM geo.service_principals
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, SEED_IDS.zhongtong.ctripBridgePrincipal],
+    );
+    const audit = await adminClient.query<{
+      details: { externalPublishingEnabled?: boolean };
+    }>(
+      `SELECT details FROM geo.audit_log
+       WHERE tenant_id = $1 AND request_id = 'customer-demo:ctrip:v1'`,
+      [tenantId],
+    );
+
+    expect(account.rows[0]).toMatchObject({
+      capability: "browser_assisted",
+      supported_execution_levels: ["dry_run", "assisted"],
+      capability_evidence_refs: ["customer-demo:ctrip-simulator-v1"],
+    });
+    expect(principal.rows[0]).toMatchObject({
+      profile: "ctrip_bridge",
+      capabilities: ["tenant:read", "content:read", "publish:bridge"],
+    });
+    expect(audit.rows.at(-1)?.details.externalPublishingEnabled).toBe(false);
   });
 });

@@ -234,6 +234,43 @@ describe("HttpGeoApi", () => {
     expect(new Headers(calls[2]?.init?.headers).has("authorization")).toBe(false);
   });
 
+  it("reads the customer setup contract and rejects an enabled external publisher", async () => {
+    const readiness = {
+      schemaVersion: "geo.customer-setup-readiness.v1",
+      deploymentProfile: "customer_demo",
+      governanceMode: "demo_fixture",
+      articleGenerationReady: true,
+      ctripSimulationReady: true,
+      externalPublishingEnabled: false,
+      checks: {
+        agent: true,
+        ctripAccount: true,
+        assistedEvidence: true,
+        bridgeIdentity: true,
+        bridgeRuntime: true,
+        prePublicationAudit: true,
+      },
+    };
+    const responses = [
+      jsonResponse(readiness),
+      jsonResponse({ ...readiness, externalPublishingEnabled: true }),
+    ];
+    const api = new HttpGeoApi("", async () => {
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await expect(api.getSetupReadiness()).resolves.toMatchObject({
+      deploymentProfile: "customer_demo",
+      articleGenerationReady: true,
+      externalPublishingEnabled: false,
+    });
+    await expect(api.getSetupReadiness()).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+    });
+  });
+
   it("rejects mismatched agent capability and result modes", async () => {
     const responses = [
       jsonResponse(loginBody),

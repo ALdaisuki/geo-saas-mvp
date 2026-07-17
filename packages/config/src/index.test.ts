@@ -5,6 +5,14 @@ import { describe, expect, it } from "vitest";
 import { productionDeploymentEnvSchema, serverEnvSchema } from "./index.js";
 
 const composeSource = await readFile(new URL("../../../compose.yaml", import.meta.url), "utf8");
+const demoComposeSource = await readFile(
+  new URL("../../../compose.customer-demo.yaml", import.meta.url),
+  "utf8",
+);
+const customerLauncherSource = await readFile(
+  new URL("../../../scripts/start-customer-demo.ps1", import.meta.url),
+  "utf8",
+);
 
 describe("serverEnvSchema", () => {
   it("defaults external providers to fixtures and browser automation to disabled", () => {
@@ -160,6 +168,7 @@ describe("productionDeploymentEnvSchema", () => {
     GEO_WORKER_DB_PASSWORD: "worker-production-secret",
     GEO_IDENTITY_DB_PASSWORD: "identity-production-secret",
     SESSION_SECRET: "a-real-production-session-secret-value",
+    PLASTIC_PROMISE_MCP_URL: "https://plastic-promise.example.test/mcp",
     MCP_PRINCIPALS_JSON: JSON.stringify([
       {
         accessToken: "a-real-mcp-access-token-with-32-characters",
@@ -199,6 +208,41 @@ describe("productionDeploymentEnvSchema", () => {
     expect(productionDeploymentEnvSchema.parse(validProductionEnvironment)).toMatchObject(
       validProductionEnvironment,
     );
+  });
+
+  it("accepts the loopback customer demo without an external governance URL", () => {
+    expect(
+      productionDeploymentEnvSchema.parse({
+        ...validProductionEnvironment,
+        GEO_DEPLOYMENT_PROFILE: "customer_demo",
+        GEO_GOVERNANCE_MODE: "demo_fixture",
+        PLASTIC_PROMISE_MCP_URL: "",
+        PLASTIC_PROMISE_MCP_AUTHORIZATION: "",
+      }),
+    ).toMatchObject({
+      GEO_DEPLOYMENT_PROFILE: "customer_demo",
+      GEO_GOVERNANCE_MODE: "demo_fixture",
+    });
+  });
+
+  it("rejects demo governance outside the customer demo profile", () => {
+    expect(() =>
+      productionDeploymentEnvSchema.parse({
+        ...validProductionEnvironment,
+        GEO_GOVERNANCE_MODE: "demo_fixture",
+      }),
+    ).toThrow(/customer_demo/iu);
+  });
+
+  it("keeps the one-click customer profile explicit, data-drive scoped, and non-live", () => {
+    expect(customerLauncherSource).toContain("GEO_DEPLOYMENT_PROFILE=customer_demo");
+    expect(customerLauncherSource).toContain("GEO_GOVERNANCE_MODE=demo_fixture");
+    expect(customerLauncherSource).toContain("RandomNumberGenerator");
+    expect(customerLauncherSource).toContain("Join-Path $repoDrive");
+    expect(customerLauncherSource).toContain("It cannot publish externally");
+    expect(customerLauncherSource).not.toContain("F:\\Agent\\Memory system");
+    expect(demoComposeSource).toContain("db-configure-customer-demo");
+    expect(composeSource).toContain("profiles:\n      - customer-demo");
   });
 
   it("passes the optional Pi provider key through production preflight", () => {

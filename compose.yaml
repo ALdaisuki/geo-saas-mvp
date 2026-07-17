@@ -50,6 +50,9 @@ services:
       - GEO_WORKER_DB_PASSWORD=${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}
       - GEO_IDENTITY_DB_PASSWORD=${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
       - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
+      - GEO_DEPLOYMENT_PROFILE=${GEO_DEPLOYMENT_PROFILE:-standard}
+      - GEO_GOVERNANCE_MODE=${GEO_GOVERNANCE_MODE:-external}
+      - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:-}
       - MCP_PRINCIPALS_JSON=${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
       - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
       - AGENT_PROVIDER=${AGENT_PROVIDER:-fixture}
@@ -224,6 +227,22 @@ services:
       db-bootstrap:
         condition: service_completed_successfully
 
+  db-configure-customer-demo:
+    <<: *db-tools
+    profiles:
+      - customer-demo
+    command:
+      - node
+      - dist/cli/configure-customer-demo.js
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:-standard}
+    depends_on:
+      db-seed:
+        condition: service_completed_successfully
+      db-bootstrap-operator:
+        condition: service_completed_successfully
+
   api:
     <<: *node-security
     image: ${GEO_IMAGE_PREFIX:-geo-saas}-api:${GEO_IMAGE_TAG:-local}
@@ -241,7 +260,9 @@ services:
       - DATABASE_IDENTITY_URL=postgresql://${GEO_IDENTITY_DB_USER:-geo_identity_login}:${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
       - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
       - APP_ORIGIN=${APP_ORIGIN:?set APP_ORIGIN to the external HTTPS origin}
-      - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
+      - GEO_DEPLOYMENT_PROFILE=${GEO_DEPLOYMENT_PROFILE:-standard}
+      - GEO_GOVERNANCE_MODE=${GEO_GOVERNANCE_MODE:-external}
+      - PLASTIC_PROMISE_MCP_URL=${PLASTIC_PROMISE_MCP_URL:-}
       # Bare form passes the secret only when it is present in the operator environment/.env.
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - AGENT_GATEWAY_URL=http://127.0.0.1:9021
@@ -336,7 +357,9 @@ services:
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-127.0.0.1:9021,localhost:9021}
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-https://geo.example.com}
       MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set MCP_PRINCIPALS_JSON after provisioning an active operator}
-      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set PLASTIC_PROMISE_MCP_URL to the reachable governance endpoint}
+      GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:-standard}
+      GEO_GOVERNANCE_MODE: ${GEO_GOVERNANCE_MODE:-external}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:-}
       PLASTIC_PROMISE_MCP_AUTHORIZATION: ${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       AGENT_PROVIDER: ${AGENT_PROVIDER:-fixture}
       AGENT_MODEL: ${AGENT_MODEL:-fixture-geo-writer-v1}

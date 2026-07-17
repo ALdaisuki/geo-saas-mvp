@@ -1,4 +1,5 @@
 export { createDatabase, type DatabaseOptions } from "./client.js";
+export { configureCustomerDemo } from "./customer-demo.js";
 export {
   bootstrapOperator,
   loadBootstrapOperatorEnvironment,

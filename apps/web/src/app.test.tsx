@@ -407,6 +407,22 @@ function liveApi(): GeoApi {
       version: ARTICLE_TEMPLATE_CATALOG_VERSION,
       items: ARTICLE_TEMPLATES,
     }),
+    getSetupReadiness: async () => ({
+      schemaVersion: "geo.customer-setup-readiness.v1",
+      deploymentProfile: "customer_demo",
+      governanceMode: "demo_fixture",
+      articleGenerationReady: true,
+      ctripSimulationReady: true,
+      externalPublishingEnabled: false,
+      checks: {
+        agent: true,
+        ctripAccount: true,
+        assistedEvidence: true,
+        bridgeIdentity: true,
+        bridgeRuntime: true,
+        prePublicationAudit: true,
+      },
+    }),
     getAgentCapability: async () => ({
       available: false,
       mode: "disabled",
@@ -994,13 +1010,15 @@ describe("GEO operator console", () => {
     expect(screen.queryByText("实时审计列表不可用")).not.toBeInTheDocument();
   });
 
-  it("keeps the article workflow explicitly bounded to manual-only dry-runs", async () => {
+  it("keeps the article workflow bounded to audited customer-demo actions", async () => {
     renderApp({ path: "/content", api: liveApi() });
 
     await screen.findByText("受治理运营链");
+    expect(screen.getByText(/头条号、搜狐号使用 manual_only \+ dry_run/)).toBeInTheDocument();
     expect(
-      screen.getByText(/头条号、搜狐号、携程社区当前仅 manual_only \+ dry_run/),
+      screen.getByText(/携程社区使用 browser_assisted \+ assisted 内部模拟/),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /unattended|无人值守/i })).not.toBeInTheDocument();
     expect(screen.getByText("尚无文章；创建操作会同时生成 v1")).toBeInTheDocument();
   });
 
@@ -1194,6 +1212,20 @@ describe("GEO operator console", () => {
     expect(screen.getByText("豆包 / 千问在线评测")).toBeInTheDocument();
     expect(screen.getByText("生产级图片生成")).toBeInTheDocument();
     expect(screen.getByText("品牌记忆正负反馈闭环")).toBeInTheDocument();
+  });
+
+  it("shows a customer-facing ready path without exposing deployment identifiers", async () => {
+    renderApp({ path: "/settings", api: liveApi() });
+
+    expect(await screen.findByText("客户演示环境")).toBeInTheDocument();
+    expect(await screen.findByText("文章生成")).toBeInTheDocument();
+    expect(await screen.findByText("携程流程演示")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "开始生成文章" })).toHaveAttribute(
+      "href",
+      "/content",
+    );
+    expect(screen.queryByText(/10000000-0000/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CTRIP_/)).not.toBeInTheDocument();
   });
 
   it("edits and confirms the live tenant automation mode and worker quota", async () => {

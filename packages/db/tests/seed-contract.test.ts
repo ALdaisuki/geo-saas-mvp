@@ -57,6 +57,11 @@ describe("database seed contract", () => {
     expect(seedSource).toContain("'worker', 'active'");
   });
 
+  it("reserves a deterministic Ctrip bridge identity for the explicit customer demo", () => {
+    expect(seedSource).toContain("ctripBridgePrincipal");
+    expect(seedSource).toContain("10000000-0000-4000-8000-000000000103");
+  });
+
   it("seeds one immutable active Brand Agent Profile per fixture brand", () => {
     expect(seedSource).toContain("SEED_IDS.zhongtong.brandAgentProfile");
     expect(seedSource).toContain("SEED_IDS.synthetic.brandAgentProfile");

@@ -42,11 +42,81 @@ const productionLongSecretSchema = z
   .refine((value) => !containsCheckedInPlaceholder(value), {
     message: "Production secret contains a checked-in placeholder",
   });
+const optionalProductionSecretSchema = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  productionSecretSchema.optional(),
+);
 
 const booleanStringSchema = z
   .enum(["true", "false"])
   .default("false")
   .transform((value) => value === "true");
+
+const deploymentProfileSchema = z.enum(["standard", "customer_demo"]).default("standard");
+const governanceModeSchema = z.enum(["external", "demo_fixture"]).default("external");
+const optionalUrlSchema = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().url().optional(),
+);
+const optionalSecretSchema = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+
+function validateGovernanceEnvironment(
+  environment: {
+    readonly APP_ORIGIN?: string | undefined;
+    readonly AGENT_PROVIDER: string;
+    readonly GEO_DEPLOYMENT_PROFILE: "standard" | "customer_demo";
+    readonly GEO_GOVERNANCE_MODE: "external" | "demo_fixture";
+    readonly PLASTIC_PROMISE_MCP_URL?: string | undefined;
+  },
+  context: z.RefinementCtx,
+): void {
+  if (
+    environment.GEO_GOVERNANCE_MODE === "demo_fixture" &&
+    environment.GEO_DEPLOYMENT_PROFILE !== "customer_demo"
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Demo governance is restricted to GEO_DEPLOYMENT_PROFILE=customer_demo",
+      path: ["GEO_GOVERNANCE_MODE"],
+    });
+  }
+  if (
+    environment.GEO_DEPLOYMENT_PROFILE === "customer_demo" &&
+    environment.GEO_GOVERNANCE_MODE !== "demo_fixture"
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "The customer demo profile requires demo_fixture governance",
+      path: ["GEO_DEPLOYMENT_PROFILE"],
+    });
+  }
+  if (
+    environment.GEO_GOVERNANCE_MODE === "demo_fixture" &&
+    environment.AGENT_PROVIDER !== "fixture"
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Demo governance can only run with the fixture Pi provider",
+      path: ["AGENT_PROVIDER"],
+    });
+  }
+  if (
+    environment.GEO_DEPLOYMENT_PROFILE === "customer_demo" &&
+    environment.APP_ORIGIN !== undefined
+  ) {
+    const origin = new URL(environment.APP_ORIGIN);
+    if (!(["127.0.0.1", "localhost", "::1"] as readonly string[]).includes(origin.hostname)) {
+      context.addIssue({
+        code: "custom",
+        message: "The customer demo origin must be loopback-only",
+        path: ["APP_ORIGIN"],
+      });
+    }
+  }
+}
 
 const agentBaseUrlSchema = z
   .url()
@@ -112,8 +182,10 @@ const serverEnvBaseSchema = z.object({
   REDIS_URL: z.string().url().optional(),
   SESSION_SECRET: z.string().min(32),
   APP_ORIGIN: z.string().url(),
-  PLASTIC_PROMISE_MCP_URL: z.string().url().optional(),
-  PLASTIC_PROMISE_MCP_AUTHORIZATION: z.string().min(1).optional(),
+  GEO_DEPLOYMENT_PROFILE: deploymentProfileSchema,
+  GEO_GOVERNANCE_MODE: governanceModeSchema,
+  PLASTIC_PROMISE_MCP_URL: optionalUrlSchema,
+  PLASTIC_PROMISE_MCP_AUTHORIZATION: optionalSecretSchema,
   EVIDENCE_STORAGE_DIR: z.string().min(1).default(".data/evidence"),
   GEO_MEDIA_PROVIDER: z.enum(["disabled", "fixture"]).default("disabled"),
   GEO_MEDIA_OBJECT_ROOT: z.string().min(1).default(".data/media"),
@@ -138,6 +210,7 @@ const serverEnvBaseSchema = z.object({
 
 export const serverEnvSchema = serverEnvBaseSchema.superRefine((environment, context) => {
   validateAgentEnvironment(environment, context);
+  validateGovernanceEnvironment(environment, context);
   if (
     (environment.AGENT_GATEWAY_URL === undefined) !==
     (environment.AGENT_GATEWAY_CREDENTIALS_JSON === undefined)
@@ -218,11 +291,27 @@ export const productionDeploymentEnvSchema = z
     AGENT_BASE_URL: agentBaseUrlSchema.optional(),
     AGENT_API_KEY: productionSecretSchema.optional(),
     GEO_BOOTSTRAP_PASSWORD: productionSecretSchema.optional(),
-    PLASTIC_PROMISE_MCP_AUTHORIZATION: productionSecretSchema.optional(),
+    GEO_DEPLOYMENT_PROFILE: deploymentProfileSchema,
+    GEO_GOVERNANCE_MODE: governanceModeSchema,
+    PLASTIC_PROMISE_MCP_URL: optionalUrlSchema,
+    PLASTIC_PROMISE_MCP_AUTHORIZATION: optionalProductionSecretSchema,
     DOUBAO_API_KEY: productionSecretSchema.optional(),
     QWEN_API_KEY: productionSecretSchema.optional(),
   })
-  .superRefine(validateAgentEnvironment);
+  .superRefine((environment, context) => {
+    validateAgentEnvironment(environment, context);
+    validateGovernanceEnvironment(environment, context);
+    if (
+      environment.GEO_GOVERNANCE_MODE === "external" &&
+      environment.PLASTIC_PROMISE_MCP_URL === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "PLASTIC_PROMISE_MCP_URL is required for external governance",
+        path: ["PLASTIC_PROMISE_MCP_URL"],
+      });
+    }
+  });
 
 export type ProductionDeploymentEnv = z.infer<typeof productionDeploymentEnvSchema>;
 

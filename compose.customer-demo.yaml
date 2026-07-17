@@ -1,0 +1,24 @@
+services:
+  api:
+    depends_on:
+      db-configure-customer-demo:
+        condition: service_completed_successfully
+
+  worker:
+    depends_on:
+      db-configure-customer-demo:
+        condition: service_completed_successfully
+
+  agent-mcp:
+    depends_on:
+      api:
+        condition: service_healthy
+      db-configure-customer-demo:
+        condition: service_completed_successfully
+
+  web:
+    depends_on:
+      api:
+        condition: service_healthy
+      db-configure-customer-demo:
+        condition: service_completed_successfully

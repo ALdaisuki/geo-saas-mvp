@@ -43,6 +43,7 @@ import {
   type PublicationPayload,
   type PublicationReadback,
   type PublicationReceipt,
+  type PublicationRequestInput,
   type PublicationRequestResult,
   type PublicationVariant,
   type PolicyBundle,
@@ -1191,8 +1192,28 @@ interface VariantAuditState {
   readonly result: AuditResult;
   readonly scheduledFor: string;
   readonly publication: PublicationRequestResult | null;
+  readonly executionLevel: PublicationRequestInput["executionLevel"] | null;
   readonly revoked: boolean;
   readonly grantUnavailable: boolean;
+}
+
+function demoExecutionLevel(
+  account: ChannelAccount,
+): PublicationRequestInput["executionLevel"] | null {
+  if (
+    account.capability === "manual_only" &&
+    account.supportedExecutionLevels.includes("dry_run")
+  ) {
+    return "dry_run";
+  }
+  if (
+    account.platform === "ctrip_community" &&
+    account.capability === "browser_assisted" &&
+    account.supportedExecutionLevels.includes("assisted")
+  ) {
+    return "assisted";
+  }
+  return null;
 }
 
 export function ArticleOperations({
@@ -1216,10 +1237,7 @@ export function ArticleOperations({
   const [publishing, setPublishing] = useState<string | null>(null);
   const [auditState, setAuditState] = useState<Record<string, VariantAuditState>>({});
   const [auditRequestKeys, setAuditRequestKeys] = useState<Record<string, string>>({});
-  const eligibleAccounts = accounts.filter(
-    (account) =>
-      account.capability === "manual_only" && account.supportedExecutionLevels.includes("dry_run"),
-  );
+  const eligibleAccounts = accounts.filter((account) => demoExecutionLevel(account) !== null);
   const canWrite = capabilities.includes("content:write");
   const canAudit = capabilities.includes("audit:run");
   const canPublish = capabilities.includes("publish:request");
@@ -1337,6 +1355,7 @@ export function ArticleOperations({
           result,
           scheduledFor: localDateTime(5),
           publication: null,
+          executionLevel: null,
           revoked: false,
           grantUnavailable: false,
         },
@@ -1355,7 +1374,10 @@ export function ArticleOperations({
     }
   }
 
-  async function requestDryRun(variant: PublicationVariant) {
+  async function requestDemoPublication(
+    variant: PublicationVariant,
+    executionLevel: PublicationRequestInput["executionLevel"],
+  ) {
     if (!canWrite || !canPublish) return;
     const state = auditState[variant.id];
     const authorization = state?.result.publicationAuthorization;
@@ -1373,13 +1395,13 @@ export function ArticleOperations({
       const publication = await api.requestPublication({
         grantId: authorization.grantId,
         token: authorization.token,
-        idempotencyKey: `web-publish:${authorization.grantId}:${scheduledFor}`,
-        executionLevel: "dry_run",
+        idempotencyKey: `web-publish:${executionLevel}:${authorization.grantId}:${scheduledFor}`,
+        executionLevel,
         scheduledFor,
       });
       setAuditState((current) => ({
         ...current,
-        [variant.id]: { ...state, publication },
+        [variant.id]: { ...state, publication, executionLevel },
       }));
     } catch (requestError) {
       const grantUnavailable =
@@ -1541,11 +1563,14 @@ export function ArticleOperations({
           <div className="ops-platform-boundary">
             <ShieldAlert size={17} />
             <span>
-              仅列出 capability=manual_only 且支持 dry_run 的账号；生成变体不会写入外部平台。
+              仅列出 manual_only + dry_run，或携程 browser_assisted + assisted 的账号；不提供
+              unattended，客户演示不会写入真实外部平台。
             </span>
           </div>
           <div className="ops-variant-list">
             {eligibleAccounts.map((account) => {
+              const executionLevel = demoExecutionLevel(account);
+              if (executionLevel === null) return null;
               const variant = currentVariants.find((item) => item.channelAccountId === account.id);
               const state = variant === undefined ? undefined : auditState[variant.id];
               const authorization = state?.result.publicationAuthorization;
@@ -1571,9 +1596,9 @@ export function ArticleOperations({
                     </div>
                   </div>
                   <div className="ops-boundary-labels">
-                    <span>manual_only</span>
-                    <span>dry_run</span>
-                    <span>未发生外部发布</span>
+                    <span>{account.capability}</span>
+                    <span>{executionLevel}</span>
+                    <span>未发生真实外部发布</span>
                   </div>
                   {variant === undefined ? (
                     <span className="muted">待生成变体</span>
@@ -1652,7 +1677,7 @@ export function ArticleOperations({
                           <button
                             className="button-primary"
                             type="button"
-                            onClick={() => void requestDryRun(variant)}
+                            onClick={() => void requestDemoPublication(variant, executionLevel)}
                             disabled={!canWrite || !canPublish || publishing === variant.id}
                           >
                             {publishing === variant.id ? (
@@ -1660,7 +1685,7 @@ export function ArticleOperations({
                             ) : (
                               <CalendarClock size={15} />
                             )}
-                            提交排期 Dry-run
+                            {executionLevel === "assisted" ? "提交携程模拟" : "提交排期 Dry-run"}
                           </button>
                           <button
                             className="button-secondary danger-text"
@@ -1675,7 +1700,11 @@ export function ArticleOperations({
                         <div className="ops-publication-created" role="status">
                           <CheckCircle2 size={17} />
                           <div>
-                            <strong>Dry-run 作业已创建</strong>
+                            <strong>
+                              {state.executionLevel === "assisted"
+                                ? "携程模拟作业已创建"
+                                : "Dry-run 作业已创建"}
+                            </strong>
                             <span className="mono">{state.publication.publicationJobId}</span>
                           </div>
                           <NavLink className="text-link" to="/publishing">
@@ -1773,7 +1802,8 @@ export function OperationsWorkspace({
       </section>
 
       <OperationNotice>
-        头条号、搜狐号、携程社区当前仅 manual_only + dry_run；变体、审计与排期都不会产生外部发布。
+        头条号、搜狐号使用 manual_only + dry_run；客户演示中的携程社区使用 browser_assisted +
+        assisted 内部模拟。所有路径均先审计，不提供 unattended。
       </OperationNotice>
 
       {!canWrite ? (

@@ -1,7 +1,7 @@
 import { loadServerEnv } from "@geo/config";
 import { createDatabase } from "@geo/db";
 import { ContentAddressedMediaStore, FixtureImageGenerationProvider } from "@geo/media";
-import { PlasticPromisePublicationGate } from "@geo/agent";
+import { createCustomerDemoGovernanceClient, PlasticPromisePublicationGate } from "@geo/agent";
 import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-transport";
 
 import { buildApp } from "./app.js";
@@ -11,7 +11,7 @@ import { MediaProductionService } from "./media-production-service.js";
 import { createPostgresApiRepository } from "./postgres-repository.js";
 
 const env = loadServerEnv();
-if (env.PLASTIC_PROMISE_MCP_URL === undefined) {
+if (env.GEO_GOVERNANCE_MODE === "external" && env.PLASTIC_PROMISE_MCP_URL === undefined) {
   throw new Error("PLASTIC_PROMISE_MCP_URL is required for publication governance");
 }
 if (env.DATABASE_IDENTITY_URL === undefined) {
@@ -26,14 +26,16 @@ const identityDatabase = createDatabase({
   applicationName: "geo-api-identity",
   maxConnections: 2,
 });
-const plasticPromiseEndpoint = new URL(env.PLASTIC_PROMISE_MCP_URL);
-const plasticPromise = await connectPlasticPromiseStreamableHttp({
-  endpoint: plasticPromiseEndpoint.href,
-  allowedOrigins: [plasticPromiseEndpoint.origin],
-  ...(env.PLASTIC_PROMISE_MCP_AUTHORIZATION === undefined
-    ? {}
-    : { authorizationHeader: env.PLASTIC_PROMISE_MCP_AUTHORIZATION }),
-});
+const plasticPromise =
+  env.GEO_GOVERNANCE_MODE === "demo_fixture"
+    ? createCustomerDemoGovernanceClient()
+    : await connectPlasticPromiseStreamableHttp({
+        endpoint: env.PLASTIC_PROMISE_MCP_URL as string,
+        allowedOrigins: [new URL(env.PLASTIC_PROMISE_MCP_URL as string).origin],
+        ...(env.PLASTIC_PROMISE_MCP_AUTHORIZATION === undefined
+          ? {}
+          : { authorizationHeader: env.PLASTIC_PROMISE_MCP_AUTHORIZATION }),
+      });
 const repository = createPostgresApiRepository({ runtimeDatabase, identityDatabase });
 const mediaObjectStore = new ContentAddressedMediaStore(env.GEO_MEDIA_OBJECT_ROOT);
 const mediaProduction =
@@ -63,9 +65,11 @@ const ctripBridgeGateway =
 const app = await buildApp({
   repository,
   sessionSecret: env.SESSION_SECRET,
-  cookieSecure: env.NODE_ENV === "production",
+  cookieSecure: env.NODE_ENV === "production" && env.GEO_DEPLOYMENT_PROFILE !== "customer_demo",
   allowedOrigins: [env.APP_ORIGIN],
   logger: true,
+  deploymentProfile: env.GEO_DEPLOYMENT_PROFILE,
+  governanceMode: env.GEO_GOVERNANCE_MODE,
   publicationGovernanceGate: new PlasticPromisePublicationGate(plasticPromise),
   ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
   ...(ctripBridgeGateway === undefined ? {} : { ctripBridgeGateway }),

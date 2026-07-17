@@ -1,3 +1,4 @@
+import { createCustomerDemoGovernanceClient } from "@geo/agent";
 import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-transport";
 
 import { readAutomationProducerConfig } from "./automation-config.js";
@@ -58,15 +59,30 @@ const sessions = new GeoApiSessionRegistry({
   credentials: parseMcpPrincipalCredentials(requiredEnvironment("MCP_PRINCIPALS_JSON")),
 });
 const api = new HttpInternalGeoApiClient({ sessions });
-const governanceEndpoint = new URL(requiredEnvironment("PLASTIC_PROMISE_MCP_URL"));
+const governanceMode = process.env.GEO_GOVERNANCE_MODE ?? "external";
+if (governanceMode !== "external" && governanceMode !== "demo_fixture") {
+  throw new Error("GEO_GOVERNANCE_MODE must be external or demo_fixture");
+}
+if (governanceMode === "demo_fixture" && process.env.GEO_DEPLOYMENT_PROFILE !== "customer_demo") {
+  throw new Error("Demo governance is restricted to the customer_demo deployment profile");
+}
+if (governanceMode === "demo_fixture" && (process.env.AGENT_PROVIDER ?? "fixture") !== "fixture") {
+  throw new Error("Demo governance can only run with the fixture Pi provider");
+}
 const governanceAuthorization = process.env.PLASTIC_PROMISE_MCP_AUTHORIZATION?.trim();
-const governance = await connectPlasticPromiseStreamableHttp({
-  endpoint: governanceEndpoint.href,
-  allowedOrigins: [governanceEndpoint.origin],
-  ...(governanceAuthorization === undefined || governanceAuthorization.length === 0
-    ? {}
-    : { authorizationHeader: governanceAuthorization }),
-});
+const governance =
+  governanceMode === "demo_fixture"
+    ? createCustomerDemoGovernanceClient()
+    : await (async () => {
+        const governanceEndpoint = new URL(requiredEnvironment("PLASTIC_PROMISE_MCP_URL"));
+        return connectPlasticPromiseStreamableHttp({
+          endpoint: governanceEndpoint.href,
+          allowedOrigins: [governanceEndpoint.origin],
+          ...(governanceAuthorization === undefined || governanceAuthorization.length === 0
+            ? {}
+            : { authorizationHeader: governanceAuthorization }),
+        });
+      })();
 const agentProvider = process.env.AGENT_PROVIDER ?? "fixture";
 const agentModel = process.env.AGENT_MODEL ?? "fixture-geo-writer-v1";
 let agentRunner: PiAgentRunService;
@@ -127,6 +143,7 @@ console.info(
     host,
     port,
     agent: agentRunner.capability,
+    governanceMode,
     automation: automationProducer.health(),
   }),
 );

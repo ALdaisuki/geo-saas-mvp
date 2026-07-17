@@ -12,6 +12,7 @@
   "scripts": {
     "bootstrap:operator": "tsx src/cli/bootstrap-operator.ts",
     "build": "tsc -p tsconfig.json",
+    "configure:customer-demo": "tsx src/cli/configure-customer-demo.ts",
     "migrate": "tsx src/cli/migrate.ts",
     "preflight:production": "tsx src/cli/validate-production.ts",
     "provision:tenant": "tsx src/cli/provision-tenant.ts",

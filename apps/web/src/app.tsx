@@ -50,6 +50,7 @@ import {
   type Campaign,
   type ChannelAccount,
   type ContentItem,
+  type CustomerSetupReadiness,
   type GeoApi,
   type PublicationJob,
   type PolicyBundle,
@@ -2609,6 +2610,7 @@ function AuditView({
 
 function SettingsView({
   mode,
+  api,
   accounts,
   campaigns,
   resource,
@@ -2619,6 +2621,7 @@ function SettingsView({
   onSetCircuitBreaker,
 }: {
   mode: ConsoleMode;
+  api: GeoApi;
   accounts: AccountRow[];
   campaigns: CampaignRow[];
   resource: ApiResource<unknown>;
@@ -2645,6 +2648,13 @@ function SettingsView({
     input: { readonly targetState: "open" | "closed"; readonly reason: string },
   ) => Promise<void>;
 }) {
+  const [setupTarget, setSetupTarget] = useState<"demo" | "real">("demo");
+  const [setup, setSetup] = useState<ApiResource<CustomerSetupReadiness | null>>({
+    endpoint: "GET /api/setup/readiness",
+    data: null,
+    error: null,
+    status: mode === "demo" ? "ready" : "loading",
+  });
   const [scopedControlIntent, setScopedControlIntent] = useState<
     ScopedAutomationControl | "new" | null
   >(null);
@@ -2653,8 +2663,187 @@ function SettingsView({
     readonly scopeKey: string;
     readonly targetState: "open" | "closed";
   } | null>(null);
+
+  async function refreshSetup(): Promise<void> {
+    if (mode !== "live") return;
+    setSetup((current) => ({ ...current, error: null, status: "loading" }));
+    try {
+      const readiness = await api.getSetupReadiness();
+      setSetup({
+        endpoint: "GET /api/setup/readiness",
+        data: readiness,
+        error: null,
+        status: "ready",
+      });
+    } catch (error) {
+      setSetup({
+        endpoint: "GET /api/setup/readiness",
+        data: null,
+        error:
+          error instanceof GeoApiError
+            ? {
+                code: error.code,
+                message: error.message,
+                requestId: error.requestId,
+                status: error.status,
+              }
+            : {
+                code: "NETWORK_ERROR",
+                message: error instanceof Error ? error.message : "无法读取首次使用状态",
+                requestId: null,
+                status: 0,
+              },
+        status: "error",
+      });
+    }
+  }
+
+  useEffect(() => {
+    void refreshSetup();
+  }, [api, mode]);
+
+  const readiness = setup.data;
+  const checks =
+    setupTarget === "demo"
+      ? [
+          {
+            label: "文章生成",
+            detail: "Pi Agent 与租户事实已连接",
+            ready: readiness?.checks.agent === true && readiness.checks.ctripAccount,
+          },
+          {
+            label: "发布前审计",
+            detail: "每个最终平台版本先经过确定性审计",
+            ready: readiness?.checks.prePublicationAudit === true,
+          },
+          {
+            label: "携程流程演示",
+            detail: "只生成模拟证据，不连接携程外部页面",
+            ready: readiness?.ctripSimulationReady === true,
+          },
+          {
+            label: "外部发布",
+            detail: "客户演示版固定关闭",
+            ready: false,
+            locked: true,
+          },
+        ]
+      : [
+          {
+            label: "正式治理服务",
+            detail: "生产环境使用独立 Plastic Promise",
+            ready: readiness?.governanceMode === "external",
+          },
+          {
+            label: "账号授权证据",
+            detail: "账号能力与最近核验记录",
+            ready: readiness?.checks.assistedEvidence === true,
+          },
+          {
+            label: "携程桥接服务",
+            detail: "租户身份和运行连接均已验证",
+            ready:
+              readiness?.checks.bridgeIdentity === true && readiness.checks.bridgeRuntime === true,
+          },
+          {
+            label: "外部发布",
+            detail: "当前版本尚未开放真实写入",
+            ready: false,
+            locked: true,
+          },
+        ];
+
   return (
     <div className="view-stack">
+      <section className="panel customer-setup-panel">
+        <div className="customer-setup-header">
+          <div>
+            <span className="setup-kicker">首次使用</span>
+            <h2>{setupTarget === "demo" ? "客户演示环境" : "真实账号预检"}</h2>
+            <p>
+              {setupTarget === "demo"
+                ? "本地生成、审计和携程模拟已打包为同一套启动流程。"
+                : "正式账号只做就绪核验，不会自动打开外部发布权限。"}
+            </p>
+          </div>
+          <div className="segmented-control" aria-label="配置目标">
+            <button
+              type="button"
+              className={setupTarget === "demo" ? "active" : ""}
+              onClick={() => setSetupTarget("demo")}
+            >
+              本地演示
+            </button>
+            <button
+              type="button"
+              className={setupTarget === "real" ? "active" : ""}
+              onClick={() => setSetupTarget("real")}
+            >
+              真实账号
+            </button>
+          </div>
+        </div>
+        {mode === "demo" ? (
+          <UnsupportedState title="当前是离线界面演示" detail="登录客户版后可读取真实就绪状态" />
+        ) : (
+          <ResourceState resource={setup} empty={false} emptyLabel="" />
+        )}
+        {setup.status === "ready" && mode === "live" ? (
+          <>
+            <div className="customer-setup-checks">
+              {checks.map((check) => (
+                <div className="customer-setup-check" key={check.label}>
+                  <span
+                    className={`setup-check-icon ${check.ready ? "ready" : check.locked ? "locked" : "pending"}`}
+                  >
+                    {check.ready ? (
+                      <CheckCircle2 size={18} aria-hidden="true" />
+                    ) : check.locked ? (
+                      <LockKeyhole size={18} aria-hidden="true" />
+                    ) : (
+                      <Clock3 size={18} aria-hidden="true" />
+                    )}
+                  </span>
+                  <div>
+                    <strong>{check.label}</strong>
+                    <span>{check.detail}</span>
+                  </div>
+                  <StatusBadge
+                    tone={check.ready ? "success" : check.locked ? "neutral" : "warning"}
+                  >
+                    {check.ready ? "已就绪" : check.locked ? "已锁定" : "待配置"}
+                  </StatusBadge>
+                </div>
+              ))}
+            </div>
+            <div className="customer-setup-actions">
+              <span>
+                {readiness?.deploymentProfile === "customer_demo"
+                  ? "客户演示版 · 外部发布关闭"
+                  : "标准部署 · 以实时证据为准"}
+              </span>
+              <button
+                className="button-secondary"
+                type="button"
+                onClick={() => void refreshSetup()}
+              >
+                <RefreshCw size={16} /> 重新检测
+              </button>
+              {setupTarget === "demo" && readiness?.articleGenerationReady === true ? (
+                <NavLink className="button-primary" to="/content">
+                  <Sparkles size={16} /> 开始生成文章
+                </NavLink>
+              ) : (
+                <button className="button-primary" type="button" disabled>
+                  <LockKeyhole size={16} />
+                  {setupTarget === "demo" ? "等待配置完成" : "等待正式接入"}
+                </button>
+              )}
+            </div>
+            <SourceCaption endpoint="GET /api/setup/readiness" />
+          </>
+        ) : null}
+      </section>
       <section className="panel policy-settings">
         <PanelHeading title="第一版能力边界" meta="以当前代码与运行证据为准" />
         {[
@@ -4654,6 +4843,7 @@ export function App({ api: suppliedApi, initialMode = "live" }: AppProps = {}) {
               element={
                 <SettingsView
                   mode={mode}
+                  api={api}
                   accounts={accountRows}
                   campaigns={campaignRows}
                   resource={dashboard.channelAccounts}

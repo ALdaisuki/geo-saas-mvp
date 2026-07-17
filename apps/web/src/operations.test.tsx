@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ARTICLE_TEMPLATE_CATALOG_VERSION,
@@ -83,6 +84,17 @@ const account: ChannelAccount = {
   lastVerifiedAt: null,
 };
 
+const ctripAssistedAccount: ChannelAccount = {
+  ...account,
+  id: "10000000-0000-4000-8000-000000000703",
+  platform: "ctrip_community",
+  displayName: "中通国旅-携程社区-本地演示",
+  capability: "browser_assisted",
+  supportedExecutionLevels: ["dry_run", "assisted"],
+  evidenceType: "preview",
+  evidenceRefs: ["customer-demo:ctrip-simulator-v1"],
+};
+
 const currentVersionId = "10000000-0000-4000-8000-000000000612";
 
 const content: ContentItem = {
@@ -129,6 +141,12 @@ const currentVariant: PublicationVariant = {
   payloadHash: "2".repeat(64),
   state: "draft",
   frozenAt: null,
+};
+
+const ctripAssistedVariant: PublicationVariant = {
+  ...currentVariant,
+  id: "10000000-0000-4000-8000-000000000623",
+  channelAccountId: ctripAssistedAccount.id,
 };
 
 function createAuditResult(grantId = "10000000-0000-4000-8000-000000000801"): AuditResult {
@@ -576,6 +594,39 @@ describe("article operations", () => {
     expect(screen.getByRole("button", { name: /审计 头条号/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "提交排期 Dry-run" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "撤销授权" })).toBeDisabled();
+  });
+
+  it("submits the customer-demo Ctrip account as an assisted simulation", async () => {
+    const requestPublication = vi.fn<GeoApi["requestPublication"]>(async () => ({
+      publicationJobId: queuedJob.id,
+      publicationOutboxEventId: "10000000-0000-4000-8000-000000001105",
+      wasCreated: true,
+    }));
+    const api = articleApi({
+      getContentVariants: async () => [ctripAssistedVariant],
+      requestPublication,
+    });
+
+    render(
+      <MemoryRouter>
+        <ArticleOperations
+          api={api}
+          content={content}
+          accounts={[ctripAssistedAccount]}
+          capabilities={["content:write", "audit:run", "publish:request"]}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "审计 携程社区" }));
+    fireEvent.click(await screen.findByRole("button", { name: "提交携程模拟" }));
+
+    await waitFor(() => expect(requestPublication).toHaveBeenCalledTimes(1));
+    expect(requestPublication.mock.calls[0]?.[0]).toMatchObject({
+      executionLevel: "assisted",
+    });
+    expect(await screen.findByText("携程模拟作业已创建")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /unattended|无人值守/i })).not.toBeInTheDocument();
   });
 });
 

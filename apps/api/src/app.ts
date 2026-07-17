@@ -156,6 +156,8 @@ export interface BuildAppOptions {
   readonly publicationTokenFactory?: (input: PublicationTokenInput) => string;
   readonly logger?: FastifyServerOptions["logger"];
   readonly allowedOrigins?: readonly string[];
+  readonly deploymentProfile?: "standard" | "customer_demo";
+  readonly governanceMode?: "external" | "demo_fixture";
   readonly publicationGovernanceGate: PublicationGovernanceGate;
   readonly agentRunGateway?: AgentRunGateway;
   readonly ctripBridgeGateway?: CtripBridgeGateway;
@@ -1242,6 +1244,60 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   app.get("/health/ready", async (_request, reply) => {
     const ready = await repository.isReady();
     return reply.status(ready ? 200 : 503).send({ status: ready ? "ready" : "not_ready" });
+  });
+
+  app.get("/api/setup/readiness", { preHandler: guard("tenant:read") }, async (request) => {
+    const context = requestContext(request);
+    const [accounts, principals, agentCapability, bridgeHealthy] = await Promise.all([
+      repository.listChannelAccounts(context),
+      repository.listServicePrincipals(context),
+      options.agentRunGateway?.getCapability(context.tenantId) ??
+        Promise.resolve({
+          available: false as const,
+          mode: "disabled" as const,
+          provider: null,
+          model: null,
+          reason: "runner_disabled" as const,
+        }),
+      options.ctripBridgeGateway?.health?.().catch(() => false) ?? Promise.resolve(false),
+    ]);
+    const account = accounts.find((item) => item.platform === "ctrip_community");
+    const bridgePrincipal = principals.find(
+      (item) => item.profile === "ctrip_bridge" && item.status === "active",
+    );
+    const verifiedAt = account?.lastVerifiedAt === null ? null : account?.lastVerifiedAt;
+    const assistedEvidenceCurrent =
+      verifiedAt !== null &&
+      verifiedAt !== undefined &&
+      Date.parse(verifiedAt) >= now().getTime() - 24 * 60 * 60 * 1_000;
+    const dryRunAccountReady =
+      account?.status === "active" && account.supportedExecutionLevels.includes("dry_run");
+    const assistedAccountReady =
+      account?.status === "active" &&
+      account.capability === "browser_assisted" &&
+      account.supportedExecutionLevels.includes("assisted") &&
+      assistedEvidenceCurrent;
+
+    return {
+      schemaVersion: "geo.customer-setup-readiness.v1",
+      deploymentProfile: options.deploymentProfile ?? "standard",
+      governanceMode: options.governanceMode ?? "external",
+      articleGenerationReady: dryRunAccountReady && agentCapability.available,
+      ctripSimulationReady:
+        (options.deploymentProfile ?? "standard") === "customer_demo" &&
+        assistedAccountReady &&
+        bridgePrincipal !== undefined &&
+        bridgeHealthy,
+      externalPublishingEnabled: false,
+      checks: {
+        agent: agentCapability.available,
+        ctripAccount: dryRunAccountReady,
+        assistedEvidence: assistedAccountReady,
+        bridgeIdentity: bridgePrincipal !== undefined,
+        bridgeRuntime: bridgeHealthy,
+        prePublicationAudit: true,
+      },
+    };
   });
 
   app.post("/api/auth/login", async (request, reply) => {

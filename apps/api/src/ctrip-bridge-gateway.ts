@@ -28,6 +28,7 @@ export interface CtripBridgeCredential {
 
 export interface CtripBridgeGateway {
   execute(command: CtripBridgeCommand): Promise<CtripBridgeResult>;
+  health?(): Promise<boolean>;
 }
 
 export class CtripBridgeGatewayError extends Error {

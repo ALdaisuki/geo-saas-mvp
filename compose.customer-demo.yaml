@@ -1,4 +1,13 @@
 services:
+  # The fixture seed creates the demo tenant that the owner bootstrap binds to.
+  # Keep this ordering explicit for the customer demo profile; the base compose
+  # file intentionally leaves operator bootstrap independent for production
+  # tenant provisioning.
+  db-bootstrap-operator:
+    depends_on:
+      db-seed:
+        condition: service_completed_successfully
+
   api:
     depends_on:
       db-configure-customer-demo:

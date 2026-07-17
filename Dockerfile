@@ -46,11 +46,11 @@ RUN pnpm -r \
     --filter '@geo/web...' \
     run build
 
-RUN pnpm --offline --filter @geo/api deploy --prod --legacy /deploy/api && \
-    pnpm --offline --filter @geo/worker deploy --prod --legacy /deploy/worker && \
-    pnpm --offline --filter @geo/agent-mcp deploy --prod --legacy /deploy/agent-mcp && \
-    pnpm --offline --filter @geo/ctrip-bridge deploy --prod --legacy /deploy/ctrip-bridge && \
-    pnpm --offline --filter @geo/db deploy --prod --legacy /deploy/db-tools
+RUN pnpm --filter @geo/api deploy --prod --legacy /deploy/api && \
+    pnpm --filter @geo/worker deploy --prod --legacy /deploy/worker && \
+    pnpm --filter @geo/agent-mcp deploy --prod --legacy /deploy/agent-mcp && \
+    pnpm --filter @geo/ctrip-bridge deploy --prod --legacy /deploy/ctrip-bridge && \
+    pnpm --filter @geo/db deploy --prod --legacy /deploy/db-tools
 
 FROM ${NODE_IMAGE} AS runtime-base
 

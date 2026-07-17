@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+  [switch]$NoBuild
+)
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -164,9 +166,22 @@ $lines = @(
 [IO.File]::WriteAllLines($envFile, $lines, [Text.UTF8Encoding]::new($false))
 
 Write-Host "Starting the GEO customer demo. The first build can take several minutes..."
-& docker compose --env-file $envFile -f $composeFile -f $demoComposeFile `
-  --profile fixture-seed --profile operator-bootstrap --profile customer-demo `
-  --profile ctrip-simulator up -d --build
+$composeArguments = @(
+  '--env-file', $envFile,
+  '-f', $composeFile,
+  '-f', $demoComposeFile,
+  '--profile', 'fixture-seed',
+  '--profile', 'operator-bootstrap',
+  '--profile', 'customer-demo',
+  '--profile', 'ctrip-simulator',
+  'up', '-d'
+)
+if ($NoBuild) {
+  $composeArguments += '--no-build'
+} else {
+  $composeArguments += '--build'
+}
+& docker compose @composeArguments
 if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed to start the customer demo." }
 
 Wait-ForUrl "http://127.0.0.1:4173/healthz"

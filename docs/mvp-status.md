@@ -69,4 +69,11 @@ stores its media-manifest hash. These values are returned by the tenant-scoped
 handoff API and shown as bounded evidence identity in the Publishing queue. Legacy
 handoffs remain explicitly null instead of receiving reconstructed evidence.
 
+Migration `0023_ctrip_submit_candidate_target.sql` closes the cross-restart
+readback-target gap. A browser submit observation may atomically persist one
+canonical candidate Ctrip external ID/URL pair, while simulation and rejected
+submits must leave both null. The Publishing queue labels the pair as unconfirmed,
+and a later confirmed platform readback must match it exactly. This does not add a
+live writer or turn authoring-page acknowledgement into publication proof.
+
 These deferred items are not configuration flags or hidden endpoints. Real Pi mode is available for article orchestration when a supported provider/model/key is configured, but article quality must still be evaluated against tenant facts, audit results and human review samples before production use.

@@ -152,6 +152,8 @@ export class CtripCommunitySimulator implements CtripFixedAdapter {
       outcome,
       observedAt,
       evidenceKind: "simulation",
+      candidateExternalId: null,
+      candidateExternalUrl: null,
       evidenceHash: sha256Canonical({
         kind: "ctrip_simulator_submit",
         adapterVersion: this.version,

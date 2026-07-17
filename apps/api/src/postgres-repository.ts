@@ -519,6 +519,8 @@ interface PublicationAssistedHandoffRow {
   readonly submit_outcome: PublicationAssistedHandoffView["submitOutcome"];
   readonly submit_evidence_kind: PublicationAssistedHandoffView["submitEvidenceKind"];
   readonly submit_observed_at: Date | null;
+  readonly submit_candidate_external_id: string | null;
+  readonly submit_candidate_external_url: string | null;
   readonly publication_receipt_id: string | null;
   readonly publication_readback_id: string | null;
   readonly readback_outcome: PublicationAssistedHandoffView["readbackOutcome"];
@@ -572,6 +574,8 @@ function publicationAssistedHandoffView(
     submitOutcome: row.submit_outcome,
     submitEvidenceKind: row.submit_evidence_kind,
     submitObservedAt: toNullableIso(row.submit_observed_at),
+    submitCandidateExternalId: row.submit_candidate_external_id,
+    submitCandidateExternalUrl: row.submit_candidate_external_url,
     publicationReceiptId: row.publication_receipt_id,
     publicationReadbackId: row.publication_readback_id,
     readbackOutcome: row.readback_outcome,
@@ -899,7 +903,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
              handoff.submit_permit_issued_by_actor_id,
              handoff.submit_permit_consumed_by_principal_id,
              handoff.submit_outcome, handoff.submit_evidence_kind,
-             handoff.submit_observed_at, handoff.publication_receipt_id,
+             handoff.submit_observed_at, handoff.submit_candidate_external_id,
+             handoff.submit_candidate_external_url, handoff.publication_receipt_id,
              handoff.publication_readback_id, handoff.readback_outcome,
              handoff.readback_evidence_kind, handoff.readback_evidence_hash,
              handoff.readback_observed_at, handoff.observed_payload_hash,
@@ -4215,7 +4220,8 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
                  handoff.submit_permit_issued_by_actor_id,
                  handoff.submit_permit_consumed_by_principal_id,
                  handoff.submit_outcome, handoff.submit_evidence_kind,
-                 handoff.submit_observed_at, handoff.publication_receipt_id,
+                 handoff.submit_observed_at, handoff.submit_candidate_external_id,
+                 handoff.submit_candidate_external_url, handoff.publication_receipt_id,
                  handoff.publication_readback_id, handoff.readback_outcome,
                  handoff.readback_evidence_kind, handoff.readback_evidence_hash,
                  handoff.readback_observed_at, handoff.observed_payload_hash,

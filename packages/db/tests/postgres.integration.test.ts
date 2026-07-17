@@ -926,6 +926,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0020_ctrip_submit_observations",
       "0021_ctrip_submit_recovery",
       "0022_ctrip_prepare_evidence",
+      "0023_ctrip_submit_candidate_target",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -3012,7 +3013,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         await expect(
           client.query(
             `SELECT * FROM geo.record_publication_assisted_submit_observation(
-               $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+               $1, 'accepted', 'simulation', $2::geo.sha256_hex,
+               NULL, NULL, clock_timestamp()
              )`,
             [ids.ctripAssistedHandoff, "c".repeat(64)],
           ),
@@ -3028,13 +3030,98 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       { actor: ids.ctripBridgePrincipal },
     );
 
+    await runtimeTransaction(
+      async (client) => {
+        await client.query("SAVEPOINT prove_candidate_target_binding");
+        const candidateId = "ctrip-candidate-integration-001";
+        const candidateUrl = "https://you.ctrip.com/travels/candidate-integration-001.html";
+
+        await client.query("SAVEPOINT reject_simulated_candidate");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_submit_observation(
+               $1, 'accepted', 'simulation', $2::geo.sha256_hex,
+               $3, $4, clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, "c".repeat(64), candidateId, candidateUrl],
+          ),
+        ).rejects.toMatchObject({ code: "22023" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_simulated_candidate");
+
+        await client.query("SAVEPOINT reject_rejected_candidate");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_submit_observation(
+               $1, 'rejected', 'browser', $2::geo.sha256_hex,
+               $3, $4, clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, "c".repeat(64), candidateId, candidateUrl],
+          ),
+        ).rejects.toMatchObject({ code: "22023" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_rejected_candidate");
+
+        await client.query(
+          `SELECT * FROM geo.record_publication_assisted_submit_observation(
+             $1, 'accepted', 'browser', $2::geo.sha256_hex,
+             $3, $4, clock_timestamp()
+           )`,
+          [ids.ctripAssistedHandoff, "d".repeat(64), candidateId, candidateUrl],
+        );
+        const candidate = await client.query<{
+          submit_candidate_external_id: string;
+          submit_candidate_external_url: string;
+        }>(
+          `SELECT submit_candidate_external_id, submit_candidate_external_url
+           FROM geo.publication_assisted_handoffs WHERE id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(candidate.rows[0]).toEqual({
+          submit_candidate_external_id: candidateId,
+          submit_candidate_external_url: candidateUrl,
+        });
+
+        await client.query("SAVEPOINT reject_candidate_mismatch");
+        await expect(
+          client.query(
+            `SELECT * FROM geo.record_publication_assisted_readback(
+               $1, 'confirmed', 'platform_readback', $2::geo.sha256_hex,
+               $3::geo.sha256_hex, 'different-id',
+               'https://you.ctrip.com/travels/different.html', clock_timestamp()
+             )`,
+            [ids.ctripAssistedHandoff, "e".repeat(64), payloadHash],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+        await client.query("ROLLBACK TO SAVEPOINT reject_candidate_mismatch");
+
+        const confirmed = await client.query<{
+          state: string;
+          external_id: string;
+          external_url: string;
+        }>(
+          `SELECT * FROM geo.record_publication_assisted_readback(
+             $1, 'confirmed', 'platform_readback', $2::geo.sha256_hex,
+             $3::geo.sha256_hex, $4, $5, clock_timestamp()
+           )`,
+          [ids.ctripAssistedHandoff, "f".repeat(64), payloadHash, candidateId, candidateUrl],
+        );
+        expect(confirmed.rows[0]).toEqual({
+          state: "confirmed",
+          external_id: candidateId,
+          external_url: candidateUrl,
+        });
+        await client.query("ROLLBACK TO SAVEPOINT prove_candidate_target_binding");
+      },
+      { actor: ids.ctripBridgePrincipal },
+    );
+
     const submitEvidenceHash = "a".repeat(64);
     await expect(
       runtimeTransaction(
         (client) =>
           client.query(
             `SELECT * FROM geo.record_publication_assisted_submit_observation(
-               $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+               $1, 'accepted', 'simulation', $2::geo.sha256_hex,
+               NULL, NULL, clock_timestamp()
              )`,
             [ids.ctripAssistedHandoff, submitEvidenceHash],
           ),
@@ -3049,7 +3136,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           publication_readback_id: string;
         }>(
           `SELECT * FROM geo.record_publication_assisted_submit_observation(
-             $1, 'accepted', 'simulation', $2::geo.sha256_hex, clock_timestamp()
+             $1, 'accepted', 'simulation', $2::geo.sha256_hex,
+             NULL, NULL, clock_timestamp()
            )`,
           [ids.ctripAssistedHandoff, submitEvidenceHash],
         ),

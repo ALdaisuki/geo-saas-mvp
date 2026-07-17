@@ -2037,9 +2037,17 @@ function PublishingView({
                           </div>
                         </td>
                         <td>
-                          <span className="handoff-observation">
-                            {ctripSubmitObservation(handoff)}
-                          </span>
+                          <div className="handoff-observation">
+                            <span>{ctripSubmitObservation(handoff)}</span>
+                            {handoff.submitCandidateExternalId === null ? null : (
+                              <span
+                                className="mono"
+                                title={handoff.submitCandidateExternalUrl ?? undefined}
+                              >
+                                候选目标 · 尚未确认 · {handoff.submitCandidateExternalId}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td>
                           <span className="handoff-observation">

@@ -50,6 +50,8 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     externalDraftId: state === "handoff_pending" ? null : `sim-draft-${handoffId}`,
     submitOutcome: state === "readback_pending" ? "accepted" : null,
     submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
+    submitCandidateExternalId: null,
+    submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
     payload,
   };
@@ -257,6 +259,52 @@ describe("CtripBridgeCommandService", () => {
       receiptId: "10000000-0000-4000-8000-000000000006",
     });
     expect(order).toEqual(["permit", "submit", "observation"]);
+  });
+
+  it("persists a browser-observed candidate target before independent readback", async () => {
+    const current = { value: handoff("draft_prepared") };
+    const port = controlPlane(current);
+    const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+    const adapter: CtripFixedAdapter = {
+      version: CTRIP_SIMULATOR_ADAPTER_VERSION,
+      evidenceKind: "browser",
+      commandCapabilities: { prepare: true, submit: true, readback: true },
+      prepare: simulator.prepare.bind(simulator),
+      submit: async () => ({
+        outcome: "accepted",
+        evidenceHash: "8".repeat(64),
+        observedAt: now,
+        evidenceKind: "browser",
+        candidateExternalId: "ctrip-candidate-001",
+        candidateExternalUrl: "https://you.ctrip.com/travels/candidate-001.html",
+      }),
+      readback: simulator.readback.bind(simulator),
+    };
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter,
+    });
+
+    await service.execute({
+      schemaVersion: "geo.ctrip-bridge.command.v1",
+      tenantId,
+      handoffId,
+      requestId: "request-candidate-submit",
+      command: "submit",
+      submitPermit: "f".repeat(64),
+    });
+
+    expect(port.recordSubmitObservation).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({
+        candidateExternalId: "ctrip-candidate-001",
+        candidateExternalUrl: "https://you.ctrip.com/travels/candidate-001.html",
+      }),
+    );
   });
 
   it("keeps an uncertain simulator submit non-retryable", async () => {

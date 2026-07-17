@@ -173,6 +173,16 @@ lease or permit may outlive its handoff. The table is read-only to `geo_runtime`
 security-definer functions own all writes. Cookies, authorization headers, QR/SMS
 values and raw screenshots are not persisted.
 
+Migration `0023_ctrip_submit_candidate_target.sql` lets a browser observation
+durably preserve one canonical candidate Ctrip external ID/URL pair for later
+public readback. The pair is still explicitly unconfirmed, is rejected for
+simulation evidence and rejected submit outcomes, and never populates receipt
+`externalId`/`externalUrl`. A later `confirmed` transition must use matching
+`platform_readback` evidence and the exact candidate pair when one was observed.
+Tenant list/detail responses expose the candidate fields so an operator can see
+what the independent readback will verify; audit and receipt payloads contain only
+their SHA-256 hashes.
+
 Migration `0018_ctrip_assisted_admission.sql` and the Worker connect this control
 plane to normal product flow for Ctrip only. The API admits an `assisted` request
 only when its immutable audit names `ctrip_community`; the database then rechecks

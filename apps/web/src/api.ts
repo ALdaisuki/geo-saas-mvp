@@ -485,6 +485,8 @@ export interface PublicationAssistedHandoff {
   readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
   readonly submitEvidenceKind: "simulation" | "browser" | null;
   readonly submitObservedAt: string | null;
+  readonly submitCandidateExternalId: string | null;
+  readonly submitCandidateExternalUrl: string | null;
   readonly publicationReceiptId: string | null;
   readonly publicationReadbackId: string | null;
   readonly readbackOutcome:
@@ -1997,6 +1999,8 @@ function parsePublicationAssistedHandoff(value: unknown): PublicationAssistedHan
     submitOutcome: nullableEnumValue(item, "submitOutcome", ["accepted", "uncertain", "rejected"]),
     submitEvidenceKind: nullableEnumValue(item, "submitEvidenceKind", ["simulation", "browser"]),
     submitObservedAt: nullableStringValue(item, "submitObservedAt"),
+    submitCandidateExternalId: nullableStringValue(item, "submitCandidateExternalId"),
+    submitCandidateExternalUrl: nullableStringValue(item, "submitCandidateExternalUrl"),
     publicationReceiptId: nullableStringValue(item, "publicationReceiptId"),
     publicationReadbackId: nullableStringValue(item, "publicationReadbackId"),
     readbackOutcome: nullableEnumValue(item, "readbackOutcome", [

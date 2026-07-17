@@ -62,6 +62,8 @@ function runtime() {
     externalDraftId: null,
     submitOutcome: null,
     submitEvidenceKind: null,
+    submitCandidateExternalId: null,
+    submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
     payload,
   };

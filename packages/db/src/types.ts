@@ -629,6 +629,8 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   submit_outcome: "accepted" | "uncertain" | "rejected" | null;
   submit_evidence_kind: "simulation" | "browser" | null;
   submit_observed_at: NullableDbTimestamp;
+  submit_candidate_external_id: string | null;
+  submit_candidate_external_url: string | null;
   publication_receipt_id: string | null;
   publication_readback_id: string | null;
   readback_outcome:

@@ -911,6 +911,8 @@ export interface PublicationAssistedHandoffView {
   readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
   readonly submitEvidenceKind: "simulation" | "browser" | null;
   readonly submitObservedAt: string | null;
+  readonly submitCandidateExternalId: string | null;
+  readonly submitCandidateExternalUrl: string | null;
   readonly publicationReceiptId: string | null;
   readonly publicationReadbackId: string | null;
   readonly readbackOutcome:

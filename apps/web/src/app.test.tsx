@@ -141,6 +141,8 @@ function liveApi(): GeoApi {
     submitOutcome: null,
     submitEvidenceKind: null,
     submitObservedAt: null,
+    submitCandidateExternalId: null,
+    submitCandidateExternalUrl: null,
     publicationReceiptId: null,
     publicationReadbackId: null,
     readbackOutcome: null,
@@ -1401,6 +1403,28 @@ describe("GEO operator console", () => {
     expect(screen.getByRole("button", { name: /取消交接单/ })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /执行携程回读/ }));
     await waitFor(() => expect(api.readbackPublicationAssistedHandoff).toHaveBeenCalledOnce());
+  });
+
+  it("labels a persisted Ctrip candidate target as unconfirmed", async () => {
+    const api = liveApi();
+    const [baseHandoff] = await api.getPublicationAssistedHandoffs();
+    if (baseHandoff === undefined) throw new Error("Ctrip handoff fixture is missing");
+    const candidateHandoff: PublicationAssistedHandoff = {
+      ...baseHandoff,
+      state: "readback_pending",
+      submitOutcome: "accepted",
+      submitEvidenceKind: "browser",
+      submitObservedAt: "2026-07-14T08:02:00.000Z",
+      submitCandidateExternalId: "ctrip-candidate-001",
+      submitCandidateExternalUrl: "https://you.ctrip.com/travels/candidate-001.html",
+    };
+    api.getPublicationAssistedHandoffs = async () => [candidateHandoff];
+    api.getPublicationAssistedHandoff = async () => candidateHandoff;
+
+    renderApp({ path: "/publishing", api });
+
+    expect(await screen.findByText(/ctrip-candidate-001/iu)).toBeInTheDocument();
+    expect(screen.getByText(/候选目标.*尚未确认/iu)).toBeInTheDocument();
   });
 
   it("clears the selected publication job when the tenant changes", async () => {

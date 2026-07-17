@@ -1826,6 +1826,8 @@ class FakeRepository implements ApiRepository {
         this.assistedHandoffState === "needs_review"
           ? fixedNow.toISOString()
           : null,
+      submitCandidateExternalId: null,
+      submitCandidateExternalUrl: null,
       publicationReceiptId:
         this.assistedHandoffState === "readback_pending" ||
         this.assistedHandoffState === "needs_review"

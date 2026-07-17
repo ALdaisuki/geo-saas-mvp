@@ -127,6 +127,8 @@ function bridgeHandoff(
     externalDraftId: state === "handoff_pending" ? null : `sim-draft-${ids.handoff}`,
     submitOutcome: state === "readback_pending" ? "accepted" : null,
     submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
+    submitCandidateExternalId: null,
+    submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
     payload,
   };
@@ -178,6 +180,8 @@ function runtime(
         state: "readback_pending",
         submitOutcome: "accepted",
         submitEvidenceKind: "simulation",
+        submitCandidateExternalId: null,
+        submitCandidateExternalUrl: null,
       };
       return {
         receiptId: "10000000-0000-4000-8000-000000000013",

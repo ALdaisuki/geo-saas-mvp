@@ -40,6 +40,8 @@ export interface CtripBridgeHandoffDraft {
   readonly externalDraftId: string | null;
   readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
   readonly submitEvidenceKind: "simulation" | "browser" | null;
+  readonly submitCandidateExternalId: string | null;
+  readonly submitCandidateExternalUrl: string | null;
   readonly submitPermitConsumedAt: string | null;
   readonly payload: PublicationVariantPayload;
 }
@@ -86,6 +88,8 @@ export interface CtripBridgeSubmitObservation {
   readonly evidenceHash: string;
   readonly observedAt: string;
   readonly evidenceKind: "simulation" | "browser";
+  readonly candidateExternalId: string | null;
+  readonly candidateExternalUrl: string | null;
 }
 
 export interface CtripBridgeReadbackObservation {

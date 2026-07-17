@@ -824,6 +824,8 @@ describe("PostgreSQL migration contract", () => {
       "submit_outcome",
       "submit_evidence_kind",
       "submit_observed_at",
+      "submit_candidate_external_id",
+      "submit_candidate_external_url",
       "publication_receipt_id",
       "publication_readback_id",
       "readback_outcome",
@@ -838,6 +840,10 @@ describe("PostgreSQL migration contract", () => {
     expect(submit).toContain("geo.require_bound_ctrip_bridge");
     expect(submit).toContain("submit_permit_consumed_by_principal_id <> actor_value");
     expect(submit).toContain("state = 'submitted_unconfirmed'");
+    expect(submit).toContain("submit_candidate_external_id = normalized_candidate_id");
+    expect(submit).toContain("submit_candidate_external_url = normalized_candidate_url");
+    expect(submit).toContain("p_evidence_kind = 'simulation'");
+    expect(submit).toContain("p_outcome = 'rejected'");
     expect(submit).toContain("INSERT INTO geo.publication_receipts");
     expect(submit).toContain("confirmed, payload");
     expect(submit).toContain("INSERT INTO geo.publication_readbacks");
@@ -854,6 +860,8 @@ describe("PostgreSQL migration contract", () => {
     expect(readback).toContain("p_evidence_kind <> 'platform_readback'");
     expect(readback).toContain("p_observed_payload_hash IS DISTINCT FROM handoff.payload_hash");
     expect(readback).toContain("ctrip\\.com");
+    expect(migrationSql).toContain("publication_assisted_handoff_submit_candidate_complete");
+    expect(migrationSql).toContain("publication_assisted_handoff_confirmed_candidate_match");
     expect(readback).toContain("p_outcome = 'simulation_only'");
     expect(readback).toContain("next_state := 'needs_review'");
     expect(readback).toContain("WHEN next_state = 'confirmed' THEN 'confirmed'");

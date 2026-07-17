@@ -42,6 +42,8 @@ const handoffRowSchema = z.strictObject({
   external_draft_id: z.string().nullable(),
   submit_outcome: z.enum(["accepted", "uncertain", "rejected"]).nullable(),
   submit_evidence_kind: z.enum(["simulation", "browser"]).nullable(),
+  submit_candidate_external_id: z.string().nullable(),
+  submit_candidate_external_url: z.string().nullable(),
   submit_permit_consumed_at: z.coerce.date().nullable(),
   payload: publicationVariantPayloadSchema,
 });
@@ -63,6 +65,8 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     externalDraftId: parsed.external_draft_id,
     submitOutcome: parsed.submit_outcome,
     submitEvidenceKind: parsed.submit_evidence_kind,
+    submitCandidateExternalId: parsed.submit_candidate_external_id,
+    submitCandidateExternalUrl: parsed.submit_candidate_external_url,
     submitPermitConsumedAt: parsed.submit_permit_consumed_at?.toISOString() ?? null,
     payload: parsed.payload,
   };
@@ -176,6 +180,8 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
                handoff.preview_hash, handoff.payload_hash, handoff.adapter_version,
                handoff.bridge_service_principal_id, handoff.external_draft_id,
                handoff.submit_outcome, handoff.submit_evidence_kind,
+               handoff.submit_candidate_external_id,
+               handoff.submit_candidate_external_url,
                handoff.submit_permit_consumed_at, variant.content_version_id,
                variant.payload
         from geo.publication_assisted_handoffs as handoff
@@ -318,6 +324,8 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
           ${observation.outcome},
           ${observation.evidenceKind},
           ${observation.evidenceHash}::geo.sha256_hex,
+          ${observation.candidateExternalId},
+          ${observation.candidateExternalUrl},
           ${observation.observedAt}::timestamptz
         )
       `.execute(transaction);

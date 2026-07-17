@@ -395,6 +395,8 @@ async function installAutomationApiFixture(page: Page): Promise<{
     submitOutcome: null as "accepted" | "uncertain" | "rejected" | null,
     submitEvidenceKind: null as "simulation" | "browser" | null,
     submitObservedAt: null as string | null,
+    submitCandidateExternalId: null as string | null,
+    submitCandidateExternalUrl: null as string | null,
     publicationReceiptId: null as string | null,
     publicationReadbackId: null as string | null,
     readbackOutcome: null as

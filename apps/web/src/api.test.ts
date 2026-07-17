@@ -1224,6 +1224,8 @@ describe("HttpGeoApi", () => {
       submitOutcome: null,
       submitEvidenceKind: null,
       submitObservedAt: null,
+      submitCandidateExternalId: null,
+      submitCandidateExternalUrl: null,
       publicationReceiptId: null,
       publicationReadbackId: null,
       readbackOutcome: null,
@@ -1270,6 +1272,8 @@ describe("HttpGeoApi", () => {
       submitOutcome: "accepted",
       submitEvidenceKind: "simulation",
       submitObservedAt: "2026-07-15T02:01:00.000Z",
+      submitCandidateExternalId: "ctrip-candidate-001",
+      submitCandidateExternalUrl: "https://you.ctrip.com/travels/candidate-001.html",
       publicationReceiptId: "10000000-0000-4000-8000-000000001406",
       publicationReadbackId: "10000000-0000-4000-8000-000000001407",
     };
@@ -1367,7 +1371,12 @@ describe("HttpGeoApi", () => {
       bridge: { command: "prepare", evidenceKind: "simulation" },
     });
     expect(submission).toMatchObject({
-      handoff: { state: "readback_pending", submitOutcome: "accepted" },
+      handoff: {
+        state: "readback_pending",
+        submitOutcome: "accepted",
+        submitCandidateExternalId: "ctrip-candidate-001",
+        submitCandidateExternalUrl: "https://you.ctrip.com/travels/candidate-001.html",
+      },
       bridge: { command: "submit", outcome: "accepted" },
     });
     expect(readback).toMatchObject({

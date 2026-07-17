@@ -10,8 +10,8 @@ const now = "2026-07-16T12:00:00.000Z";
 
 function evidence(outcome: CtripSurfaceReviewEvidence["outcome"]): CtripSurfaceReviewEvidence {
   return {
-    schemaVersion: "geo.ctrip-surface-review.v1",
-    manifestVersion: "ctrip-community-surface-review-v1",
+    schemaVersion: "geo.ctrip-surface-review.v2",
+    manifestVersion: "ctrip-community-surface-review-v2",
     outcome,
     observedAt: now,
     evidenceKind: "browser",

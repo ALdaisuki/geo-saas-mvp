@@ -14,7 +14,11 @@ const now = "2026-07-16T12:00:00.000Z";
 function reviewPage(options: {
   readonly url: string;
   readonly title?: string;
-  readonly controls?: readonly { readonly probeId: string; readonly rawLabel: string }[];
+  readonly controls?: readonly {
+    readonly probeId: string;
+    readonly rawLabel: string;
+    readonly rawAttributes?: readonly { readonly name: string; readonly rawValue: string }[];
+  }[];
   readonly challengeSignals?: readonly string[];
   readonly unavailable?: boolean;
 }): CtripSurfaceReviewPage {
@@ -61,10 +65,23 @@ describe("Ctrip authenticated surface review", () => {
     const pages = [
       reviewPage({ url: "https://evil.example/?token=secret" }),
       reviewPage({
-        url: "https://you.ctrip.com/community/write?token=secret#private",
+        url: "https://you.ctrip.com/",
+        controls: [{ probeId: "action", rawLabel: "My account: private name" }],
+      }),
+      reviewPage({
+        url: "https://we.ctrip.com/publish/publishPictureText?token=secret#private",
         title: "Draft for person@example.com",
         controls: [
-          { probeId: "action", rawLabel: " Publish 13800138000 " },
+          {
+            probeId: "action",
+            rawLabel: " Publish 13800138000 ",
+            rawAttributes: [
+              { name: "title", rawValue: " Publish 13800138000 " },
+              { name: "data-testid", rawValue: "publish-button" },
+              { name: "onclick", rawValue: "stealPrivateArticle()" },
+              { name: "title", rawValue: " Publish 13800138000 " },
+            ],
+          },
           { probeId: "unknown_page_probe", rawLabel: "must not survive" },
           { probeId: "action", rawLabel: "Publish 13800138000" },
         ],
@@ -78,25 +95,42 @@ describe("Ctrip authenticated surface review", () => {
     });
 
     expect(first).toMatchObject({
-      schemaVersion: "geo.ctrip-surface-review.v1",
+      schemaVersion: "geo.ctrip-surface-review.v2",
       manifestVersion: CTRIP_SURFACE_REVIEW_MANIFEST.manifestVersion,
       outcome: "adapter_drift",
       observedAt: now,
       evidenceKind: "browser",
       pages: [
         {
-          origin: "https://you.ctrip.com",
-          path: "/community/write",
+          origin: "https://we.ctrip.com",
+          path: "/publish/publishPictureText",
           observationStatus: "complete",
           sessionSignal: null,
-          controls: [{ probeId: "action", label: "Publish [phone]" }],
+          controls: [
+            { probeId: "action", label: "Publish [phone]", attributes: [] },
+            {
+              probeId: "action",
+              label: "Publish [phone]",
+              attributes: [
+                { name: "data-testid", value: "publish-button" },
+                { name: "title", value: "Publish [phone]" },
+              ],
+            },
+          ],
           challengeSignals: [],
+        },
+        {
+          origin: "https://you.ctrip.com",
+          path: "/",
+          controls: [],
         },
       ],
     });
     expect(JSON.stringify(first)).not.toContain("secret");
     expect(JSON.stringify(first)).not.toContain("person@example.com");
     expect(JSON.stringify(first)).not.toContain("must not survive");
+    expect(JSON.stringify(first)).not.toContain("private name");
+    expect(JSON.stringify(first)).not.toContain("stealPrivateArticle");
     expect(second.evidenceHash).toBe(first.evidenceHash);
     expect(second.sessionEvidenceHash).toBe(first.sessionEvidenceHash);
   });
@@ -131,7 +165,12 @@ describe("Ctrip authenticated surface review", () => {
 
     await expect(
       reviewCtripAuthenticatedSurface(
-        [reviewPage({ url: "https://you.ctrip.com/write", unavailable: true })],
+        [
+          reviewPage({
+            url: "https://we.ctrip.com/publish/publishPictureText",
+            unavailable: true,
+          }),
+        ],
         { now: () => new Date(now) },
       ),
     ).resolves.toMatchObject({
@@ -142,6 +181,9 @@ describe("Ctrip authenticated surface review", () => {
 
   it("keeps live canary startup closed until a reviewed surface is compiled", () => {
     expect(CTRIP_SURFACE_REVIEW_MANIFEST.liveCanaryEnabled).toBe(false);
+    expect(CTRIP_SURFACE_REVIEW_MANIFEST.discoverySurfaces).toEqual([
+      { origin: "https://we.ctrip.com", path: "/publish/publishPictureText" },
+    ]);
     expect(CTRIP_SURFACE_REVIEW_MANIFEST.reviewedSurfaces).toEqual([]);
     expect(() => assertCtripLiveCanaryReady()).toThrow(/not reviewed/iu);
   });

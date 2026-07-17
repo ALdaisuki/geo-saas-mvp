@@ -54,30 +54,60 @@ class FakeLocator implements PlaywrightCtripReadLocator {
 describe("Playwright Ctrip read-only page adapter", () => {
   it("reads fixed probes without reading editor content or input values", async () => {
     const selectors: string[] = [];
+    const attributeReads: string[] = [];
     const page: PlaywrightCtripReadPage = {
       url: () => "https://you.ctrip.com/write?secret=value",
       locator: (selector) => {
         selectors.push(selector);
         if (selector.includes("textarea")) {
-          return new FakeLocator([{ visible: true, text: "PRIVATE ARTICLE BODY" }]);
+          return new FakeLocator([
+            {
+              visible: true,
+              text: "PRIVATE ARTICLE BODY",
+              attributes: { contenteditable: "true", value: "PRIVATE INPUT VALUE" },
+            },
+          ]);
         }
         if (selector.includes("iframe")) {
           return new FakeLocator([{ visible: true }]);
         }
         if (selector.includes("button")) {
-          return new FakeLocator([{ visible: true, text: "Publish" }]);
+          return new FakeLocator([
+            { visible: true, text: "Publish", attributes: { "data-testid": "publish" } },
+          ]);
         }
         return new FakeLocator([]);
       },
     };
     const reviewPage = createPlaywrightCtripSurfaceReviewPage(page);
+    const originalGetAttribute = FakeLocator.prototype.getAttribute;
+    FakeLocator.prototype.getAttribute = function (name: string): Promise<string | null> {
+      attributeReads.push(name);
+      return originalGetAttribute.call(this, name);
+    };
 
-    await expect(
-      reviewPage.readControls(CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes, 40),
-    ).resolves.toEqual([
-      { probeId: "action", rawLabel: "Publish" },
-      { probeId: "editor", rawLabel: "editor" },
-    ]);
+    try {
+      await expect(
+        reviewPage.readControls(
+          CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+          CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+          40,
+        ),
+      ).resolves.toEqual([
+        {
+          probeId: "action",
+          rawLabel: "Publish",
+          rawAttributes: [{ name: "data-testid", rawValue: "publish" }],
+        },
+        {
+          probeId: "editor",
+          rawLabel: "editor",
+          rawAttributes: [{ name: "contenteditable", rawValue: "true" }],
+        },
+      ]);
+    } finally {
+      FakeLocator.prototype.getAttribute = originalGetAttribute;
+    }
     await expect(
       reviewPage.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
     ).resolves.toContain("captcha_frame");
@@ -85,5 +115,9 @@ describe("Playwright Ctrip read-only page adapter", () => {
       ...CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes.map((probe) => probe.selector),
       ...CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes.map((probe) => probe.selector),
     ]);
+    expect(new Set(attributeReads)).toEqual(
+      new Set(CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames),
+    );
+    expect(attributeReads).not.toContain("value");
   });
 });

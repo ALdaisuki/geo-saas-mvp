@@ -3,6 +3,7 @@ import { sha256Canonical } from "@geo/core";
 const MAX_LABEL_LENGTH = 80;
 const MAX_PAGES = 10;
 const MAX_CONTROLS_PER_PAGE = 40;
+const MAX_ATTRIBUTES_PER_CONTROL = 12;
 
 interface CtripControlProbe {
   readonly id: string;
@@ -21,22 +22,30 @@ interface CtripReviewedSurface {
 }
 
 interface CtripSurfaceReviewManifest {
-  readonly schemaVersion: "geo.ctrip-surface-manifest.v1";
+  readonly schemaVersion: "geo.ctrip-surface-manifest.v2";
   readonly manifestVersion: string;
   readonly allowedHostnameSuffix: "ctrip.com";
   readonly liveCanaryEnabled: boolean;
+  readonly discoverySurfaces: readonly CtripReviewedSurface[];
   readonly reviewedSurfaces: readonly CtripReviewedSurface[];
   readonly sessionHostnameLabels: readonly string[];
   readonly sessionPathSegments: readonly string[];
   readonly controlProbes: readonly CtripControlProbe[];
+  readonly controlAttributeNames: readonly string[];
   readonly challengeProbes: readonly CtripChallengeProbe[];
 }
 
 export const CTRIP_SURFACE_REVIEW_MANIFEST: CtripSurfaceReviewManifest = Object.freeze({
-  schemaVersion: "geo.ctrip-surface-manifest.v1",
-  manifestVersion: "ctrip-community-surface-review-v1",
+  schemaVersion: "geo.ctrip-surface-manifest.v2",
+  manifestVersion: "ctrip-community-surface-review-v2",
   allowedHostnameSuffix: "ctrip.com",
   liveCanaryEnabled: false,
+  discoverySurfaces: Object.freeze([
+    Object.freeze({
+      origin: "https://we.ctrip.com",
+      path: "/publish/publishPictureText",
+    }),
+  ]),
   reviewedSurfaces: Object.freeze([]),
   sessionHostnameLabels: Object.freeze(["account", "accounts", "passport"]),
   sessionPathSegments: Object.freeze(["login", "signin", "passport"]),
@@ -57,6 +66,20 @@ export const CTRIP_SURFACE_REVIEW_MANIFEST: CtripSurfaceReviewManifest = Object.
       readText: false,
     }),
   ]),
+  controlAttributeNames: Object.freeze([
+    "aria-label",
+    "aria-disabled",
+    "title",
+    "placeholder",
+    "role",
+    "type",
+    "name",
+    "id",
+    "data-testid",
+    "contenteditable",
+    "accept",
+    "disabled",
+  ]),
   challengeProbes: Object.freeze([
     Object.freeze({ id: "captcha_frame", selector: 'iframe[src*="captcha" i]' }),
     Object.freeze({
@@ -73,12 +96,14 @@ export const CTRIP_SURFACE_REVIEW_MANIFEST: CtripSurfaceReviewManifest = Object.
 export interface CtripRawObservedControl {
   readonly probeId: string;
   readonly rawLabel: string;
+  readonly rawAttributes?: readonly { readonly name: string; readonly rawValue: string }[];
 }
 
 export interface CtripSurfaceReviewPage {
   currentUrl(): string;
   readControls(
     probes: readonly CtripControlProbe[],
+    attributeNames: readonly string[],
     maximum: number,
   ): Promise<readonly CtripRawObservedControl[]>;
   detectChallengeSignals(probes: readonly CtripChallengeProbe[]): Promise<readonly string[]>;
@@ -92,12 +117,16 @@ export interface CtripCanonicalPageLocation {
 interface CtripSurfaceReviewPageEvidence extends CtripCanonicalPageLocation {
   readonly observationStatus: "complete" | "unavailable";
   readonly sessionSignal: "login_location" | null;
-  readonly controls: readonly { readonly probeId: string; readonly label: string }[];
+  readonly controls: readonly {
+    readonly probeId: string;
+    readonly label: string;
+    readonly attributes: readonly { readonly name: string; readonly value: string }[];
+  }[];
   readonly challengeSignals: readonly string[];
 }
 
 export interface CtripSurfaceReviewEvidence {
-  readonly schemaVersion: "geo.ctrip-surface-review.v1";
+  readonly schemaVersion: "geo.ctrip-surface-review.v2";
   readonly manifestVersion: string;
   readonly outcome:
     "session_required" | "challenge_required" | "adapter_drift" | "reviewed_surface";
@@ -170,20 +199,53 @@ async function inspectPage(
   page: CtripSurfaceReviewPage,
   location: CtripCanonicalPageLocation,
 ): Promise<CtripSurfaceReviewPageEvidence> {
+  const isDiscoverySurface = CTRIP_SURFACE_REVIEW_MANIFEST.discoverySurfaces.some(
+    (surface) => surface.origin === location.origin && surface.path === location.path,
+  );
   try {
     const [rawControls, rawSignals] = await Promise.all([
-      page.readControls(CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes, MAX_CONTROLS_PER_PAGE),
+      isDiscoverySurface
+        ? page.readControls(
+            CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+            CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+            MAX_CONTROLS_PER_PAGE,
+          )
+        : Promise.resolve([]),
       page.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
     ]);
     const allowedControlIds = new Set(
       CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes.map((probe) => probe.id),
     );
-    const controls = new Map<string, { readonly probeId: string; readonly label: string }>();
+    const allowedAttributeNames = new Set(CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames);
+    const controls = new Map<
+      string,
+      {
+        readonly probeId: string;
+        readonly label: string;
+        readonly attributes: readonly { readonly name: string; readonly value: string }[];
+      }
+    >();
     for (const control of rawControls.slice(0, MAX_CONTROLS_PER_PAGE)) {
       if (!allowedControlIds.has(control.probeId)) continue;
       const label = sanitizeCtripReviewLabel(control.rawLabel);
       if (label === null) continue;
-      controls.set(`${control.probeId}\u0000${label}`, { probeId: control.probeId, label });
+      const attributes = new Map<string, { readonly name: string; readonly value: string }>();
+      for (const attribute of (control.rawAttributes ?? []).slice(0, MAX_ATTRIBUTES_PER_CONTROL)) {
+        if (!allowedAttributeNames.has(attribute.name)) continue;
+        const value = sanitizeCtripReviewLabel(attribute.rawValue);
+        if (value === null) continue;
+        attributes.set(`${attribute.name}\u0000${value}`, { name: attribute.name, value });
+      }
+      const canonicalAttributes = Object.freeze([...attributes.values()].sort(compareCanonical));
+      const observedControl = Object.freeze({
+        probeId: control.probeId,
+        label,
+        attributes: canonicalAttributes,
+      });
+      controls.set(
+        `${control.probeId}\u0000${label}\u0000${JSON.stringify(canonicalAttributes)}`,
+        observedControl,
+      );
     }
     const allowedSignalIds = new Set(
       CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes.map((probe) => probe.id),
@@ -249,7 +311,7 @@ export async function reviewCtripAuthenticatedSurface(
             ? "reviewed_surface"
             : "adapter_drift";
   const material = Object.freeze({
-    schemaVersion: "geo.ctrip-surface-review.v1" as const,
+    schemaVersion: "geo.ctrip-surface-review.v2" as const,
     manifestVersion: CTRIP_SURFACE_REVIEW_MANIFEST.manifestVersion,
     outcome,
     observedAt,

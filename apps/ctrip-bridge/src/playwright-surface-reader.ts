@@ -40,6 +40,7 @@ export function createPlaywrightCtripSurfaceReviewPage(
     currentUrl: () => page.url(),
     readControls: async (
       probes: Parameters<CtripSurfaceReviewPage["readControls"]>[0],
+      attributeNames: Parameters<CtripSurfaceReviewPage["readControls"]>[1],
       maximum: number,
     ) => {
       const controls: CtripRawObservedControl[] = [];
@@ -50,9 +51,23 @@ export function createPlaywrightCtripSurfaceReviewPage(
         for (let index = 0; index < count; index += 1) {
           const control = locator.nth(index);
           if (!(await control.isVisible({ timeout: READ_TIMEOUT_MS }))) continue;
+          const rawAttributes = (
+            await Promise.all(
+              attributeNames.map(async (name) => ({
+                name,
+                rawValue: await control.getAttribute(name, { timeout: READ_TIMEOUT_MS }),
+              })),
+            )
+          )
+            .filter(
+              (attribute): attribute is { readonly name: string; readonly rawValue: string } =>
+                attribute.rawValue !== null && attribute.rawValue.trim().length > 0,
+            )
+            .map(({ name, rawValue }) => ({ name, rawValue }));
           controls.push({
             probeId: probe.id,
             rawLabel: await firstLabel(control, probe.readText, probe.id),
+            rawAttributes: Object.freeze(rawAttributes),
           });
         }
       }

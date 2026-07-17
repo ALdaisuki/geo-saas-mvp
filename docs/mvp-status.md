@@ -62,6 +62,20 @@ milestone requires an authorized evidence review, a source-controlled fixed surf
 manifest, fixed prepare/upload/submit locators and one explicitly supervised canary
 followed by independent public readback.
 
+The first authorized authenticated review on 2026-07-17 observed the current
+picture-text editor at `https://we.ctrip.com/publish/publishPictureText` with visible
+image-upload, draft-save, final-publish and article-category actions, two
+content-editable editor surfaces, and no challenge signal. Surface evidence is now
+`geo.ctrip-surface-review.v2`: only that source-compiled discovery page may
+contribute controls, and only a fixed allowlist of bounded structural attributes is
+read. Unrelated authenticated Ctrip tabs contribute no labels. The observed
+structure contained only generic `role`, `type` and `contenteditable` values; no
+article content, account label, dynamic ID, input value or filesystem path was
+collected. This remains discovery evidence only: `reviewedSurfaces` is still empty,
+`liveCanaryEnabled=false`, and the result remains `adapter_drift`. A second
+independent browser-session observation and explicit locator review are required
+before any draft-only canary design.
+
 Migration `0022_ctrip_prepare_evidence.sql` closes the remaining prepare-audit gap.
 Every new blocker or prepared draft atomically stores `prepareOutcome`, evidence
 kind, top-level evidence hash and observation time; a prepared draft additionally

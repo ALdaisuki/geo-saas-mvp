@@ -37,6 +37,32 @@ This separates discovery from execution. Review evidence can prove what an
 authorized account saw, but it cannot authorize a write and it cannot by itself
 make the live adapter production-ready.
 
+The authenticated 2026-07-17 review adds a second reusable distinction. The
+browser context contained both the target picture-text editor and an unrelated
+authenticated Ctrip tab. Enumerating all allowlisted-domain pages is useful for
+session and challenge classification, but only a source-compiled discovery
+surface should contribute control labels or structural fingerprints. Otherwise a
+bounded probe can still disclose irrelevant account labels and dilute the page
+contract.
+
+Playwright's documented `Locator.getAttribute` returns one named attribute or
+`null`, and `Locator.isVisible` performs a read-only visibility check. The narrow
+pattern is therefore to pass a fixed attribute-name allowlist through the review
+port and call `getAttribute` for those names only. Do not enumerate arbitrary DOM
+attributes and do not request `value`, `href`, `src`, `class`, `style`, event
+handlers, or unrestricted `data-*`. Canonicalize, redact, bound, deduplicate, and
+sort the resulting name/value pairs before hashing them.
+
+The resulting manifest needs three separate facts:
+
+```text
+discoverySurfaces: pages whose bounded structure may be observed
+reviewedSurfaces: pages approved for a fixed future adapter
+liveCanaryEnabled: whether that adapter may start
+```
+
+Populating the first must not imply either of the latter two.
+
 ## Bridge Adaptation
 
 The adapter `prepare` contract should return a typed union. A valid fixed surface
@@ -58,6 +84,9 @@ only path that can later confirm publication.
 - DOM labels are discovery evidence, not executable selectors. They can contain
   account or article data and therefore require strict normalization, redaction
   and length/count bounds.
+- A single observation cannot distinguish stable semantic attributes from
+  session-generated IDs. Promotion to an execution locator requires comparison
+  across separate supervised browser sessions.
 - HTTP 432 is an observed denial signal, not a documented Ctrip API contract. The
   implementation must classify the actual authenticated page rather than keying
   behavior only on that status code.
@@ -67,4 +96,6 @@ only path that can later confirm publication.
 ## References
 
 - Playwright `BrowserType.connectOverCDP`: https://playwright.dev/docs/api/class-browsertype#browser-type-connect-over-cdp
+- Playwright `Locator.getAttribute`: https://playwright.dev/docs/api/class-locator#locator-get-attribute
+- Playwright `Locator.isVisible`: https://playwright.dev/docs/api/class-locator#locator-is-visible
 - Ctrip Community public surface: https://you.ctrip.com/

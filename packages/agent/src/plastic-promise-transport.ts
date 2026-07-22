@@ -4,12 +4,18 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { PlasticPromiseGovernanceClient, type McpToolCaller } from "./governance.js";
 
-function validatedEndpoint(endpoint: string, allowedOrigins: readonly string[]): URL {
+function validatedEndpoint(
+  endpoint: string,
+  allowedOrigins: readonly string[],
+  allowDockerHost: boolean,
+): URL {
   const url = new URL(endpoint);
   if (url.username !== "" || url.password !== "" || url.hash !== "") {
     throw new Error("Plastic Promise MCP URL cannot contain credentials or a fragment");
   }
-  if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") {
+  const isLoopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  const isCustomerDemoDockerHost = allowDockerHost && url.hostname === "host.docker.internal";
+  if (url.protocol !== "https:" && !isLoopback && !isCustomerDemoDockerHost) {
     throw new Error("Plastic Promise MCP requires HTTPS except on loopback");
   }
   if (!allowedOrigins.includes(url.origin)) {
@@ -22,8 +28,13 @@ export async function connectPlasticPromiseStreamableHttp(options: {
   endpoint: string;
   allowedOrigins: readonly string[];
   authorizationHeader?: string;
+  allowDockerHost?: boolean;
 }): Promise<PlasticPromiseGovernanceClient> {
-  const endpoint = validatedEndpoint(options.endpoint, options.allowedOrigins);
+  const endpoint = validatedEndpoint(
+    options.endpoint,
+    options.allowedOrigins,
+    options.allowDockerHost === true,
+  );
   const client = new Client({ name: "geo-pi-agent", version: "0.1.0" }, { capabilities: {} });
   const headers = new Headers();
   if (options.authorizationHeader !== undefined) {

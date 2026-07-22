@@ -25,6 +25,7 @@
     "@geo/db": "workspace:*",
     "@geo/media": "workspace:*",
     "kysely": "0.28.8",
+    "marked": "16.4.2",
     "playwright-core": "1.61.1",
     "zod": "catalog:"
   },

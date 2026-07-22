@@ -127,6 +127,10 @@ function platformLabel(platform: string): string {
   );
 }
 
+function executionLevelLabel(level: AutomationBatch["executionLevel"]): string {
+  return { dry_run: "Dry-run", assisted: "辅助发布", unattended: "无人值守" }[level];
+}
+
 function batchStateLabel(state: AutomationBatchState): string {
   return {
     scheduled: "待执行",
@@ -245,13 +249,15 @@ export function AutomationOperations({
     () => campaigns.filter((campaign) => campaign.status === "active"),
     [campaigns],
   );
-  const dryRunAccounts = useMemo(
+  const [executionLevel, setExecutionLevel] =
+    useState<AutomationBatch["executionLevel"]>("dry_run");
+  const eligibleAccounts = useMemo(
     () =>
       accounts.filter(
         (account) =>
-          account.status === "active" && account.supportedExecutionLevels.includes("dry_run"),
+          account.status === "active" && account.supportedExecutionLevels.includes(executionLevel),
       ),
-    [accounts],
+    [accounts, executionLevel],
   );
   const canManage = capabilities.includes("automation:manage");
   const canWriteCampaign = capabilities.includes("content:write");
@@ -474,13 +480,13 @@ export function AutomationOperations({
         throw new TypeError(`槽位 ${index + 1} 的 brief 必须为 3–10000 个字符`);
       }
       if (slot.channelAccountIds.length < 1 || slot.channelAccountIds.length > 3) {
-        throw new TypeError(`槽位 ${index + 1} 必须选择 1–3 个 Dry-run 账号`);
+        throw new TypeError(`槽位 ${index + 1} 必须选择 1–3 个 ${executionLevel} 账号`);
       }
       if (
         new Set(slot.channelAccountIds).size !== slot.channelAccountIds.length ||
-        slot.channelAccountIds.some((id) => !dryRunAccounts.some((account) => account.id === id))
+        slot.channelAccountIds.some((id) => !eligibleAccounts.some((account) => account.id === id))
       ) {
-        throw new TypeError(`槽位 ${index + 1} 包含重复、失效或非 Dry-run 账号`);
+        throw new TypeError(`槽位 ${index + 1} 包含重复、失效或不支持 ${executionLevel} 的账号`);
       }
       const scheduledFor = new Date(slot.scheduledFor);
       if (!Number.isFinite(scheduledFor.getTime())) {
@@ -550,11 +556,15 @@ export function AutomationOperations({
       const trimmedName = batchName.trim();
       const result = await api.createAutomationBatch(campaignId, {
         idempotencyKey,
+        executionLevel,
         ...(trimmedName === "" ? {} : { name: trimmedName }),
         items,
       });
-      if (result.batch.campaignId !== campaignId || result.batch.executionLevel !== "dry_run") {
-        throw new TypeError("新建批次回读与请求的 campaign 或 dry_run 边界不一致");
+      if (
+        result.batch.campaignId !== campaignId ||
+        result.batch.executionLevel !== executionLevel
+      ) {
+        throw new TypeError("新建批次回读与请求的 campaign 或执行级别不一致");
       }
       if (scopeRef.current !== scope) return;
       await refresh(result.batch.id, null);
@@ -564,7 +574,7 @@ export function AutomationOperations({
       setIdempotencyKey(newBatchKey(tenantId));
       setFeedback({
         tone: "success",
-        text: `${items.length} 个槽位已持久化为 Dry-run 批次并完成回读。`,
+        text: `${items.length} 个槽位已持久化为 ${executionLevel} 批次并完成回读。`,
       });
       onChanged?.();
     } catch (error) {
@@ -619,9 +629,10 @@ export function AutomationOperations({
       <div className="ops-notice ops-notice-warning" role="status">
         <ShieldAlert size={16} />
         <span>
-          <strong>dry_run</strong> ·
-          无人值守仅覆盖内容生成、发布前审计与平台预演；头条号、搜狐号、携程社区当前均为
-          manual_only，不执行外部发送。
+          <strong>{executionLevel}</strong> ·
+          {executionLevel === "dry_run"
+            ? "仅执行内容生成、发布前审计与平台预演，不会对外发送。"
+            : "发布仍受审计、账号能力、平台会话/风控与公开读回门禁约束；不绕过登录或验证码。"}
         </span>
       </div>
 
@@ -718,10 +729,10 @@ export function AutomationOperations({
       <section className="ops-evidence-band">
         <div className="ops-section-heading">
           <div>
-            <span>UNATTENDED DRY-RUN</span>
+            <span>AUTOMATION DELIVERY</span>
             <h2>创建批次</h2>
           </div>
-          <span className="status-badge status-warning">dry_run · 最多 50 槽位</span>
+          <span className="status-badge status-warning">{executionLevel} · 最多 50 槽位</span>
         </div>
         <div className="ops-article-detail">
           <form className="ops-compose-form" onSubmit={(event) => void createBatch(event)}>
@@ -755,6 +766,26 @@ export function AutomationOperations({
                       </option>
                     ))
                   )}
+                </select>
+              </label>
+              <label>
+                执行级别
+                <select
+                  aria-label="自动化执行级别"
+                  value={executionLevel}
+                  onChange={(event) => {
+                    const nextLevel = event.target.value as AutomationBatch["executionLevel"];
+                    setExecutionLevel(nextLevel);
+                    setSlots((current) =>
+                      current.map((slot) => ({ ...slot, channelAccountIds: [] })),
+                    );
+                    rotateDraftKey();
+                  }}
+                  disabled={!canManage || creating}
+                >
+                  <option value="dry_run">Dry-run（仅预演）</option>
+                  <option value="assisted">辅助发布（人工最终确认）</option>
+                  <option value="unattended">无人值守（审计与公开读回门禁）</option>
                 </select>
               </label>
               <label>
@@ -796,7 +827,7 @@ export function AutomationOperations({
 
             <div className="visibility-sample-list">
               {slots.map((slot, index) => {
-                const availableAccounts = dryRunAccounts.filter(
+                const availableAccounts = eligibleAccounts.filter(
                   (account) => !slot.channelAccountIds.includes(account.id),
                 );
                 return (
@@ -855,7 +886,7 @@ export function AutomationOperations({
                       <label>
                         Dry-run 账号（最多 3 个）
                         <select
-                          aria-label={`槽位 ${index + 1} 添加 Dry-run 账号`}
+                          aria-label={`槽位 ${index + 1} 添加 ${executionLevelLabel(executionLevel)} 账号`}
                           value=""
                           onChange={(event) => {
                             const accountId = event.target.value;
@@ -899,7 +930,7 @@ export function AutomationOperations({
                         <span>尚未选择账号</span>
                       ) : (
                         slot.channelAccountIds.map((accountId) => {
-                          const account = dryRunAccounts.find((item) => item.id === accountId);
+                          const account = eligibleAccounts.find((item) => item.id === accountId);
                           return (
                             <span key={accountId}>
                               {account === undefined
@@ -930,10 +961,10 @@ export function AutomationOperations({
               })}
             </div>
 
-            {dryRunAccounts.length === 0 ? (
+            {eligibleAccounts.length === 0 ? (
               <div className="ops-notice ops-notice-warning" role="status">
                 <AlertTriangle size={15} />
-                <span>当前租户没有 active 且支持 dry_run 的平台账号，无法创建批次。</span>
+                <span>当前租户没有 active 且支持 {executionLevel} 的平台账号，无法创建批次。</span>
               </div>
             ) : null}
 
@@ -942,7 +973,7 @@ export function AutomationOperations({
                 className="button-primary"
                 type="submit"
                 disabled={
-                  !canManage || creating || campaignId === "" || dryRunAccounts.length === 0
+                  !canManage || creating || campaignId === "" || eligibleAccounts.length === 0
                 }
                 title={!canManage ? "需要 automation:manage 权限" : undefined}
               >
@@ -951,7 +982,7 @@ export function AutomationOperations({
                 ) : (
                   <CalendarClock size={15} />
                 )}
-                创建 Dry-run 批次
+                创建 {executionLevelLabel(executionLevel)} 批次
               </button>
             </div>
           </form>
@@ -984,7 +1015,7 @@ export function AutomationOperations({
           <div className="ops-placeholder" role="status">
             <ClipboardList size={20} />
             <strong>当前租户尚无自动化批次</strong>
-            <span>创建 Dry-run 批次后，运行槽位和每个平台 target 会在这里按持久化状态回读。</span>
+            <span>创建批次后，运行槽位和每个平台 target 会在这里按持久化状态回读。</span>
           </div>
         ) : (
           <div className="ops-content-layout">
@@ -1016,7 +1047,7 @@ export function AutomationOperations({
                 <div className="ops-placeholder" role="status">
                   <ClipboardList size={20} />
                   <strong>选择批次</strong>
-                  <span>查看运行槽位、审计状态与 Dry-run target 结果。</span>
+                  <span>查看运行槽位、审计状态与平台 target 结果。</span>
                 </div>
               ) : (
                 <div className="ops-article-detail">
@@ -1034,7 +1065,7 @@ export function AutomationOperations({
                   <div className="ops-version-meta">
                     <div>
                       <span>执行级别</span>
-                      <strong>dry_run</strong>
+                      <strong>{selectedBatch.executionLevel}</strong>
                     </div>
                     <div>
                       <span>计划时间</span>
@@ -1083,7 +1114,9 @@ export function AutomationOperations({
                   <div className="ops-platform-boundary">
                     <ShieldAlert size={15} />
                     <span>
-                      该批次固定为 dry_run；target 完成仅表示预演完成，不代表外部平台发送。
+                      {selectedBatch.executionLevel === "dry_run"
+                        ? "该批次仅执行平台预演，不代表外部平台发送。"
+                        : "该批次仍受发布前审计、平台会话/风控和公开读回门禁约束；不会绕过登录或验证码。"}
                     </span>
                   </div>
 

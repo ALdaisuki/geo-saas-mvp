@@ -119,6 +119,7 @@ function bridgeHandoff(
     variantId: ids.variant,
     contentVersionId: ids.contentVersion,
     platform: "ctrip_community",
+    executionLevel: "assisted",
     state,
     previewHash,
     payloadHash: sha256Canonical(payload),
@@ -126,7 +127,9 @@ function bridgeHandoff(
     bridgePrincipalId: ids.principal,
     externalDraftId: state === "handoff_pending" ? null : `sim-draft-${ids.handoff}`,
     submitOutcome: state === "readback_pending" ? "accepted" : null,
+    submitEvidenceHash: state === "readback_pending" ? "d".repeat(64) : null,
     submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
+    submitObservedAt: state === "readback_pending" ? now : null,
     submitCandidateExternalId: null,
     submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
@@ -160,6 +163,8 @@ function runtime(
   ];
   let preparedEvidence: CtripBridgePreparedEvidence | undefined;
   const controlPlane: CtripBridgeControlPlane = {
+    claimDraftPreparation: vi.fn(async () => undefined),
+    claimNextDraftPreparation: vi.fn(async () => null),
     loadHandoff: vi.fn(async () => current.value),
     loadPreparedMediaAssets: vi.fn(async () => assets),
     recordPrepared: vi.fn(async (_context, _handoff, evidence) => {
@@ -179,7 +184,9 @@ function runtime(
         ...current.value,
         state: "readback_pending",
         submitOutcome: "accepted",
+        submitEvidenceHash: "d".repeat(64),
         submitEvidenceKind: "simulation",
+        submitObservedAt: now,
         submitCandidateExternalId: null,
         submitCandidateExternalUrl: null,
       };

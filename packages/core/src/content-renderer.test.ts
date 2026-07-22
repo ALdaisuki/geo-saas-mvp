@@ -137,4 +137,126 @@ describe("canonical content renderer", () => {
       ]),
     );
   });
+
+  it("renders Pi-authored text while retaining supporting fact provenance", () => {
+    const authoredPayload = payload({
+      title: "第一次出境前先核对什么",
+      summary: "按已核验资料整理一份出发前检查顺序。",
+      bodyMarkdown: "先核对有效期，再确认行程材料。\n\n24小时热线: 4001133986",
+      titleBlocks: [{ type: "authored", text: "第一次出境前先核对什么", claimIds: [factId] }],
+      summaryBlocks: [
+        { type: "authored", text: "按已核验资料整理一份出发前检查顺序。", claimIds: [factId] },
+      ],
+      bodyBlocks: [
+        { type: "authored", text: "先核对有效期，再确认行程材料。", claimIds: [factId] },
+        { type: "contact", contactId, presentation: "paragraph" },
+      ],
+      claims: [
+        {
+          id: factId,
+          text: facts.facts[0]!.text,
+          evidenceSourceIds: [...facts.facts[0]!.evidenceSourceIds],
+          validUntil: null,
+        },
+      ],
+      contactIds: [contactId],
+    });
+
+    const rendered = renderCanonicalContent({
+      payload: authoredPayload,
+      policy: policy(),
+      factSnapshot: facts,
+      contacts,
+    });
+
+    expect(rendered.issues).toEqual([]);
+    expect(rendered.title).toBe("第一次出境前先核对什么");
+    expect(rendered.bodyMarkdown).toBe(authoredPayload.bodyMarkdown);
+    expect(rendered.claimIds).toEqual([factId]);
+  });
+
+  it("renders a contact-backed claim once while retaining both provenance references", () => {
+    const contactFactSnapshot: FactSnapshot = {
+      ...facts,
+      facts: [
+        {
+          ...facts.facts[0]!,
+          text: "中通国际旅行社提供 24 小时咨询热线 4001133986。",
+        },
+      ],
+    };
+    const rendered = renderCanonicalContent({
+      payload: payload({
+        bodyMarkdown: contactFactSnapshot.facts[0]!.text,
+        bodyBlocks: [
+          {
+            type: "claim",
+            claimId: factId,
+            presentation: "paragraph",
+            contactIds: [contactId],
+          },
+        ],
+        claims: [
+          {
+            id: factId,
+            text: contactFactSnapshot.facts[0]!.text,
+            evidenceSourceIds: [...contactFactSnapshot.facts[0]!.evidenceSourceIds],
+            validUntil: null,
+          },
+        ],
+        contactIds: [contactId],
+      }),
+      policy: policy(),
+      factSnapshot: contactFactSnapshot,
+      contacts,
+    });
+
+    expect(rendered.issues).toEqual([]);
+    expect(rendered.bodyMarkdown).toBe("中通国际旅行社提供 24 小时咨询热线 4001133986。");
+    expect(rendered.claimIds).toEqual([factId]);
+    expect(rendered.contactIds).toEqual([contactId]);
+  });
+
+  it("rejects a contact binding when the verified claim does not contain its value", () => {
+    const rendered = renderCanonicalContent({
+      payload: payload({
+        bodyBlocks: [
+          {
+            type: "claim",
+            claimId: factId,
+            presentation: "paragraph",
+            contactIds: [contactId],
+          },
+        ],
+      }),
+      policy: policy(),
+      factSnapshot: facts,
+      contacts,
+    });
+
+    expect(rendered.issues.map((issue) => issue.ruleId)).toContain(
+      "content.claim.contact_mismatch",
+    );
+  });
+
+  it("blocks authored text that points outside the fact snapshot", () => {
+    const rendered = renderCanonicalContent({
+      payload: payload({
+        titleBlocks: [
+          {
+            type: "authored",
+            text: "没有证据",
+            claimIds: ["00000000-0000-4000-8000-000000000099"],
+          },
+        ],
+      }),
+      policy: policy(),
+      factSnapshot: facts,
+      contacts,
+    });
+
+    expect(rendered.issues.map((issue) => issue.ruleId)).toContain(
+      "content.authored.claim.unknown",
+    );
+  });
 });

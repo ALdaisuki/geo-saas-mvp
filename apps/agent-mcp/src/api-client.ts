@@ -14,13 +14,37 @@ export interface TenantFactLookupInput {
   limit?: number;
 }
 
+export interface AuthoredDraftSectionInput {
+  readonly text: string;
+  readonly claimIds: readonly string[];
+}
+
+export interface AuthoredDraftMediaSearchIntentInput {
+  readonly query: string;
+  readonly role: "cover" | "inline";
+  readonly rationale: string;
+  readonly claimIds: readonly string[];
+}
+
+export interface AuthoredDraftInput {
+  readonly title: string;
+  readonly titleClaimIds: readonly string[];
+  readonly summary: string;
+  readonly summaryClaimIds: readonly string[];
+  readonly locationQuery?: string;
+  readonly body: readonly AuthoredDraftSectionInput[];
+  readonly mediaSearchPlan?: readonly AuthoredDraftMediaSearchIntentInput[];
+}
+
 export interface DraftProposalInput {
   brandId: string;
   campaignId: string;
   brief: string;
+  targetPlatform?: Platform;
   articleTemplateId?: string;
   idempotencyKey: string;
   fixtureMode?: boolean;
+  authoredDraft?: AuthoredDraftInput;
 }
 
 export interface VariantPreviewInput {
@@ -58,6 +82,12 @@ export interface MediaProductionRequestInput {
 
 export interface MediaJobStatusInput {
   mediaJobId: string;
+}
+
+export interface MediaSearchImportInput {
+  contentVersionId: string;
+  idempotencyKey: string;
+  maxImports?: number;
 }
 
 export interface InternalGeoApiClient {
@@ -100,6 +130,10 @@ export interface InternalGeoApiClient {
   getMediaJobStatus(
     principal: Readonly<ActorContext>,
     input: Readonly<MediaJobStatusInput>,
+  ): Promise<unknown>;
+  requestMediaSearchImport(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaSearchImportInput>,
   ): Promise<unknown>;
   authorizeResourceScope(
     principal: Readonly<ActorContext>,

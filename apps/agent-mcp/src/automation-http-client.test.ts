@@ -54,6 +54,7 @@ function automationRun() {
     batchId: ids.batch,
     campaignId: ids.campaign,
     brandId: ids.brand,
+    executionLevel: "unattended",
     slotKey: "slot-1",
     topicKey: "topic-1",
     brief: "verified travel service",

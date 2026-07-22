@@ -1,7 +1,21 @@
-import type { AutomationRunTargetState, Platform } from "@geo/contracts";
+import type { AutomationRunTargetState, ExecutionLevel, Platform } from "@geo/contracts";
 
 export interface AutomationToolRuntime {
   invoke(name: string, args: Readonly<Record<string, unknown>>): Promise<unknown>;
+}
+
+export interface AutomationDraftAuthor {
+  author(
+    input: Readonly<{
+      tenantId: string;
+      brandId: string;
+      campaignId: string;
+      targetPlatform: Platform;
+      brief: string;
+      idempotencyKey: string;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ contentItemId: string; contentVersionId: string }>>;
 }
 
 export interface ScheduledAutomationTarget {
@@ -21,10 +35,13 @@ export interface ScheduledAutomationRunInput {
   readonly brandId: string;
   readonly campaignId: string;
   readonly runId: string;
+  readonly executionLevel: ExecutionLevel;
   readonly topic: string;
   readonly targets: readonly ScheduledAutomationTarget[];
   readonly contentItemId?: string;
   readonly contentVersionId?: string;
+  /** True when the persisted content version already contains the searched media set. */
+  readonly mediaSearchCompleted?: boolean;
 }
 
 export type ScheduledAutomationCheckpoint =
@@ -32,6 +49,17 @@ export type ScheduledAutomationCheckpoint =
       readonly stage: "draft";
       readonly contentItemId: string;
       readonly contentVersionId: string;
+      readonly providerMode?: "pi_authored";
+    }
+  | {
+      readonly stage: "media";
+      readonly contentItemId: string;
+      readonly sourceContentVersionId: string;
+      readonly contentVersionId: string;
+      readonly provider: "wikimedia_commons";
+      readonly mediaCount: number;
+      readonly mediaComplete: boolean;
+      readonly providerMode?: "pi_authored";
     }
   | {
       readonly stage: "target";
@@ -81,6 +109,10 @@ function persistedString(value: string | undefined, field: string): string {
   return stringField(value, field);
 }
 
+function factLookupQuery(value: string): string {
+  return [...value.trim().replaceAll(/\s+/gu, " ")].slice(0, 200).join("");
+}
+
 function errorCode(error: unknown): string {
   if (typeof error === "object" && error !== null && "code" in error) {
     const code = (error as { readonly code?: unknown }).code;
@@ -125,9 +157,11 @@ class AutomationCheckpointError extends Error {
 
 export class ScheduledAutomationRuntime {
   readonly #runtime: AutomationToolRuntime;
+  readonly #draftAuthor: AutomationDraftAuthor | undefined;
 
-  constructor(runtime: AutomationToolRuntime) {
+  constructor(runtime: AutomationToolRuntime, draftAuthor?: AutomationDraftAuthor) {
     this.#runtime = runtime;
+    this.#draftAuthor = draftAuthor;
   }
 
   async run(
@@ -153,34 +187,141 @@ export class ScheduledAutomationRuntime {
       throw new Error("Automation resume requires both contentItemId and contentVersionId");
     }
 
-    await invoke("plastic_context_supply", {
-      tenantId: input.tenantId,
-      taskDescription: `Create a governed automation draft about ${input.topic}`,
-      taskType: "content_drafting",
-    });
-    await invoke("geo_tenant_context", { tenantId: input.tenantId });
-    await invoke("geo_fact_lookup", {
-      tenantId: input.tenantId,
-      brandId: input.brandId,
-      query: input.topic,
-      limit: 10,
-    });
     let contentItemId = input.contentItemId;
     let contentVersionId = input.contentVersionId;
     if (contentItemId === undefined || contentVersionId === undefined) {
-      const draft = record(
-        await invoke("geo_draft_proposal", {
+      const idempotencyKey = `automation:${input.runId}:draft:v1`;
+      const targetPlatform = input.targets.some(
+        (target) => target.platform === "ctrip_community",
+      )
+        ? "ctrip_community"
+        : input.targets[0]?.platform;
+      if (targetPlatform === undefined) throw new Error("Automation run requires a target");
+      let draft: Readonly<Record<string, unknown>>;
+      if (this.#draftAuthor !== undefined) {
+        draft = record(
+          await this.#draftAuthor.author(
+            {
+              tenantId: input.tenantId,
+              brandId: input.brandId,
+              campaignId: input.campaignId,
+              targetPlatform,
+              brief: input.topic,
+              idempotencyKey,
+            },
+            signal,
+          ),
+          "Pi-authored draft",
+        );
+      } else {
+        await invoke("plastic_context_supply", {
+            tenantId: input.tenantId,
+            taskDescription: `Create a governed automation draft about ${input.topic}`,
+            taskType: "content_drafting",
+        });
+        await invoke("geo_tenant_context", { tenantId: input.tenantId });
+        await invoke("geo_fact_lookup", {
           tenantId: input.tenantId,
           brandId: input.brandId,
-          campaignId: input.campaignId,
-          brief: input.topic,
-          idempotencyKey: `automation:${input.runId}:draft:v1`,
-        }),
-        "draft",
-      );
+          query: factLookupQuery(input.topic),
+          limit: 10,
+        });
+        draft = record(
+          await invoke("geo_draft_proposal", {
+            tenantId: input.tenantId,
+            brandId: input.brandId,
+            campaignId: input.campaignId,
+            brief: input.topic,
+            idempotencyKey,
+          }),
+          "draft",
+        );
+      }
       contentItemId = stringField(draft.contentItemId, "contentItemId");
       contentVersionId = stringField(draft.contentVersionId, "contentVersionId");
-      await persistCheckpoint({ stage: "draft", contentItemId, contentVersionId });
+      await persistCheckpoint({
+        stage: "draft",
+        contentItemId,
+        contentVersionId,
+        ...(this.#draftAuthor === undefined ? {} : { providerMode: "pi_authored" as const }),
+      });
+    }
+
+    if (
+      input.targets.some((target) => target.platform === "ctrip_community") &&
+      input.mediaSearchCompleted !== true
+    ) {
+      const sourceContentVersionId = contentVersionId;
+      let mediaComplete = false;
+      let mediaSteps = 0;
+      while (!mediaComplete) {
+        if (mediaSteps >= 5) throw new Error("MEDIA_SEARCH_PROGRESS_INVALID");
+        const requestedContentVersionId = contentVersionId;
+        const media = record(
+          await invoke("geo_media_search_import", {
+            tenantId: input.tenantId,
+            contentVersionId: requestedContentVersionId,
+            idempotencyKey: `automation:${input.runId}:media-search:v1`,
+            maxImports: 1,
+          }),
+          "media search import",
+        );
+        if (media.provider !== "wikimedia_commons") {
+          throw new Error("MEDIA_SEARCH_PROVIDER_INVALID");
+        }
+        const plannedCount = media.plannedCount;
+        const imported = media.imported;
+        const legacyComplete =
+          media.complete === undefined &&
+          Array.isArray(imported) &&
+          imported.length === plannedCount;
+        const initialMediaCount =
+          typeof media.initialMediaCount === "number" ? media.initialMediaCount : 0;
+        const totalMediaCount =
+          typeof media.totalMediaCount === "number"
+            ? media.totalMediaCount
+            : Array.isArray(imported)
+              ? imported.length
+              : -1;
+        mediaComplete = media.complete === true || legacyComplete;
+        if (
+          typeof plannedCount !== "number" ||
+          !Number.isInteger(plannedCount) ||
+          plannedCount < 4 ||
+          plannedCount > 5 ||
+          typeof initialMediaCount !== "number" ||
+          !Number.isInteger(initialMediaCount) ||
+          initialMediaCount < 0 ||
+          typeof totalMediaCount !== "number" ||
+          !Number.isInteger(totalMediaCount) ||
+          totalMediaCount < initialMediaCount ||
+          totalMediaCount > plannedCount ||
+          !Array.isArray(imported) ||
+          imported.length !== totalMediaCount - initialMediaCount ||
+          (!mediaComplete && imported.length !== 1) ||
+          (mediaComplete && totalMediaCount !== plannedCount)
+        ) {
+          throw new Error("MEDIA_SEARCH_COUNT_INVALID");
+        }
+        if (
+          stringField(media.sourceContentVersionId, "sourceContentVersionId") !==
+          requestedContentVersionId
+        ) {
+          throw new Error("MEDIA_SEARCH_SOURCE_INVALID");
+        }
+        contentVersionId = stringField(media.finalContentVersionId, "finalContentVersionId");
+        await persistCheckpoint({
+          stage: "media",
+          contentItemId,
+          sourceContentVersionId,
+          contentVersionId,
+          provider: "wikimedia_commons",
+          mediaCount: totalMediaCount,
+          mediaComplete,
+          ...(this.#draftAuthor === undefined ? {} : { providerMode: "pi_authored" as const }),
+        });
+        mediaSteps += 1;
+      }
     }
 
     const results: ScheduledAutomationTargetResult[] = [];
@@ -258,7 +399,7 @@ export class ScheduledAutomationRuntime {
             tenantId: input.tenantId,
             variantId,
             channelAccountId: target.channelAccountId,
-            executionLevel: "dry_run",
+            executionLevel: input.executionLevel,
             idempotencyKey: `automation:${input.runId}:target:${target.targetId}:publication:v1`,
           }),
           "publication",

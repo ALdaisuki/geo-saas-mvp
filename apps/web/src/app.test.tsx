@@ -423,6 +423,15 @@ function liveApi(): GeoApi {
         prePublicationAudit: true,
       },
     }),
+    getCtripBridgeStatus: async () => ({
+      configured: false,
+      reachable: false,
+      mode: null,
+      adapterVersion: null,
+      commandCapabilities: null,
+      operationalStatus: "unavailable",
+      operationalCheckedAt: null,
+    }),
     getAgentCapability: async () => ({
       available: false,
       mode: "disabled",
@@ -468,6 +477,12 @@ function liveApi(): GeoApi {
       throw new Error("not used by this App fixture");
     },
     getContentVersion: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    importMedia: async () => {
+      throw new Error("not used by this App fixture");
+    },
+    searchAndImportMedia: async () => {
       throw new Error("not used by this App fixture");
     },
     getContentVariants: async () => [],
@@ -1015,10 +1030,7 @@ describe("GEO operator console", () => {
 
     await screen.findByText("受治理运营链");
     expect(screen.getByText(/头条号、搜狐号使用 manual_only \+ dry_run/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/携程社区使用 browser_assisted \+ assisted 内部模拟/),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /unattended|无人值守/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/browser_assisted.*unattended/)).toBeInTheDocument();
     expect(screen.getByText("尚无文章；创建操作会同时生成 v1")).toBeInTheDocument();
   });
 
@@ -1080,7 +1092,7 @@ describe("GEO operator console", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "创建 Dry-run 批次" })).toBeEnabled(),
     );
-    expect(screen.getByText(/不执行外部发送/)).toBeInTheDocument();
+    expect(screen.getByText(/不会对外发送/)).toBeInTheDocument();
     expect(screen.queryByText(/已真实发布/)).not.toBeInTheDocument();
     expect(batchReads).toBe(1);
     expect(runReads).toBe(1);
@@ -1208,7 +1220,7 @@ describe("GEO operator console", () => {
 
     expect(await screen.findByText("第一版能力边界")).toBeInTheDocument();
     expect(screen.getByText("GEO 模板与规范草稿")).toBeInTheDocument();
-    expect(screen.getByText("头条 / 搜狐 / 携程外部发布")).toBeInTheDocument();
+    expect(screen.getByText("携程社区无人值守发布")).toBeInTheDocument();
     expect(screen.getByText("豆包 / 千问在线评测")).toBeInTheDocument();
     expect(screen.getByText("生产级图片生成")).toBeInTheDocument();
     expect(screen.getByText("品牌记忆正负反馈闭环")).toBeInTheDocument();
@@ -1217,15 +1229,34 @@ describe("GEO operator console", () => {
   it("shows a customer-facing ready path without exposing deployment identifiers", async () => {
     renderApp({ path: "/settings", api: liveApi() });
 
-    expect(await screen.findByText("客户演示环境")).toBeInTheDocument();
-    expect(await screen.findByText("文章生成")).toBeInTheDocument();
-    expect(await screen.findByText("携程流程演示")).toBeInTheDocument();
+    expect(await screen.findByText(/真实账号预检/)).toBeInTheDocument();
+    expect(await screen.findByText("正式治理服务")).toBeInTheDocument();
+    expect(await screen.findByText("携程桥接服务")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "开始生成文章" })).toHaveAttribute(
       "href",
       "/content",
     );
     expect(screen.queryByText(/10000000-0000/)).not.toBeInTheDocument();
     expect(screen.queryByText(/CTRIP_/)).not.toBeInTheDocument();
+  });
+
+  it("shows an actionable Ctrip challenge state without claiming automatic bypass", async () => {
+    const api = liveApi();
+    api.getCtripBridgeStatus = async () => ({
+      configured: true,
+      reachable: true,
+      mode: "browser_unattended",
+      adapterVersion: "ctrip-community-browser-unattended-v1",
+      commandCapabilities: { prepare: true, submit: true, readback: true },
+      operationalStatus: "challenge_required",
+      operationalCheckedAt: "2026-07-21T19:00:00.000Z",
+    });
+    renderApp({ path: "/publishing", api });
+
+    expect(
+      await screen.findByText("携程要求完成验证码或安全验证，请在专用 Edge 中人工完成"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/自动绕过/)).not.toBeInTheDocument();
   });
 
   it("edits and confirms the live tenant automation mode and worker quota", async () => {
@@ -1381,6 +1412,81 @@ describe("GEO operator console", () => {
     expect(document.body.textContent).not.toContain("f".repeat(64));
     expect(document.body.textContent).not.toContain("submitPermit");
     expect(document.body.textContent).not.toContain("submit_permit");
+  });
+
+  it("submits a prepared Ctrip draft with one approval and no separate lease claim", async () => {
+    const api = liveApi();
+    const [baseHandoff] = await api.getPublicationAssistedHandoffs();
+    if (baseHandoff === undefined) throw new Error("Ctrip handoff fixture is missing");
+    if (baseHandoff.bridgeServicePrincipalId === null) {
+      throw new Error("Ctrip bridge principal fixture is missing");
+    }
+    let preparedHandoff: PublicationAssistedHandoff = {
+      ...baseHandoff,
+      state: "draft_prepared",
+      leaseOwnerActorId: null,
+      leaseExpiresAt: null,
+      heartbeatAt: null,
+      draftEvidenceHash: "7".repeat(64),
+      prepareOutcome: "prepared",
+      prepareEvidenceKind: "simulation",
+      prepareEvidenceHash: "8".repeat(64),
+      prepareObservedAt: "2026-07-14T08:01:00.000Z",
+      adapterVersion: "ctrip-community-simulator-v1",
+    };
+    const bridgePrincipalId = baseHandoff.bridgeServicePrincipalId;
+    api.getSession = async () => ({
+      ...session,
+      actor: {
+        ...session.actor,
+        capabilities: [...session.actor.capabilities, "publish:request"],
+      },
+    });
+    api.getPublicationAssistedHandoffs = async () => [preparedHandoff];
+    api.getPublicationAssistedHandoff = async () => preparedHandoff;
+    api.claimPublicationAssistedHandoff = vi.fn(api.claimPublicationAssistedHandoff);
+    api.submitPublicationAssistedHandoff = vi.fn(
+      async (): Promise<PublicationAssistedBridgeActionResult> => {
+        preparedHandoff = {
+          ...preparedHandoff,
+          state: "readback_pending",
+          submitPermitIssued: true,
+          submitPermitConsumedAt: "2026-07-14T08:02:00.000Z",
+          submitOutcome: "accepted",
+          submitEvidenceKind: "simulation",
+          submitObservedAt: "2026-07-14T08:02:00.000Z",
+          publicationReceiptId: "10000000-0000-4000-8000-000000001303",
+          publicationReadbackId: "10000000-0000-4000-8000-000000001304",
+        };
+        return {
+          handoff: preparedHandoff,
+          bridge: {
+            schemaVersion: "geo.ctrip-bridge.result.v1",
+            tenantId: session.tenant.id,
+            handoffId: preparedHandoff.id,
+            bridgePrincipalId,
+            command: "submit",
+            outcome: "accepted",
+            evidenceKind: "simulation",
+            state: "readback_pending",
+            receiptId: "10000000-0000-4000-8000-000000001303",
+            readbackId: "10000000-0000-4000-8000-000000001304",
+            adapterVersion: preparedHandoff.adapterVersion,
+            observedAt: "2026-07-14T08:02:00.000Z",
+            evidenceHash: "8".repeat(64),
+          },
+        };
+      },
+    );
+    renderApp({ path: "/publishing", api });
+
+    fireEvent.click(await screen.findByRole("button", { name: /批准提交/ }));
+    const approval = await screen.findByRole("dialog", { name: "批准携程提交" });
+    fireEvent.click(within(approval).getByRole("checkbox", { name: /确认已核对审计/ }));
+    fireEvent.click(within(approval).getByRole("button", { name: "确认提交" }));
+
+    await waitFor(() => expect(api.submitPublicationAssistedHandoff).toHaveBeenCalledOnce());
+    expect(api.claimPublicationAssistedHandoff).not.toHaveBeenCalled();
   });
 
   it("offers reconciliation without retry after a Ctrip submit permit was consumed", async () => {

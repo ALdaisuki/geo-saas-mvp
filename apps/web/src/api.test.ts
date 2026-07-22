@@ -31,6 +31,98 @@ afterEach(() => {
 });
 
 describe("HttpGeoApi", () => {
+  it("parses article search intents and submits a CSRF-protected licensed image search", async () => {
+    const versionId = "10000000-0000-4000-8000-000000000401";
+    const finalVersionId = "10000000-0000-4000-8000-000000000405";
+    const mediaSearchPlan = [
+      {
+        query: "京都 金阁寺 Kinkakuji",
+        role: "cover",
+        rationale: "封面对应京都主题",
+        claimIds: ["10000000-0000-4000-8000-000000000501"],
+      },
+      {
+        query: "京都 伏见稻荷 Fushimi Inari",
+        role: "inline",
+        rationale: "正文景点段落",
+        claimIds: ["10000000-0000-4000-8000-000000000501"],
+      },
+      {
+        query: "京都 岚山 Arashiyama",
+        role: "inline",
+        rationale: "正文路线段落",
+        claimIds: ["10000000-0000-4000-8000-000000000501"],
+      },
+      {
+        query: "京都 锦市场 Nishiki Market",
+        role: "inline",
+        rationale: "正文餐饮段落",
+        claimIds: ["10000000-0000-4000-8000-000000000501"],
+      },
+    ] as const;
+    const calls: Array<{ input: string; init: RequestInit | undefined }> = [];
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({
+        id: versionId,
+        contentItemId: "10000000-0000-4000-8000-000000000402",
+        version: 1,
+        summary: "京都路线摘要",
+        bodyMarkdown: "## 京都路线",
+        payload: {
+          title: "京都路线",
+          summary: "京都路线摘要",
+          bodyMarkdown: "## 京都路线",
+          mediaSearchPlan,
+          media: [],
+          claims: [],
+          contactIds: [],
+          tags: [],
+        },
+        payloadHash: "a".repeat(64),
+        frozenAt: null,
+      }),
+      jsonResponse({
+        provider: "wikimedia_commons",
+        sourceContentVersionId: versionId,
+        finalContentVersionId: finalVersionId,
+        plannedCount: 4,
+        imported: mediaSearchPlan.map((intent, intentIndex) => ({
+          intentIndex,
+          query: intent.query,
+          role: intent.role,
+          providerAssetId: `commons-${intentIndex}`,
+          sourceUrl: `https://commons.wikimedia.org/wiki/File:${intentIndex}.jpg`,
+          assetId: `10000000-0000-4000-8000-00000000050${intentIndex + 2}`,
+          contentVersionId: finalVersionId,
+        })),
+        rejectedCandidateCount: 2,
+        rejectionCodes: ["MEDIA_QUERY_RELEVANCE_FAILED"],
+      }),
+    ];
+    const api = new HttpGeoApi("", async (input, init) => {
+      calls.push({ input: String(input), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    await expect(api.getContentVersion(versionId)).resolves.toMatchObject({
+      payload: {
+        mediaSearchPlan: expect.arrayContaining([expect.objectContaining({ role: "cover" })]),
+      },
+    });
+    await expect(
+      api.searchAndImportMedia(versionId, { idempotencyKey: "web-media-search-1" }),
+    ).resolves.toMatchObject({ finalContentVersionId: finalVersionId, plannedCount: 4 });
+    expect(calls[2]?.input).toBe(`/api/content-versions/${versionId}/media-search-imports`);
+    expect(JSON.parse(String(calls[2]?.init?.body))).toEqual({
+      idempotencyKey: "web-media-search-1",
+    });
+    expect(new Headers(calls[2]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+  });
+
   it("reads and writes strictly parsed Brand Agent Profile versions", async () => {
     const brandId = "10000000-0000-4000-8000-000000000301";
     const document = {
@@ -234,7 +326,7 @@ describe("HttpGeoApi", () => {
     expect(new Headers(calls[2]?.init?.headers).has("authorization")).toBe(false);
   });
 
-  it("reads the customer setup contract and rejects an enabled external publisher", async () => {
+  it("reads the customer setup contract and accepts a fully admitted external publisher", async () => {
     const readiness = {
       schemaVersion: "geo.customer-setup-readiness.v1",
       deploymentProfile: "customer_demo",
@@ -266,8 +358,33 @@ describe("HttpGeoApi", () => {
       articleGenerationReady: true,
       externalPublishingEnabled: false,
     });
-    await expect(api.getSetupReadiness()).rejects.toMatchObject({
-      code: "INVALID_API_RESPONSE",
+    await expect(api.getSetupReadiness()).resolves.toMatchObject({
+      deploymentProfile: "customer_demo",
+      externalPublishingEnabled: true,
+    });
+  });
+
+  it("reads the Ctrip bridge mode and command capabilities", async () => {
+    const api = new HttpGeoApi("", async () =>
+      jsonResponse({
+        configured: true,
+        reachable: true,
+        mode: "browser_supervised",
+        adapterVersion: "ctrip-community-browser-supervised-v1",
+        commandCapabilities: { prepare: true, submit: true, readback: false },
+        operationalStatus: "challenge_required",
+        operationalCheckedAt: "2026-07-21T19:00:00.000Z",
+      }),
+    );
+
+    await expect(api.getCtripBridgeStatus()).resolves.toEqual({
+      configured: true,
+      reachable: true,
+      mode: "browser_supervised",
+      adapterVersion: "ctrip-community-browser-supervised-v1",
+      commandCapabilities: { prepare: true, submit: true, readback: false },
+      operationalStatus: "challenge_required",
+      operationalCheckedAt: "2026-07-21T19:00:00.000Z",
     });
   });
 
@@ -688,6 +805,118 @@ describe("HttpGeoApi", () => {
     expect(new Headers(calls[1]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
   });
 
+  it("reads real Pi authored canonical blocks without treating them as fixture protocol drift", async () => {
+    const contentVersionId = "10000000-0000-4000-8000-000000000611";
+    const factId = "10000000-0000-4000-8000-000000000502";
+    const response = jsonResponse({
+      id: contentVersionId,
+      contentItemId: "10000000-0000-4000-8000-000000000601",
+      version: 7,
+      summary: "Consultation preparation summary",
+      bodyMarkdown: "Consultation preparation body",
+      payload: {
+        editorialProfile: "local_service",
+        title: "First consultation preparation list",
+        summary: "Consultation preparation summary",
+        bodyMarkdown: "Consultation preparation body",
+        titleBlocks: [{ type: "authored", text: "First consultation", claimIds: [factId] }],
+        summaryBlocks: [{ type: "authored", text: "Preparation summary", claimIds: [factId] }],
+        bodyBlocks: [
+          { type: "authored", text: "Preparation body", claimIds: [factId] },
+          {
+            type: "claim",
+            claimId: factId,
+            presentation: "paragraph",
+            contactIds: ["10000000-0000-4000-8000-000000000401"],
+          },
+        ],
+        tagTemplateIds: [],
+        media: [],
+        claims: [
+          {
+            id: factId,
+            text: "Verified fact",
+            evidenceSourceIds: [],
+            validUntil: null,
+          },
+        ],
+        contactIds: [],
+        tags: [],
+      },
+      payloadHash: "a".repeat(64),
+      frozenAt: null,
+    });
+    const api = new HttpGeoApi("", async () => response);
+
+    const version = await api.getContentVersion(contentVersionId);
+
+    expect(version.payload.titleBlocks).toEqual([
+      { type: "authored", text: "First consultation", claimIds: [factId] },
+    ]);
+    expect(version.payload.bodyBlocks?.[1]).toMatchObject({
+      type: "claim",
+      contactIds: ["10000000-0000-4000-8000-000000000401"],
+    });
+  });
+
+  it("imports media bytes through the scoped content-version endpoint", async () => {
+    const calls: { input: string; init: RequestInit | undefined }[] = [];
+    const contentVersionId = "10000000-0000-4000-8000-000000000611";
+    const assetVersionId = "10000000-0000-4000-8000-000000000612";
+    const input = {
+      platform: "ctrip_community" as const,
+      role: "cover" as const,
+      claimIds: ["10000000-0000-4000-8000-000000000502"],
+      idempotencyKey: "web-media-import-1",
+      bytesBase64: "iVBORw==",
+      rights: {
+        kind: "tenant_owned" as const,
+        ownershipAssertion: "Tenant owns this original image.",
+        licenseName: "Tenant original image",
+      },
+    };
+    const responses = [
+      jsonResponse(loginBody),
+      jsonResponse({
+        job: {
+          id: "10000000-0000-4000-8000-000000000621",
+          state: "succeeded",
+          providerId: "customer-upload",
+          providerMode: "live",
+        },
+        asset: {
+          id: "10000000-0000-4000-8000-000000000622",
+          contentVersionId: assetVersionId,
+          storageKey: "tenant/hash.png",
+          reference: { mimeType: "image/png", width: 1200, height: 900 },
+        },
+        wasCreated: true,
+        contentInspectionRequired: true,
+      }),
+    ];
+    const api = new HttpGeoApi("", async (request, init) => {
+      calls.push({ input: String(request), init });
+      const response = responses.shift();
+      if (response === undefined) throw new Error("unexpected request");
+      return response;
+    });
+
+    await api.login({ email: "owner@example.test", password: "correct-password" });
+    const result = await api.importMedia(contentVersionId, input);
+
+    expect(calls.map((call) => call.input)).toEqual([
+      "/api/auth/login",
+      `/api/content-versions/${contentVersionId}/media-imports`,
+    ]);
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual(input);
+    expect(new Headers(calls[1]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
+    expect(result).toMatchObject({
+      job: { providerMode: "live", state: "succeeded" },
+      asset: { contentVersionId: assetVersionId },
+      contentInspectionRequired: true,
+    });
+  });
+
   it("exports an audited manual package with CSRF without claiming publication", async () => {
     const calls: { input: string; init: RequestInit | undefined }[] = [];
     const artifactId = "10000000-0000-4000-8000-000000000801";
@@ -999,6 +1228,7 @@ describe("HttpGeoApi", () => {
       batchId,
       campaignId,
       brandId: "10000000-0000-4000-8000-000000000301",
+      executionLevel: "dry_run",
       slotKey: "slot-001",
       topicKey: "japan-travel",
       brief: "生成并审计日本线路问答",
@@ -1045,6 +1275,7 @@ describe("HttpGeoApi", () => {
     const created = await api.createAutomationBatch(campaignId, {
       idempotencyKey: "automation-web-once",
       name: batch.name,
+      executionLevel: "dry_run",
       items: [
         {
           slotKey: run.slotKey,
@@ -1078,13 +1309,13 @@ describe("HttpGeoApi", () => {
     ]);
     const createBody = JSON.parse(String(calls[1]?.init?.body)) as Record<string, unknown>;
     expect(createBody).not.toHaveProperty("tenantId");
-    expect(createBody).not.toHaveProperty("executionLevel");
+    expect(createBody).toHaveProperty("executionLevel", "dry_run");
     expect(new Headers(calls[1]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
     expect(JSON.parse(String(calls[5]?.init?.body))).toEqual({ reason: "运营计划调整" });
     expect(new Headers(calls[5]?.init?.headers).get("x-csrf-token")).toBe("csrf-token-from-api");
   });
 
-  it("rejects an automation batch response that escapes the Dry-run boundary", async () => {
+  it("rejects an automation batch response with an unknown execution level", async () => {
     const api = new HttpGeoApi("", async () =>
       jsonResponse({
         items: [
@@ -1093,7 +1324,7 @@ describe("HttpGeoApi", () => {
             campaignId: "10000000-0000-4000-8000-000000001001",
             name: null,
             state: "scheduled",
-            executionLevel: "unattended",
+            executionLevel: "unknown",
             scheduledFor: "2026-07-15T08:00:00.000Z",
             runCount: 1,
             completedRunCount: 0,

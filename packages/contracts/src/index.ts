@@ -41,6 +41,16 @@ export type Capability = z.infer<typeof capabilitySchema>;
 export const platformSchema = z.enum(["toutiao", "sohu", "ctrip_community"]);
 export type Platform = z.infer<typeof platformSchema>;
 
+export const CTRIP_COMMUNITY_PUBLICATION_LIMITS = Object.freeze({
+  minTitleCharacters: 5,
+  maxTitleCharacters: 20,
+  minBodyCharacters: 60,
+  maxBodyCharacters: 3_000,
+  minImages: 4,
+  maxImages: 5,
+  targetImages: 5,
+});
+
 export const editorialProfileSchema = z.enum([
   "guide",
   "question_answer",
@@ -178,6 +188,7 @@ export const automationBatchCreateRequestSchema = z
   .strictObject({
     idempotencyKey: automationKeySchema,
     name: z.string().trim().min(1).max(200).optional(),
+    executionLevel: executionLevelSchema.default("dry_run"),
     items: z.array(automationBatchItemSchema).min(1).max(50),
   })
   .superRefine((value, context) => {
@@ -297,7 +308,11 @@ export const channelAccountStatusSchema = z.enum(["active", "disabled", "needs_v
 export type ChannelAccountStatus = z.infer<typeof channelAccountStatusSchema>;
 
 function validateExecutionLevels(
-  value: { capability: ConnectorCapability; supportedExecutionLevels: readonly ExecutionLevel[] },
+  value: {
+    platform: Platform;
+    capability: ConnectorCapability;
+    supportedExecutionLevels: readonly ExecutionLevel[];
+  },
   context: z.RefinementCtx,
 ): void {
   if (value.capability === "manual_only" || value.capability === "disabled") {
@@ -314,12 +329,13 @@ function validateExecutionLevels(
   }
   if (
     value.capability === "browser_assisted" &&
+    value.platform !== "ctrip_community" &&
     value.supportedExecutionLevels.includes("unattended")
   ) {
     context.addIssue({
       code: "custom",
       path: ["supportedExecutionLevels"],
-      message: "browser_assisted accounts cannot execute unattended",
+      message: "browser-assisted unattended execution is currently limited to Ctrip Community",
     });
   }
 }
@@ -430,6 +446,41 @@ export type MediaAspectRatio = z.infer<typeof mediaAspectRatioSchema>;
 
 export const mediaProviderModeSchema = z.enum(["fixture", "live"]);
 export type MediaProviderMode = z.infer<typeof mediaProviderModeSchema>;
+
+export const mediaSearchIntentSchema = z.strictObject({
+  query: z.string().trim().min(2).max(160),
+  role: mediaRoleSchema,
+  rationale: z.string().trim().min(2).max(500),
+  claimIds: z
+    .array(idSchema)
+    .min(1)
+    .max(3)
+    .refine((values) => new Set(values).size === values.length, {
+      message: "Media search intent fact IDs must be unique",
+    }),
+});
+export type MediaSearchIntent = z.infer<typeof mediaSearchIntentSchema>;
+
+export const mediaSearchPlanSchema = z
+  .array(mediaSearchIntentSchema)
+  .min(4)
+  .max(5)
+  .superRefine((intents, context) => {
+    if (intents.filter((intent) => intent.role === "cover").length !== 1) {
+      context.addIssue({
+        code: "custom",
+        message: "Media search plan requires exactly one cover",
+      });
+    }
+    const normalized = intents.map((intent) => intent.query.normalize("NFKC").toLowerCase());
+    if (new Set(normalized).size !== normalized.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Media search queries must be distinct",
+      });
+    }
+  });
+export type MediaSearchPlan = z.infer<typeof mediaSearchPlanSchema>;
 
 export const mediaInspectionStatusSchema = z.enum(["passed", "failed"]);
 export type MediaInspectionStatus = z.infer<typeof mediaInspectionStatusSchema>;
@@ -800,10 +851,25 @@ export const canonicalInlineContactBlockSchema = z.strictObject({
   contactId: idSchema,
 });
 
+const authoredClaimIdsSchema = z
+  .array(idSchema)
+  .min(1)
+  .max(20)
+  .refine((values) => new Set(values).size === values.length, {
+    message: "Authored blocks must not repeat supporting fact IDs",
+  });
+
+export const canonicalInlineAuthoredBlockSchema = z.strictObject({
+  type: z.literal("authored"),
+  text: z.string().trim().min(1).max(2_000),
+  claimIds: authoredClaimIdsSchema,
+});
+
 export const canonicalInlineBlockSchema = z.discriminatedUnion("type", [
   canonicalTemplateBlockSchema,
   canonicalInlineClaimBlockSchema,
   canonicalInlineContactBlockSchema,
+  canonicalInlineAuthoredBlockSchema,
 ]);
 export type CanonicalInlineBlock = z.infer<typeof canonicalInlineBlockSchema>;
 
@@ -811,6 +877,14 @@ export const canonicalBodyClaimBlockSchema = z.strictObject({
   type: z.literal("claim"),
   claimId: idSchema,
   presentation: z.enum(["paragraph", "bullet"]),
+  contactIds: z
+    .array(idSchema)
+    .min(1)
+    .max(20)
+    .refine((values) => new Set(values).size === values.length, {
+      message: "Claim contact bindings must be unique",
+    })
+    .optional(),
 });
 
 export const canonicalBodyContactBlockSchema = z.strictObject({
@@ -819,10 +893,17 @@ export const canonicalBodyContactBlockSchema = z.strictObject({
   presentation: z.enum(["paragraph", "bullet"]),
 });
 
+export const canonicalBodyAuthoredBlockSchema = z.strictObject({
+  type: z.literal("authored"),
+  text: z.string().trim().min(1).max(8_000),
+  claimIds: authoredClaimIdsSchema,
+});
+
 export const canonicalBodyBlockSchema = z.discriminatedUnion("type", [
   canonicalTemplateBlockSchema,
   canonicalBodyClaimBlockSchema,
   canonicalBodyContactBlockSchema,
+  canonicalBodyAuthoredBlockSchema,
 ]);
 export type CanonicalBodyBlock = z.infer<typeof canonicalBodyBlockSchema>;
 
@@ -837,6 +918,8 @@ export const publicationVariantPayloadSchema = z
       .regex(/^[a-z0-9][a-z0-9-]*$/u)
       .optional(),
     brandAgentProfile: brandAgentProfileReferenceSchema.optional(),
+    locationQuery: z.string().trim().min(1).max(100).optional(),
+    mediaSearchPlan: mediaSearchPlanSchema.optional(),
     title: z.string().trim().min(1).max(200),
     summary: z.string().trim().min(1).max(500),
     bodyMarkdown: z.string().trim().min(1).max(100_000),

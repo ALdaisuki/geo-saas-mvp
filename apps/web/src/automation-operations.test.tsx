@@ -99,6 +99,7 @@ function run(
     batchId: automationBatch.id,
     campaignId: campaign.id,
     brandId: campaign.brandId,
+    executionLevel: automationBatch.executionLevel,
     slotKey: "slot-001",
     topicKey: campaign.topicKey,
     brief: "面向计划赴日游客的签证材料与服务范围问答",
@@ -333,11 +334,11 @@ describe("AutomationOperations", () => {
       ],
     });
     expect(input).not.toHaveProperty("tenantId");
-    expect(input).not.toHaveProperty("executionLevel");
+    expect(input).toHaveProperty("executionLevel", "dry_run");
     expect(input?.idempotencyKey).toMatch(/^web-automation:tenant-a:/u);
     expect(input?.items.every((item) => !Number.isNaN(Date.parse(item.scheduledFor)))).toBe(true);
     expect(await screen.findByText("Dry-run 预演完成")).toBeInTheDocument();
-    expect(screen.getByText(/2 个槽位已持久化为 Dry-run 批次/)).toBeInTheDocument();
+    expect(screen.getByText(/2 个槽位已持久化为 dry_run 批次/)).toBeInTheDocument();
     expect(screen.queryByText(/已真实发布/u)).not.toBeInTheDocument();
     expect(onChanged).toHaveBeenCalledTimes(1);
   });

@@ -11,21 +11,21 @@ export default defineConfig({
     },
   },
   server: {
-    port: 4173,
+    port: 10003,
     strictPort: false,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:4100",
+        target: "http://127.0.0.1:10004",
         changeOrigin: false,
       },
       "/health": {
-        target: "http://127.0.0.1:4100",
+        target: "http://127.0.0.1:10004",
         changeOrigin: false,
       },
     },
   },
   preview: {
-    port: 4173,
+    port: 10003,
   },
   test: {
     environment: "jsdom",

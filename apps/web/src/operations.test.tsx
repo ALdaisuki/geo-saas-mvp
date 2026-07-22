@@ -32,12 +32,38 @@ import {
   ArticleOperations,
   AuditOperationsList,
   OperationsWorkspace,
+  planCtripMediaImportRoles,
   PublicationJobDetail,
 } from "./operations.js";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+
+describe("Ctrip media import planning", () => {
+  it("automatically assigns one cover and fills the remaining batch with inline images", () => {
+    expect(planCtripMediaImportRoles([], 5)).toEqual([
+      "cover",
+      "inline",
+      "inline",
+      "inline",
+      "inline",
+    ]);
+    expect(planCtripMediaImportRoles(["cover", "inline"], 3)).toEqual([
+      "inline",
+      "inline",
+      "inline",
+    ]);
+  });
+
+  it("rejects batches outside the five-image automation boundary", () => {
+    expect(() => planCtripMediaImportRoles([], 6)).toThrow(/five-image/iu);
+    expect(() => planCtripMediaImportRoles(["cover", "inline", "inline", "inline"], 2)).toThrow(
+      /five-image/iu,
+    );
+    expect(() => planCtripMediaImportRoles(["cover", "cover"], 1)).toThrow(/cover/iu);
+  });
 });
 
 const queuedJob: PublicationJob = {
@@ -628,6 +654,102 @@ describe("article operations", () => {
     expect(await screen.findByText("携程模拟作业已创建")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /unattended|无人值守/i })).not.toBeInTheDocument();
   });
+
+  it("shows Pi-authored search intents and imports audited licensed images with one action", async () => {
+    const mediaSearchPlan = [
+      {
+        query: "京都 金阁寺 Kinkakuji",
+        role: "cover" as const,
+        rationale: "封面对应京都主题",
+        claimIds: [fact.id],
+      },
+      {
+        query: "京都 伏见稻荷 Fushimi Inari",
+        role: "inline" as const,
+        rationale: "正文景点段落",
+        claimIds: [fact.id],
+      },
+      {
+        query: "京都 岚山 Arashiyama",
+        role: "inline" as const,
+        rationale: "正文路线段落",
+        claimIds: [fact.id],
+      },
+      {
+        query: "京都 锦市场 Nishiki Market",
+        role: "inline" as const,
+        rationale: "正文餐饮段落",
+        claimIds: [fact.id],
+      },
+      {
+        query: "京都 鸭川 Kamo River",
+        role: "inline" as const,
+        rationale: "正文漫步段落",
+        claimIds: [fact.id],
+      },
+    ];
+    const searchVersion: ContentVersion = {
+      ...currentVersion,
+      payload: { ...currentVersion.payload, mediaSearchPlan, media: [] },
+    };
+    const finalVersion: ContentVersion = {
+      ...searchVersion,
+      id: "10000000-0000-4000-8000-000000000699",
+      version: 7,
+      payload: {
+        ...searchVersion.payload,
+        media: mediaSearchPlan.map((intent, index) => ({
+          id: `media-${index}`,
+          platform: "ctrip_community",
+          role: intent.role,
+        })),
+      },
+    };
+    const getContentVersion = vi
+      .fn<GeoApi["getContentVersion"]>()
+      .mockResolvedValueOnce(searchVersion)
+      .mockResolvedValueOnce(finalVersion);
+    const searchAndImportMedia = vi.fn<GeoApi["searchAndImportMedia"]>(async () => ({
+      provider: "wikimedia_commons",
+      sourceContentVersionId: searchVersion.id,
+      finalContentVersionId: finalVersion.id,
+      plannedCount: 5,
+      imported: mediaSearchPlan.map((intent, intentIndex) => ({
+        intentIndex,
+        query: intent.query,
+        role: intent.role,
+        providerAssetId: `commons-${intentIndex}`,
+        sourceUrl: `https://commons.wikimedia.org/wiki/File:${intentIndex}.jpg`,
+        assetId: `asset-${intentIndex}`,
+        contentVersionId: finalVersion.id,
+      })),
+      rejectedCandidateCount: 3,
+      rejectionCodes: ["MEDIA_QUERY_RELEVANCE_FAILED"],
+    }));
+
+    render(
+      <MemoryRouter>
+        <ArticleOperations
+          api={articleApi({ getContentVersion, searchAndImportMedia })}
+          content={content}
+          accounts={[ctripAssistedAccount]}
+          capabilities={["content:write"]}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("京都 金阁寺 Kinkakuji")).toBeInTheDocument();
+    expect(screen.getByText("封面对应京都主题")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "按文章关键词自动配图" }));
+
+    await waitFor(() => expect(searchAndImportMedia).toHaveBeenCalledTimes(1));
+    expect(searchAndImportMedia.mock.calls[0]?.[0]).toBe(searchVersion.id);
+    expect(
+      await screen.findByText(/已按 5 组文章关键词绑定 5 张不同图片到 v7/u),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("已通过")).toHaveLength(5);
+    expect(screen.getByRole("button", { name: "按文章关键词自动配图" })).toBeDisabled();
+  });
 });
 
 describe("operations workspace governance", () => {
@@ -651,6 +773,30 @@ describe("operations workspace governance", () => {
       />,
     );
   }
+
+  it("selects the first article when live content arrives after the initial render", async () => {
+    const props = {
+      api: articleApi(),
+      tenantId: "tenant-a",
+      capabilities: ["content:write"],
+      brands: [brand],
+      evidenceSources: [evidence],
+      facts: [fact],
+      campaigns: [campaign],
+      accounts: [account],
+      contacts: [contact],
+      policies: [policy],
+      templates: ARTICLE_TEMPLATES,
+      catalogVersion: ARTICLE_TEMPLATE_CATALOG_VERSION,
+      resources: readyResources,
+    } as const;
+    const view = render(<OperationsWorkspace {...props} contentItems={[]} />);
+    expect(view.container.querySelector(".ops-media-import")).toBeNull();
+
+    view.rerender(<OperationsWorkspace {...props} contentItems={[content]} />);
+
+    await waitFor(() => expect(view.container.querySelector(".ops-media-import")).not.toBeNull());
+  });
 
   it("disables evidence, fact and article creation without content:write", async () => {
     renderWorkspace(["audit:run", "publish:request"]);

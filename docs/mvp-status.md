@@ -39,12 +39,17 @@ short-lived one-time permit whose consumption rechecks governance and current le
 ownership. The publication API now admits only governed Ctrip `assisted` grants,
 and the Worker freezes the shared Ctrip preview and creates the durable handoff
 before acknowledging the outbox event. Missing or stale tenant/account adapter
-mapping remains retryable and fail closed. An isolated tenant-authenticated bridge
-now executes the complete flow only through `ctrip-community-simulator-v1`.
-Simulator submit creates an unconfirmed receipt and required readback; simulator
-readback can only enter `needs_review`, never `confirmed`. A live Ctrip adapter and
-independent Ctrip public readback are still absent, so this is not a live or hidden
-Ctrip publishing path.
+mapping remains retryable and fail closed. An isolated tenant-authenticated Bridge
+keeps the deterministic `ctrip-community-simulator-v1` flow and now also provides
+the source-owned `ctrip-community-browser-draft-v1` and
+`ctrip-community-browser-supervised-v1` adapters. The supervised adapter can fill
+the audited title/body, upload the exact audited media set and save the real Ctrip
+draft automatically. It can click the fixed final action only after the GEO API
+checks Bridge health, acquires the current operator lease and issues a one-time
+submit permit from an explicit GEO-console approval. It exposes no generic selector,
+script, navigation or click surface. Independent Ctrip public readback is still
+absent, so an accepted browser submit remains unconfirmed and is never reported as
+`confirmed` without separate evidence.
 
 The Bridge now durably records `session_required`, `challenge_required` and
 `adapter_drift` prepare outcomes before returning them. The same read-only surface

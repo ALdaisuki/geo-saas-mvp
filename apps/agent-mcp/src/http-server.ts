@@ -8,10 +8,18 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import type { InternalGeoApiClient } from "./api-client.js";
 import type { AutomationProducerHealth } from "./automation-producer.js";
+import { GeoApiRequestError } from "./http-api-client.js";
+import {
+  MediaInspectionRunnerError,
+  PI_VISION_EVALUATOR,
+  PI_VISION_EVALUATOR_VERSION,
+  type MediaInspectionService,
+} from "./media-inspection-runner.js";
 import { PiAgentRunError, type PiAgentRunService } from "./pi-runner.js";
 import { createGeoAgentMcpServer } from "./server.js";
 
 const MAX_MCP_REQUEST_BYTES = 1024 * 1024;
+const MAX_MEDIA_INSPECTION_REQUEST_BYTES = 14 * 1024 * 1024;
 const DEFAULT_AGENT_RUN_TIMEOUT_MS = 120_000;
 const MIN_AGENT_RUN_TIMEOUT_MS = 1_000;
 const MAX_AGENT_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -30,6 +38,7 @@ export interface GeoMcpHttpServerOptions {
   readonly allowedHosts: readonly string[];
   readonly allowedOrigins?: readonly string[];
   readonly agentRunner?: PiAgentRunService;
+  readonly mediaInspector?: MediaInspectionService;
   readonly agentRunTimeoutMs?: number;
   readonly automationProducer?: { health(): AutomationProducerHealth };
 }
@@ -59,13 +68,17 @@ function normalizedHeader(value: string | string[] | undefined): string | undefi
   return typeof value === "string" ? value : undefined;
 }
 
-async function readJsonBody(request: IncomingMessage, contentLength: number): Promise<unknown> {
+async function readJsonBody(
+  request: IncomingMessage,
+  contentLength: number,
+  maxBytes = MAX_MCP_REQUEST_BYTES,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   let received = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     received += buffer.length;
-    if (received > contentLength || received > MAX_MCP_REQUEST_BYTES) {
+    if (received > contentLength || received > maxBytes) {
       throw new Error("Request body length mismatch");
     }
     chunks.push(buffer);
@@ -87,6 +100,7 @@ export function createGeoMcpHttpServer(options: GeoMcpHttpServerOptions): Server
     throw new TypeError("Agent run timeout must be between 1 second and 15 minutes");
   }
   const activeAgentRuns = new Set<string>();
+  const activeMediaInspections = new Set<string>();
 
   const server = createServer(async (request: AuthenticatedRequest, response) => {
     try {
@@ -96,6 +110,14 @@ export function createGeoMcpHttpServer(options: GeoMcpHttpServerOptions): Server
           status: "ok",
           service: "geo-agent-mcp",
           agent: options.agentRunner?.capability ?? { mode: "disabled" },
+          mediaInspection:
+            options.mediaInspector === undefined
+              ? { mode: "disabled" }
+              : {
+                  mode: "live",
+                  evaluator: PI_VISION_EVALUATOR,
+                  evaluatorVersion: PI_VISION_EVALUATOR_VERSION,
+                },
           automation: options.automationProducer?.health() ?? {
             enabled: false,
             running: false,
@@ -104,6 +126,119 @@ export function createGeoMcpHttpServer(options: GeoMcpHttpServerOptions): Server
             lastError: null,
           },
         });
+        return;
+      }
+      if (requestUrl.pathname === "/media/inspections") {
+        if (options.mediaInspector === undefined) {
+          writeJson(response, 404, {
+            error: { code: "MEDIA_INSPECTION_DISABLED", message: "Not found" },
+          });
+          return;
+        }
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          writeJson(response, 405, {
+            error: { code: "METHOD_NOT_ALLOWED", message: "Method not allowed" },
+          });
+          return;
+        }
+        const host = normalizedHeader(request.headers.host)?.toLowerCase();
+        const origin = normalizedHeader(request.headers.origin);
+        if (host === undefined || !allowedHosts.has(host)) {
+          writeJson(response, 403, { error: { code: "HOST_DENIED", message: "Request denied" } });
+          return;
+        }
+        if (origin !== undefined && (allowedOrigins.size === 0 || !allowedOrigins.has(origin))) {
+          writeJson(response, 403, {
+            error: { code: "ORIGIN_DENIED", message: "Request denied" },
+          });
+          return;
+        }
+        const lengthHeader = normalizedHeader(request.headers["content-length"]);
+        const contentLength = lengthHeader === undefined ? Number.NaN : Number(lengthHeader);
+        if (
+          request.headers["transfer-encoding"] !== undefined ||
+          !Number.isFinite(contentLength) ||
+          contentLength < 1 ||
+          contentLength > MAX_MEDIA_INSPECTION_REQUEST_BYTES
+        ) {
+          writeJson(response, lengthHeader === undefined ? 411 : 413, {
+            error: { code: "REQUEST_SIZE_INVALID", message: "Request body rejected" },
+          });
+          return;
+        }
+        const requestId = randomUUID();
+        let authenticated: Awaited<ReturnType<McpRequestAuthenticator["authenticateBearer"]>>;
+        try {
+          authenticated = await options.authenticator.authenticateBearer(
+            normalizedHeader(request.headers.authorization),
+            requestId,
+          );
+        } catch {
+          response.setHeader("www-authenticate", 'Bearer realm="geo-agent-mcp"');
+          writeJson(response, 401, {
+            error: { code: "AUTHENTICATION_REQUIRED", message: "Authentication required" },
+          });
+          return;
+        }
+        const runKey = `${authenticated.principal.tenantId}:${authenticated.principal.actorId}`;
+        if (activeMediaInspections.has(runKey)) {
+          writeJson(response, 409, {
+            error: {
+              code: "MEDIA_INSPECTION_ACTIVE",
+              message: "A media inspection is already active",
+            },
+          });
+          return;
+        }
+        activeMediaInspections.add(runKey);
+        const controller = new AbortController();
+        let timeout: NodeJS.Timeout | undefined;
+        try {
+          const input = await readJsonBody(
+            request,
+            contentLength,
+            MAX_MEDIA_INSPECTION_REQUEST_BYTES,
+          );
+          timeout = setTimeout(() => controller.abort(), agentRunTimeoutMs);
+          timeout.unref();
+          const inspection = await options.mediaInspector.inspect(
+            authenticated.principal,
+            input,
+            controller.signal,
+          );
+          response.setHeader("x-request-id", requestId);
+          writeJson(response, 200, { inspection });
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              event: "agent_mcp.media_inspection_rejected",
+              requestId,
+              tenantId: authenticated.principal.tenantId,
+              errorType: error instanceof Error ? error.name : "UnknownError",
+            }),
+          );
+          const timedOut = controller.signal.aborted;
+          const runnerFailure = error instanceof MediaInspectionRunnerError;
+          writeJson(response, timedOut ? 504 : runnerFailure ? error.statusCode : 400, {
+            error: {
+              code: timedOut
+                ? "MEDIA_INSPECTION_TIMEOUT"
+                : runnerFailure
+                  ? error.code
+                  : "MEDIA_INSPECTION_REJECTED",
+              message: timedOut
+                ? "Media inspection timed out"
+                : runnerFailure
+                  ? "Vision provider failed"
+                  : "Media inspection was rejected",
+            },
+          });
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout);
+          activeMediaInspections.delete(runKey);
+        }
         return;
       }
       if (requestUrl.pathname === "/agent/runs") {
@@ -197,6 +332,25 @@ export function createGeoMcpHttpServer(options: GeoMcpHttpServerOptions): Server
             result: outcome.result,
           });
         } catch (error) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              event: "agent_mcp.agent_run_rejected",
+              requestId,
+              tenantId: authenticated.principal.tenantId,
+              errorType: error instanceof Error ? error.name : "UnknownError",
+              ...(error instanceof PiAgentRunError
+                ? {
+                    diagnosticReason: error.diagnosticReason,
+                    toolCallCount: error.toolCallCount,
+                    lastToolName: error.lastToolName,
+                  }
+                : {}),
+              ...(error instanceof GeoApiRequestError
+                ? { errorCode: error.code, statusCode: error.status }
+                : {}),
+            }),
+          );
           if (error instanceof PiAgentRunError) {
             writeJson(response, error.statusCode, {
               error: { code: error.code, message: "Agent provider failed" },

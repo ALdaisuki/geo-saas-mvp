@@ -5,12 +5,13 @@ import {
   ctripBridgeHealthSchema,
   ctripBridgeResultSchema,
   type CtripBridgeCommand,
+  type CtripBridgeHealth,
   type CtripBridgeResult,
 } from "@geo/contracts";
 import { z } from "zod";
 
 const MAX_RESPONSE_BYTES = 256 * 1024;
-const DEFAULT_TIMEOUT_MS = 15_000;
+export const CTRIP_BRIDGE_COMMAND_TIMEOUT_MS = 300_000;
 
 const credentialListSchema = z
   .array(
@@ -29,7 +30,24 @@ export interface CtripBridgeCredential {
 export interface CtripBridgeGateway {
   execute(command: CtripBridgeCommand): Promise<CtripBridgeResult>;
   health?(): Promise<boolean>;
+  healthDetails?(): Promise<CtripBridgeHealth | null>;
+  readiness?(tenantId: string): Promise<CtripBridgeOperationalReadiness | null>;
 }
+
+export interface CtripBridgeOperationalReadiness {
+  readonly status: "ready" | "session_required" | "challenge_required" | "unavailable";
+  readonly observedAt: string;
+}
+
+const operationalReadinessSchema = z.strictObject({
+  schemaVersion: z.literal("geo.ctrip-operational-readiness.v1"),
+  status: z.enum(["ready", "session_required", "challenge_required", "unavailable"]),
+  observedAt: z.string().datetime({ offset: true }),
+  mode: z.string().optional(),
+  manifestVersion: z.string().optional(),
+  sessionEvidenceHash: z.string().optional(),
+  evidenceHash: z.string().optional(),
+});
 
 export class CtripBridgeGatewayError extends Error {
   constructor(
@@ -176,7 +194,7 @@ export class HttpCtripBridgeGateway implements CtripBridgeGateway {
       this.#credentials.set(credential.tenantId, credential);
     }
     this.#fetch = options.fetchImpl ?? fetch;
-    this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#timeoutMs = options.timeoutMs ?? CTRIP_BRIDGE_COMMAND_TIMEOUT_MS;
   }
 
   async execute(command: CtripBridgeCommand): Promise<CtripBridgeResult> {
@@ -235,15 +253,41 @@ export class HttpCtripBridgeGateway implements CtripBridgeGateway {
     return parsedResult.data;
   }
 
-  async health(): Promise<boolean> {
+  async healthDetails(): Promise<CtripBridgeHealth | null> {
     try {
       const response = await this.#fetch(new URL("health/live", this.#baseUrl), {
         headers: { accept: "application/json" },
         signal: AbortSignal.timeout(Math.min(this.#timeoutMs, 5_000)),
       });
-      return response.ok && ctripBridgeHealthSchema.safeParse(await readJson(response)).success;
+      if (!response.ok) return null;
+      const parsed = ctripBridgeHealthSchema.safeParse(await readJson(response));
+      return parsed.success ? parsed.data : null;
     } catch {
-      return false;
+      return null;
+    }
+  }
+
+  async health(): Promise<boolean> {
+    return (await this.healthDetails()) !== null;
+  }
+
+  async readiness(tenantId: string): Promise<CtripBridgeOperationalReadiness | null> {
+    const credential = this.#credentials.get(tenantId);
+    if (credential === undefined) return null;
+    try {
+      const response = await this.#fetch(new URL("health/ready", this.#baseUrl), {
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${credential.accessToken}`,
+        },
+        signal: AbortSignal.timeout(Math.min(this.#timeoutMs, 45_000)),
+      });
+      const parsed = operationalReadinessSchema.safeParse(await readJson(response));
+      if (!parsed.success || ![200, 503].includes(response.status)) return null;
+      if ((parsed.data.status === "ready") !== response.ok) return null;
+      return { status: parsed.data.status, observedAt: parsed.data.observedAt };
+    } catch {
+      return null;
     }
   }
 }

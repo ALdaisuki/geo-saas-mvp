@@ -33,6 +33,31 @@ describe("Pi agent model configuration", () => {
     });
   });
 
+  it("builds an explicitly selected OpenAI Chat Completions model", () => {
+    const resolved = resolvePiAgentModel({
+      provider: "openai-compatible",
+      modelId: "gpt-5.6-sol",
+      baseUrl: "https://models.example.test/v1/",
+      api: "openai-completions",
+    });
+
+    expect(resolved.provider).toBe("openai-compatible");
+    expect(resolved.model).toMatchObject({
+      id: "gpt-5.6-sol",
+      name: "gpt-5.6-sol",
+      api: "openai-completions",
+      provider: "openai-compatible",
+      baseUrl: "https://models.example.test/v1",
+      reasoning: true,
+      compat: {
+        supportsStore: false,
+        supportsDeveloperRole: false,
+        supportsStrictMode: false,
+        sendSessionAffinityHeaders: false,
+      },
+    });
+  });
+
   it("permits plaintext HTTP only for loopback development endpoints", () => {
     expect(
       resolvePiAgentModel({
@@ -91,5 +116,12 @@ describe("Pi agent model configuration", () => {
     expect(() => resolvePiAgentModel({ provider: "openai", modelId: "unknown" })).toThrow(
       /not available/iu,
     );
+    expect(() =>
+      resolvePiAgentModel({
+        provider: "openai",
+        modelId: "gpt-5",
+        api: "openai-completions",
+      }),
+    ).toThrow(/only supported/iu);
   });
 });

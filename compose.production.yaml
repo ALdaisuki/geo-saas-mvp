@@ -1,0 +1,56 @@
+services:
+  # Production is server-owned.  No Codex desktop process, local login session,
+  # or fixture provider is part of this topology.
+  config-preflight:
+    environment:
+      GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:?set GEO_DEPLOYMENT_PROFILE=standard}
+      GEO_GOVERNANCE_MODE: ${GEO_GOVERNANCE_MODE:?set GEO_GOVERNANCE_MODE=external}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set production MCP principals}
+      AGENT_GATEWAY_CREDENTIALS_JSON: ${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Agent gateway credentials}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:?set a server-side Pi provider}
+      AGENT_MODEL: ${AGENT_MODEL:?set the approved server-side Pi model}
+      AGENT_API: ${AGENT_API:?set the reviewed Pi wire protocol}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:?set the reviewed Pi endpoint}
+      AGENT_API_KEY: ${AGENT_API_KEY:?inject the Pi key from the server secret store}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-xhigh}
+      GEO_MEDIA_PROVIDER: ${GEO_MEDIA_PROVIDER:-disabled}
+      CTRIP_BRIDGE_GATEWAY_URL: ${CTRIP_BRIDGE_GATEWAY_URL:-http://127.0.0.1:9030}
+      CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: ${CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Ctrip Bridge credentials}
+      CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:?set server-side Ctrip Bridge tenant principals}
+      CTRIP_BRIDGE_MODE: ${CTRIP_BRIDGE_MODE:-browser_unattended}
+      CTRIP_REVIEW_CDP_ENDPOINT: ${CTRIP_REVIEW_CDP_ENDPOINT:?set the server browser CDP endpoint}
+      GEO_RUNTIME_TMP_ROOT: ${GEO_RUNTIME_TMP_ROOT:?set a non-system server runtime directory}
+
+  api:
+    environment:
+      GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:?set GEO_DEPLOYMENT_PROFILE=standard}
+      GEO_GOVERNANCE_MODE: ${GEO_GOVERNANCE_MODE:?set GEO_GOVERNANCE_MODE=external}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      CTRIP_BRIDGE_GATEWAY_URL: ${CTRIP_BRIDGE_GATEWAY_URL:-http://127.0.0.1:9030}
+      CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: ${CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Ctrip Bridge credentials}
+      GEO_MEDIA_PROVIDER: ${GEO_MEDIA_PROVIDER:-disabled}
+      DOUBAO_ADAPTER: ${DOUBAO_ADAPTER:-fixture}
+      QWEN_ADAPTER: ${QWEN_ADAPTER:-fixture}
+
+  agent-mcp:
+    environment:
+      GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:?set GEO_DEPLOYMENT_PROFILE=standard}
+      GEO_GOVERNANCE_MODE: ${GEO_GOVERNANCE_MODE:?set GEO_GOVERNANCE_MODE=external}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set production MCP principals}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:?set a server-side Pi provider}
+      AGENT_MODEL: ${AGENT_MODEL:?set the approved server-side Pi model}
+      AGENT_API: ${AGENT_API:?set the reviewed Pi wire protocol}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:?set the reviewed Pi endpoint}
+      AGENT_API_KEY: ${AGENT_API_KEY:?inject the Pi key from the server secret store}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-xhigh}
+
+  ctrip-bridge:
+    profiles:
+      - production
+    environment:
+      CTRIP_BRIDGE_MODE: ${CTRIP_BRIDGE_MODE:-browser_unattended}
+      CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:?set server-side Ctrip Bridge tenant principals}
+      CTRIP_REVIEW_CDP_ENDPOINT: ${CTRIP_REVIEW_CDP_ENDPOINT:?set the server browser CDP endpoint}
+      GEO_RUNTIME_TMP_ROOT: ${GEO_RUNTIME_TMP_ROOT:?set a non-system server runtime directory}

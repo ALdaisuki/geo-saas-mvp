@@ -42,6 +42,7 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     variantId,
     contentVersionId,
     platform: "ctrip_community",
+    executionLevel: "assisted",
     state,
     previewHash,
     payloadHash: "a".repeat(64),
@@ -49,7 +50,9 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
     bridgePrincipalId,
     externalDraftId: state === "handoff_pending" ? null : `sim-draft-${handoffId}`,
     submitOutcome: state === "readback_pending" ? "accepted" : null,
+    submitEvidenceHash: state === "readback_pending" ? "d".repeat(64) : null,
     submitEvidenceKind: state === "readback_pending" ? "simulation" : null,
+    submitObservedAt: state === "readback_pending" ? now : null,
     submitCandidateExternalId: null,
     submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
@@ -59,6 +62,9 @@ function handoff(state: CtripBridgeHandoffDraft["state"]): CtripBridgeHandoffDra
 
 function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeControlPlane {
   return {
+    claimDraftPreparation: vi.fn(async () => undefined),
+    claimNextDraftPreparation: vi.fn(async () => null),
+    claimUnattendedReadback: vi.fn(async () => true),
     loadHandoff: vi.fn(async () => current.value),
     loadPreparedMediaAssets: vi.fn(async () => []),
     recordPrepared: vi.fn(async () => {
@@ -75,10 +81,13 @@ function controlPlane(current: { value: CtripBridgeHandoffDraft }): CtripBridgeC
         readbackId: "10000000-0000-4000-8000-000000000007",
       };
     }),
-    recoverSubmitObservation: vi.fn(async () => {
+    recoverSubmitObservation: vi.fn(async (_context, _handoff, evidenceKind) => {
       current.value = {
         ...handoff("readback_pending"),
         submitOutcome: "uncertain",
+        submitEvidenceHash: "e".repeat(64),
+        submitEvidenceKind: evidenceKind,
+        submitObservedAt: now,
         submitPermitConsumedAt: now,
       };
       return {
@@ -127,12 +136,43 @@ describe("CtripBridgeCommandService", () => {
       evidenceKind: "simulation",
     });
     expect(port.recordPrepared).toHaveBeenCalledOnce();
+    expect(port.claimDraftPreparation).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId, bridgePrincipalId }),
+      handoffId,
+      600,
+    );
+    expect(vi.mocked(port.claimDraftPreparation).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(port.loadHandoff).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it("claims the next preparation before loading any browser payload", async () => {
+    const current = { value: handoff("handoff_pending") };
+    const port = controlPlane(current);
+    vi.mocked(port.claimNextDraftPreparation).mockResolvedValue(handoffId);
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter: new CtripCommunitySimulator({ now: () => new Date(now) }),
+    });
+
+    await expect(service.prepareNext("request-poller")).resolves.toMatchObject({
+      command: "prepare",
+      outcome: "prepared",
+    });
+    expect(port.claimDraftPreparation).not.toHaveBeenCalled();
+    expect(vi.mocked(port.claimNextDraftPreparation).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(port.loadHandoff).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
   });
 
   it.each([
     ["session_required", "session_required"],
     ["challenge_required", "challenge_required"],
     ["adapter_drift", "failed"],
+    ["payload_invalid", "failed"],
   ] as const)(
     "persists a %s preflight blocker before returning it",
     async (outcome, expectedState) => {
@@ -147,6 +187,7 @@ describe("CtripBridgeCommandService", () => {
         commandCapabilities: { prepare: true, submit: true, readback: true },
         prepare: vi.fn(async () => ({
           outcome,
+          diagnosticCode: `test:${outcome}`,
           sessionEvidenceHash: "b".repeat(64),
           evidenceHash: "c".repeat(64),
           observedAt: now,
@@ -261,6 +302,87 @@ describe("CtripBridgeCommandService", () => {
     expect(order).toEqual(["permit", "submit", "observation"]);
   });
 
+  it("verifies the prepared browser scope before consuming the one-time permit", async () => {
+    const current = { value: handoff("draft_prepared") };
+    const port = controlPlane(current);
+    const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+    const submit = vi.fn(simulator.submit.bind(simulator));
+    const adapter: CtripFixedAdapter = {
+      version: CTRIP_SIMULATOR_ADAPTER_VERSION,
+      evidenceKind: "browser",
+      commandCapabilities: { prepare: true, submit: true, readback: false },
+      prepare: simulator.prepare.bind(simulator),
+      verifySubmit: vi.fn(async () => {
+        throw new Error("prepared scope mismatch");
+      }),
+      submit,
+      readback: simulator.readback.bind(simulator),
+    };
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter,
+    });
+
+    await expect(
+      service.execute({
+        schemaVersion: "geo.ctrip-bridge.command.v1",
+        tenantId,
+        handoffId,
+        requestId: "request-submit-precondition",
+        command: "submit",
+        submitPermit: "f".repeat(64),
+      }),
+    ).rejects.toThrow(/scope mismatch/iu);
+    expect(port.consumeSubmitPermit).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("durably recovers an exception after permit consumption as uncertain", async () => {
+    const current = { value: handoff("draft_prepared") };
+    const port = controlPlane(current);
+    const simulator = new CtripCommunitySimulator({ now: () => new Date(now) });
+    const adapter: CtripFixedAdapter = {
+      version: CTRIP_SIMULATOR_ADAPTER_VERSION,
+      evidenceKind: "browser",
+      commandCapabilities: { prepare: true, submit: true, readback: false },
+      prepare: simulator.prepare.bind(simulator),
+      verifySubmit: vi.fn(async () => undefined),
+      submit: vi.fn(async () => {
+        throw new Error("post-click observation failed");
+      }),
+      readback: simulator.readback.bind(simulator),
+    };
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter,
+    });
+
+    await expect(
+      service.execute({
+        schemaVersion: "geo.ctrip-bridge.command.v1",
+        tenantId,
+        handoffId,
+        requestId: "request-submit-recovery",
+        command: "submit",
+        submitPermit: "f".repeat(64),
+      }),
+    ).resolves.toMatchObject({
+      command: "submit",
+      outcome: "uncertain",
+      state: "readback_pending",
+      evidenceKind: "browser",
+    });
+    expect(port.consumeSubmitPermit).toHaveBeenCalledOnce();
+    expect(port.recoverSubmitObservation).toHaveBeenCalledOnce();
+    expect(port.recordSubmitObservation).not.toHaveBeenCalled();
+  });
+
   it("persists a browser-observed candidate target before independent readback", async () => {
     const current = { value: handoff("draft_prepared") };
     const port = controlPlane(current);
@@ -333,7 +455,7 @@ describe("CtripBridgeCommandService", () => {
 
     await expect(service.execute(submit)).resolves.toMatchObject({ outcome: "uncertain" });
     await expect(service.execute({ ...submit, requestId: "request-retry" })).rejects.toThrow(
-      /one-shot/iu,
+      /not ready|one-time/iu,
     );
   });
 
@@ -365,6 +487,79 @@ describe("CtripBridgeCommandService", () => {
       externalId: null,
       externalUrl: null,
     });
+  });
+
+  it("atomically claims a targeted unattended readback before observing the public page", async () => {
+    const unattendedPreviewHash = renderCtripCommunityAssistedDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "unattended",
+      payload,
+    }).previewHash;
+    const current = {
+      value: {
+        ...handoff("readback_pending"),
+        executionLevel: "unattended" as const,
+        previewHash: unattendedPreviewHash,
+        submitPermitConsumedAt: now,
+      },
+    };
+    const port = controlPlane(current);
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter: new CtripCommunitySimulator({ now: () => new Date(now) }),
+    });
+
+    await expect(service.execute(command("readback"))).resolves.toMatchObject({
+      command: "readback",
+      outcome: "simulation_only",
+    });
+    expect(port.claimUnattendedReadback).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId, bridgePrincipalId }),
+      handoffId,
+    );
+    expect(vi.mocked(port.claimUnattendedReadback!).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(port.recordReadback).mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it("reuses the queue-owned unattended readback lease without a second targeted claim", async () => {
+    const unattendedPreviewHash = renderCtripCommunityAssistedDraft({
+      tenantId,
+      channelAccountId,
+      variantId,
+      executionLevel: "unattended",
+      payload,
+    }).previewHash;
+    const current = {
+      value: {
+        ...handoff("readback_pending"),
+        executionLevel: "unattended" as const,
+        previewHash: unattendedPreviewHash,
+        submitPermitConsumedAt: now,
+      },
+    };
+    const port = controlPlane(current);
+    port.claimNextUnattendedReadback = vi.fn(async () => handoffId);
+    const service = new CtripBridgeCommandService({
+      tenantId,
+      bridgePrincipalId,
+      controlPlane: port,
+      mediaObjectStore: emptyMediaObjectStore(),
+      adapter: new CtripCommunitySimulator({ now: () => new Date(now) }),
+      executionLevel: "unattended",
+    });
+
+    await expect(service.readbackNext("request-readback-poller")).resolves.toMatchObject({
+      command: "readback",
+      outcome: "simulation_only",
+    });
+    expect(port.claimNextUnattendedReadback).toHaveBeenCalledOnce();
+    expect(port.claimUnattendedReadback).not.toHaveBeenCalled();
   });
 
   it("recovers a consumed but unobserved submit before readback without submitting again", async () => {

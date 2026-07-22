@@ -1,4 +1,10 @@
-import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
+import {
+  Agent,
+  type AgentTool,
+  type AfterToolCallContext,
+  type AfterToolCallResult,
+  type ThinkingLevel,
+} from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ActorContext } from "@geo/contracts";
 
@@ -11,7 +17,12 @@ export interface RealPiRuntimeOptions {
   tools: readonly AgentTool[];
   authorizeResourceScope: ResourceScopeAuthorizer;
   systemPrompt: string;
+  thinkingLevel?: ThinkingLevel;
   getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+  afterToolCall?: (
+    context: AfterToolCallContext,
+    signal?: AbortSignal,
+  ) => Promise<AfterToolCallResult | undefined> | AfterToolCallResult | undefined;
 }
 
 export function createRealPiRuntime(options: RealPiRuntimeOptions): Agent {
@@ -25,19 +36,25 @@ export function createRealPiRuntime(options: RealPiRuntimeOptions): Agent {
       systemPrompt: options.systemPrompt,
       model: options.model,
       tools: [...options.tools],
+      ...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
     },
     toolExecution: "parallel",
     ...(options.getApiKey === undefined ? {} : { getApiKey: options.getApiKey }),
     beforeToolCall: createBeforeToolCall(options.principal, options.authorizeResourceScope),
-    afterToolCall: async ({ result }) => ({
-      content: result.content.map((block) =>
-        block.type === "text"
-          ? { ...block, text: String(redactSensitiveDetails(block.text)) }
-          : block,
-      ),
-      details: redactSensitiveDetails(result.details),
-    }),
+    afterToolCall: async (context, signal) => {
+      const override = await options.afterToolCall?.(context, signal);
+      return {
+        ...override,
+        content: (override?.content ?? context.result.content).map((block) =>
+          block.type === "text"
+            ? { ...block, text: String(redactSensitiveDetails(block.text)) }
+            : block,
+        ),
+        details: redactSensitiveDetails(override?.details ?? context.result.details),
+      };
+    },
   });
 }
 
 export { createPiAgentTools, PI_TOOL_SCHEMAS } from "./pi-tools.js";
+export type { ThinkingLevel } from "@mariozechner/pi-agent-core";

@@ -150,4 +150,5 @@ describe("PostgreSQL repository contracts", () => {
       consumeBlock.indexOf("geo.consume_publication_grant"),
     );
   });
+
 });

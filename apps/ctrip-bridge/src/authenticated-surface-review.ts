@@ -137,6 +137,15 @@ export interface CtripSurfaceReviewEvidence {
   readonly pages: readonly CtripSurfaceReviewPageEvidence[];
 }
 
+export interface CtripOperationalReadiness {
+  readonly schemaVersion: "geo.ctrip-operational-readiness.v1";
+  readonly status: "ready" | "session_required" | "challenge_required" | "unavailable";
+  readonly observedAt: string;
+  readonly manifestVersion: string;
+  readonly sessionEvidenceHash: string;
+  readonly evidenceHash: string;
+}
+
 export function canonicalCtripPageLocation(value: string): CtripCanonicalPageLocation | null {
   let parsed: URL;
   try {
@@ -335,6 +344,37 @@ export async function reviewCtripAuthenticatedSurface(
     ...material,
     sessionEvidenceHash,
     evidenceHash: sha256Canonical({ ...material, sessionEvidenceHash }),
+  });
+}
+
+export function ctripOperationalReadiness(
+  evidence: CtripSurfaceReviewEvidence,
+): CtripOperationalReadiness {
+  const publishSurfaceReady = evidence.pages.some((page) =>
+    CTRIP_SURFACE_REVIEW_MANIFEST.discoverySurfaces.some(
+      (surface) =>
+        surface.origin === page.origin &&
+        surface.path === page.path &&
+        page.observationStatus === "complete" &&
+        page.sessionSignal === null &&
+        page.challengeSignals.length === 0,
+    ),
+  );
+  const status =
+    evidence.outcome === "challenge_required"
+      ? "challenge_required"
+      : publishSurfaceReady
+        ? "ready"
+        : evidence.outcome === "session_required"
+          ? "session_required"
+          : "unavailable";
+  return Object.freeze({
+    schemaVersion: "geo.ctrip-operational-readiness.v1",
+    status,
+    observedAt: evidence.observedAt,
+    manifestVersion: evidence.manifestVersion,
+    sessionEvidenceHash: evidence.sessionEvidenceHash,
+    evidenceHash: evidence.evidenceHash,
   });
 }
 

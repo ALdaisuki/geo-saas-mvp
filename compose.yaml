@@ -57,8 +57,10 @@ services:
       - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
       - AGENT_PROVIDER=${AGENT_PROVIDER:-fixture}
       - AGENT_MODEL=${AGENT_MODEL:-fixture-geo-writer-v1}
+      - AGENT_API
       - AGENT_BASE_URL
       - AGENT_API_KEY
+      - AGENT_REASONING_EFFORT=${AGENT_REASONING_EFFORT:-off}
       - CTRIP_BRIDGE_GATEWAY_URL
       - CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON
       - GEO_BOOTSTRAP_PASSWORD
@@ -237,6 +239,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:-geo_admin}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
       GEO_DEPLOYMENT_PROFILE: ${GEO_DEPLOYMENT_PROFILE:-standard}
+      CTRIP_CUSTOMER_ADAPTER_VERSION: ${CTRIP_CUSTOMER_ADAPTER_VERSION:-ctrip-community-simulator-v1}
     depends_on:
       db-seed:
         condition: service_completed_successfully
@@ -267,22 +270,30 @@ services:
       - PLASTIC_PROMISE_MCP_AUTHORIZATION=${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       - AGENT_GATEWAY_URL=http://127.0.0.1:9021
       - AGENT_GATEWAY_CREDENTIALS_JSON=${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped agent gateway credentials}
+      - AGENT_GATEWAY_RUN_TIMEOUT_MS=${AGENT_GATEWAY_RUN_TIMEOUT_MS:-130000}
       # Omitted by default. Set both only with the explicit ctrip-simulator profile.
       - CTRIP_BRIDGE_GATEWAY_URL
       - CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON
       - EVIDENCE_STORAGE_DIR=/var/lib/geo/evidence
       - GEO_MEDIA_PROVIDER=${GEO_MEDIA_PROVIDER:-disabled}
+      - GEO_MEDIA_SEARCH_PROVIDER=${GEO_MEDIA_SEARCH_PROVIDER:-disabled}
       - GEO_MEDIA_OBJECT_ROOT=/var/lib/geo/media
       - DOUBAO_ADAPTER=${DOUBAO_ADAPTER:-fixture}
       - QWEN_ADAPTER=${QWEN_ADAPTER:-fixture}
       - ENABLE_BROWSER_ASSISTED=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - evidence-data:/var/lib/geo/evidence
       - media-data:/var/lib/geo/media
     ports:
-      - ${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-4100}:4100
+      # Keep the API's container port private and expose only a 10000+ loopback port.
+      - ${BIND_ADDRESS:-127.0.0.1}:${API_HOST_PORT:-10004}:4100
       # agent-mcp shares this network namespace so its HTTP-only loopback API URL is accepted.
-      - ${BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-9021}:9021
+      - ${BIND_ADDRESS:-127.0.0.1}:${MCP_PORT:-10001}:9021
+      # ctrip-bridge shares this network namespace; expose its internal 9030 only via a
+      # loopback host port above 10000.
+      - ${BIND_ADDRESS:-127.0.0.1}:${CTRIP_BRIDGE_HOST_PORT:-10006}:9030
     healthcheck:
       test:
         - CMD
@@ -363,9 +374,13 @@ services:
       PLASTIC_PROMISE_MCP_AUTHORIZATION: ${PLASTIC_PROMISE_MCP_AUTHORIZATION:-}
       AGENT_PROVIDER: ${AGENT_PROVIDER:-fixture}
       AGENT_MODEL: ${AGENT_MODEL:-fixture-geo-writer-v1}
+      AGENT_API: ${AGENT_API:-}
       AGENT_BASE_URL: ${AGENT_BASE_URL:-}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-off}
       AGENT_RUN_TIMEOUT_MS: ${AGENT_RUN_TIMEOUT_MS:-120000}
+      AGENT_MAX_TOOL_CALLS: ${AGENT_MAX_TOOL_CALLS:-64}
+      AGENT_MAX_REPEATED_TOOL_CALLS: ${AGENT_MAX_REPEATED_TOOL_CALLS:-3}
       AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:?set true or false explicitly}
       AUTOMATION_PRODUCER_ID: ${AUTOMATION_PRODUCER_ID:-geo-automation-primary}
       AUTOMATION_PRODUCER_CONCURRENCY: ${AUTOMATION_PRODUCER_CONCURRENCY:-1}
@@ -392,6 +407,8 @@ services:
     <<: *node-security
     profiles:
       - ctrip-simulator
+      - ctrip-browser-supervised
+      - ctrip-browser-unattended
     image: ${GEO_IMAGE_PREFIX:-geo-saas}-ctrip-bridge:${GEO_IMAGE_TAG:-local}
     build:
       context: .
@@ -399,14 +416,21 @@ services:
       target: ctrip-bridge
     restart: unless-stopped
     environment:
-      CTRIP_BRIDGE_MODE: simulator
-      CTRIP_BRIDGE_HOST: 127.0.0.1
+      CTRIP_BRIDGE_MODE: ${CTRIP_BRIDGE_MODE:-simulator}
+      # The host mapping remains loopback-only; 0.0.0.0 is needed inside the shared API
+      # namespace so Docker can forward the host-facing 10000+ port to the bridge.
+      CTRIP_BRIDGE_HOST: 0.0.0.0
       CTRIP_BRIDGE_PORT: "9030"
       CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:-[]}
+      CTRIP_REVIEW_CDP_ENDPOINT: ${CTRIP_REVIEW_CDP_ENDPOINT:-}
+      GEO_RUNTIME_TMP_ROOT: ${GEO_RUNTIME_TMP_ROOT:-/var/lib/geo/runtime/tmp}
       GEO_MEDIA_OBJECT_ROOT: /var/lib/geo/media
       DATABASE_URL: postgresql://${GEO_API_DB_USER:-geo_api}:${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
     volumes:
       - media-data:/var/lib/geo/media:ro
+      - type: bind
+        source: ${GEO_CTRIP_RUNTIME_ROOT:-./.runtime/ctrip-bridge}
+        target: /var/lib/geo/runtime
     healthcheck:
       test:
         - CMD
@@ -445,7 +469,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - ${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-4173}:8080
+      - ${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-10003}:8080
     healthcheck:
       test:
         - CMD

@@ -30,6 +30,7 @@ import {
 } from "@geo/contracts";
 import {
   auditPublicationVariant,
+  assertPlatformPublicationVariantBoundaries,
   compileAuditPolicy,
   CoreInvariantError,
   geoAuditPolicyDocumentSchema,
@@ -81,6 +82,11 @@ import {
   MediaProductionServiceError,
   type MediaProductionController,
 } from "./media-production-service.js";
+import { mediaImportRequestSchema, type MediaImportController } from "./media-import-service.js";
+import {
+  mediaSearchImportRequestSchema,
+  type MediaSearchImportController,
+} from "./media-search-import-service.js";
 import {
   RepositoryConflictError,
   RepositoryNotFoundError,
@@ -162,6 +168,8 @@ export interface BuildAppOptions {
   readonly agentRunGateway?: AgentRunGateway;
   readonly ctripBridgeGateway?: CtripBridgeGateway;
   readonly mediaProduction?: MediaProductionController;
+  readonly mediaImport?: MediaImportController;
+  readonly mediaSearchImport?: MediaSearchImportController;
   readonly mediaObjectStore?: Pick<MediaObjectStore, "get">;
 }
 
@@ -484,6 +492,9 @@ const contentVersionSchema = z.object({
 });
 
 const mediaProductionBodySchema = mediaProductionRequestSchema.omit({ contentVersionId: true });
+const mediaImportBodySchema = mediaImportRequestSchema.omit({ contentVersionId: true });
+const mediaSearchImportBodySchema = mediaSearchImportRequestSchema.omit({ contentVersionId: true });
+const MEDIA_IMPORT_BODY_LIMIT = 14_100_000;
 
 const mediaAssetListQuerySchema = z.strictObject({
   contentVersionId: idSchema,
@@ -824,6 +835,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   });
   const repository = options.repository;
   const mediaProduction = options.mediaProduction;
+  const mediaImport = options.mediaImport;
+  const mediaSearchImport = options.mediaSearchImport;
   const mediaProductionCapability =
     mediaProduction?.capability ?? DISABLED_MEDIA_PRODUCTION_CAPABILITY;
   const passwordService = options.passwordService ?? defaultPasswordService();
@@ -1017,6 +1030,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       return;
     }
     if (databaseCode === "42501") {
+      request.log.warn(
+        {
+          databaseCode,
+          databaseMessage: databaseMessage.slice(0, 200),
+        },
+        "publication policy denied",
+      );
       void reply.status(403).send({
         error: {
           code: "PUBLICATION_POLICY_DENIED",
@@ -1248,7 +1268,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   app.get("/api/setup/readiness", { preHandler: guard("tenant:read") }, async (request) => {
     const context = requestContext(request);
-    const [accounts, principals, agentCapability, bridgeHealthy] = await Promise.all([
+    const [accounts, principals, agentCapability, bridgeHealth] = await Promise.all([
       repository.listChannelAccounts(context),
       repository.listServicePrincipals(context),
       options.agentRunGateway?.getCapability(context.tenantId) ??
@@ -1259,8 +1279,19 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           model: null,
           reason: "runner_disabled" as const,
         }),
-      options.ctripBridgeGateway?.health?.().catch(() => false) ?? Promise.resolve(false),
+      options.ctripBridgeGateway?.healthDetails !== undefined
+        ? options.ctripBridgeGateway.healthDetails().catch(() => null)
+        : (options.ctripBridgeGateway?.health?.().then((healthy) => (healthy ? true : null)) ??
+          Promise.resolve(null)),
     ]);
+    const bridgeHealthy = bridgeHealth !== null;
+    const bridgeUnattendedReady =
+      bridgeHealth === true ||
+      (bridgeHealth !== null &&
+        bridgeHealth.mode === "browser_unattended" &&
+        bridgeHealth.commandCapabilities.prepare &&
+        bridgeHealth.commandCapabilities.submit &&
+        bridgeHealth.commandCapabilities.readback);
     const account = accounts.find((item) => item.platform === "ctrip_community");
     const bridgePrincipal = principals.find(
       (item) => item.profile === "ctrip_bridge" && item.status === "active",
@@ -1277,6 +1308,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       account.capability === "browser_assisted" &&
       account.supportedExecutionLevels.includes("assisted") &&
       assistedEvidenceCurrent;
+    const unattendedAccountReady =
+      account?.status === "active" &&
+      account.capability === "browser_assisted" &&
+      account.supportedExecutionLevels.includes("unattended") &&
+      account.evidenceType === "platform_readback" &&
+      account.evidenceRefs.includes("adapter:ctrip-community-browser-unattended-v1") &&
+      assistedEvidenceCurrent;
+    const externalPublishingEnabled =
+      unattendedAccountReady && bridgePrincipal !== undefined && bridgeUnattendedReady;
 
     return {
       schemaVersion: "geo.customer-setup-readiness.v1",
@@ -1288,13 +1328,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         assistedAccountReady &&
         bridgePrincipal !== undefined &&
         bridgeHealthy,
-      externalPublishingEnabled: false,
+      externalPublishingEnabled,
       checks: {
         agent: agentCapability.available,
         ctripAccount: dryRunAccountReady,
         assistedEvidence: assistedAccountReady,
         bridgeIdentity: bridgePrincipal !== undefined,
-        bridgeRuntime: bridgeHealthy,
+        bridgeRuntime: bridgeUnattendedReady,
         prePublicationAudit: true,
       },
     };
@@ -1941,6 +1981,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     const accounts = await repository.listChannelAccounts(requestContext(request));
     return {
       mediaProduction: mediaProductionCapability,
+      mediaSearch: {
+        enabled: mediaSearchImport !== undefined,
+        provider: mediaSearchImport === undefined ? "disabled" : "wikimedia_commons",
+      },
       items: accounts.map((account) => ({
         accountId: account.id,
         platform: account.platform,
@@ -1951,6 +1995,37 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         evidenceRefs: account.evidenceRefs,
         status: account.status,
       })),
+    };
+  });
+
+  app.get("/api/ctrip-bridge/status", { preHandler: guard("tenant:read") }, async (request) => {
+    const bridge = options.ctripBridgeGateway;
+    if (bridge === undefined) {
+      return {
+        configured: false,
+        reachable: false,
+        mode: null,
+        adapterVersion: null,
+        commandCapabilities: null,
+        operationalStatus: "unavailable" as const,
+        operationalCheckedAt: null,
+      };
+    }
+    const health =
+      bridge.healthDetails === undefined ? null : await bridge.healthDetails().catch(() => null);
+    const context = requestContext(request);
+    const readiness =
+      bridge.readiness === undefined
+        ? null
+        : await bridge.readiness(context.tenantId).catch(() => null);
+    return {
+      configured: true,
+      reachable: health !== null,
+      mode: health?.mode ?? null,
+      adapterVersion: health?.adapterVersion ?? null,
+      commandCapabilities: health?.commandCapabilities ?? null,
+      operationalStatus: readiness?.status ?? "unavailable",
+      operationalCheckedAt: readiness?.observedAt ?? null,
     };
   });
 
@@ -2021,7 +2096,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         campaignId,
         name: body.name ?? null,
         items: body.items,
-        executionLevel: "dry_run",
+        executionLevel: body.executionLevel,
       });
       const result = await repository.createAutomationBatch(requestContext(request), {
         batchId,
@@ -2029,6 +2104,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         idempotencyKey: body.idempotencyKey,
         requestHash,
         name: body.name ?? null,
+        executionLevel: body.executionLevel,
         runs: body.items.map((item) => {
           const runId = uuid();
           return {
@@ -2293,6 +2369,49 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     },
   );
 
+  app.post(
+    "/api/content-versions/:id/media-imports",
+    {
+      bodyLimit: MEDIA_IMPORT_BODY_LIMIT,
+      preHandler: guard("content:write", true),
+    },
+    async (request, reply) => {
+      if (mediaImport === undefined) {
+        throw new MediaProductionServiceError(
+          "MEDIA_IMPORT_DISABLED",
+          503,
+          "Media import is disabled",
+        );
+      }
+      const body = mediaImportBodySchema.parse(request.body);
+      const result = await mediaImport.request(requestContext(request), {
+        contentVersionId: parseIdParams(request.params, "id"),
+        ...body,
+      });
+      return reply.status(result.wasCreated ? 201 : 200).send(result);
+    },
+  );
+
+  app.post(
+    "/api/content-versions/:id/media-search-imports",
+    { preHandler: guard("content:write", true) },
+    async (request, reply) => {
+      if (mediaSearchImport === undefined) {
+        throw new MediaProductionServiceError(
+          "MEDIA_SEARCH_DISABLED",
+          503,
+          "Licensed image search is disabled",
+        );
+      }
+      const body = mediaSearchImportBodySchema.parse(request.body);
+      const result = await mediaSearchImport.request(requestContext(request), {
+        contentVersionId: parseIdParams(request.params, "id"),
+        ...body,
+      });
+      return reply.status(201).send(result);
+    },
+  );
+
   app.get("/api/media-jobs/:id", { preHandler: guard("content:read") }, async (request) => {
     const context = requestContext(request);
     const job = await repository.getMediaJob(context, parseIdParams(request.params, "id"));
@@ -2383,6 +2502,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         factSnapshot,
         contacts,
       });
+      assertPlatformPublicationVariantBoundaries(account.platform, payload);
       const variant = await repository.createVariant(context, {
         variantId: uuid(),
         contentItemId: parseIdParams(request.params, "contentId"),
@@ -2543,13 +2663,6 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     { preHandler: guard("publish:request", true) },
     async (request, reply) => {
       const body = publicationRequestSchema.parse(request.body);
-      if (body.executionLevel === "unattended") {
-        throw new ApiError(
-          422,
-          "PUBLICATION_CAPABILITY_UNSUPPORTED",
-          "Current platform adapters support dry-run and Ctrip assisted handoffs only",
-        );
-      }
       if (body.scheduledFor !== undefined) {
         const scheduledAt = new Date(body.scheduledFor).getTime();
         const currentTime = now().getTime();
@@ -2579,13 +2692,13 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         throw new RepositoryNotFoundError("Publication grant was not found");
       }
       if (
-        body.executionLevel === "assisted" &&
+        (body.executionLevel === "assisted" || body.executionLevel === "unattended") &&
         publicationContext.artifact.platform !== "ctrip_community"
       ) {
         throw new ApiError(
           422,
           "PUBLICATION_CAPABILITY_UNSUPPORTED",
-          "Current platform adapters support dry-run and Ctrip assisted handoffs only",
+          "Browser-assisted publication is currently available only for Ctrip Community",
         );
       }
       const decisionId = uuid();
@@ -2828,12 +2941,22 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     { preHandler: guard("publish:request", true) },
     async (request) => {
       publicationAssistedBridgeCommandSchema.parse(request.body ?? {});
-      const { context, handoffId, handoff } = await requireAssistedHandoff(
+      const { context, handoffId } = await requireAssistedHandoff(
         request,
         ["draft_prepared"],
-        true,
+        false,
       );
       const bridgeGateway = ctripBridgeGateway();
+      if (
+        bridgeGateway.health !== undefined &&
+        !(await bridgeGateway.health().catch(() => false))
+      ) {
+        throw new ApiError(503, "CTRIP_BRIDGE_UNAVAILABLE", "Ctrip bridge is unavailable");
+      }
+      const handoff = await repository.claimPublicationAssistedHandoff(context, {
+        handoffId,
+        leaseSeconds: 300,
+      });
       const permit = await repository.issuePublicationAssistedSubmitPermit(context, handoffId);
       try {
         const bridge = await bridgeGateway.execute({

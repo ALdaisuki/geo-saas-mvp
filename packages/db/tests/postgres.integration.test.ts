@@ -143,6 +143,12 @@ const ids = {
   mediaReplayJob: "30000000-0000-4000-8000-000000000094",
   mediaVariant: "30000000-0000-4000-8000-000000000095",
   mediaTamperedVariant: "30000000-0000-4000-8000-000000000096",
+  mediaImportedJob: "30000000-0000-4000-8000-000000000111",
+  mediaImportedAttempt: "30000000-0000-4000-8000-000000000112",
+  mediaImportedAsset: "30000000-0000-4000-8000-000000000113",
+  mediaImportedInspection: "30000000-0000-4000-8000-000000000114",
+  mediaImportedBinding: "30000000-0000-4000-8000-000000000115",
+  mediaImportedSuccessorVersion: "30000000-0000-4000-8000-000000000116",
   ctripAssistedVariant: "30000000-0000-4000-8000-000000000097",
   ctripAssistedAuditRun: "30000000-0000-4000-8000-000000000098",
   ctripAssistedAuditArtifact: "30000000-0000-4000-8000-000000000099",
@@ -268,6 +274,7 @@ interface VariantRepositoryForTest {
     context: { actorId: string; tenantId: string; requestId: string },
     input: {
       jobId: string;
+      attemptId: string;
       assetId: string;
       inspectionId: string;
       bindingId: string;
@@ -928,6 +935,18 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       "0021_ctrip_submit_recovery",
       "0022_ctrip_prepare_evidence",
       "0023_ctrip_submit_candidate_target",
+      "0024_ctrip_draft_prepare_lease",
+      "0025_ctrip_unattended_browser_publication",
+      "0026_ctrip_prepare_execution_level",
+      "0027_ctrip_publication_payload_limits",
+      "0028_ctrip_prepare_diagnostics",
+      "0029_ctrip_handoff_terminal_sync",
+      "0030_ctrip_readback_identity_sync",
+      "0031_ctrip_post_submit_readback_recovery",
+      "0032_ctrip_targeted_unattended_readback_claim",
+      "0033_ctrip_candidate_url_query",
+      "0034_ctrip_readback_lease_exclusion",
+      "0035_automation_execution_levels",
     ]);
     expect(contacts.rows.map((row) => row.value)).toEqual(["4001133986", "ZTGL3411", "ZTGL6431"]);
     expect(queryPack.rows[0]).toEqual({
@@ -2467,7 +2486,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
             assistedRequestHash,
           ],
         ),
-      ).rejects.toMatchObject({ code: "0A000" });
+      ).rejects.toMatchObject({ code: "42501" });
       await adminClient.query("ROLLBACK TO SAVEPOINT reject_unattended");
 
       await adminClient.query(
@@ -2701,7 +2720,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         await client.query(
           `SELECT geo.record_publication_assisted_bridge_status(
              $1, 'failed', $2::geo.sha256_hex, $3::geo.sha256_hex,
-             'browser', clock_timestamp(), $4, 'ASSISTED_ADAPTER_DRIFT'
+             'browser', clock_timestamp(), $4, 'ASSISTED_ADAPTER_DRIFT',
+             'prepare:media-clear-incomplete'
            )`,
           [
             ids.ctripAssistedHandoff,
@@ -2719,6 +2739,11 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           state: "open",
           reason: "ASSISTED_ADAPTER_DRIFT",
         });
+        const driftDiagnostic = await client.query<{ last_error_message: string | null }>(
+          `SELECT last_error_message FROM geo.publication_assisted_handoffs WHERE id = $1`,
+          [ids.ctripAssistedHandoff],
+        );
+        expect(driftDiagnostic.rows[0]?.last_error_message).toBe("prepare:media-clear-incomplete");
         await client.query("ROLLBACK TO SAVEPOINT drift_report");
 
         await client.query(
@@ -3194,6 +3219,120 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       external_url: null,
     });
     expect(persisted.rows[0]?.submit_permit_hash).not.toBe(permit);
+
+    await adminClient.query(
+      "ALTER TABLE geo.publication_assisted_handoffs DISABLE TRIGGER publication_assisted_handoffs_transition_only",
+    );
+    await adminClient.query(
+      `UPDATE geo.publication_assisted_handoffs
+       SET expires_at = created_at + interval '1 millisecond',
+           submit_permit_expires_at = created_at + interval '1 millisecond',
+           readback_owner_principal_id = NULL,
+           readback_lease_expires_at = NULL
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    await adminClient.query(
+      `UPDATE geo.publication_jobs
+       SET execution_level = 'unattended'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ctripJobId],
+    );
+    const expiredReadbackClaim = await runtimeTransaction(
+      (client) =>
+        client.query<{ handoff_id: string | null }>(
+          "SELECT geo.claim_next_ctrip_unattended_readback() AS handoff_id",
+        ),
+      { actor: ids.ctripBridgePrincipal },
+    );
+    expect(expiredReadbackClaim.rows[0]?.handoff_id).toBe(ids.ctripAssistedHandoff);
+    const expiredReadbackLease = await adminClient.query<{
+      lease_after_handoff_expiry: boolean;
+      post_submit_recovery: boolean;
+    }>(
+      `SELECT handoff.readback_lease_expires_at > handoff.expires_at AS lease_after_handoff_expiry,
+              EXISTS (
+                SELECT 1 FROM geo.audit_log AS audit
+                WHERE audit.tenant_id = handoff.tenant_id
+                  AND audit.resource_id = handoff.id
+                  AND audit.action = 'publication_assisted_handoff.readback_claimed'
+                  AND audit.details ->> 'postSubmitRecovery' = 'true'
+              ) AS post_submit_recovery
+       FROM geo.publication_assisted_handoffs AS handoff
+       WHERE handoff.tenant_id = $1 AND handoff.id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(expiredReadbackLease.rows[0]).toEqual({
+      lease_after_handoff_expiry: true,
+      post_submit_recovery: true,
+    });
+    await adminClient.query(
+      `UPDATE geo.publication_assisted_handoffs
+       SET readback_owner_principal_id = NULL,
+           readback_lease_expires_at = NULL
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    const targetedExpiredReadbackClaim = await runtimeTransaction(
+      (client) =>
+        client.query<{ claimed: boolean }>(
+          "SELECT geo.claim_ctrip_unattended_readback($1) AS claimed",
+          [ids.ctripAssistedHandoff],
+        ),
+      { actor: ids.ctripBridgePrincipal },
+    );
+    expect(targetedExpiredReadbackClaim.rows[0]?.claimed).toBe(true);
+    const overlappingTargetedReadbackClaim = await runtimeTransaction(
+      (client) =>
+        client.query<{ claimed: boolean }>(
+          "SELECT geo.claim_ctrip_unattended_readback($1) AS claimed",
+          [ids.ctripAssistedHandoff],
+        ),
+      { actor: ids.ctripBridgePrincipal },
+    );
+    expect(overlappingTargetedReadbackClaim.rows[0]?.claimed).toBe(false);
+    const targetedExpiredReadbackLease = await adminClient.query<{
+      current_owner: string | null;
+      lease_after_handoff_expiry: boolean;
+      targeted_claim: boolean;
+    }>(
+      `SELECT handoff.readback_owner_principal_id::text AS current_owner,
+              handoff.readback_lease_expires_at > handoff.expires_at AS lease_after_handoff_expiry,
+              EXISTS (
+                SELECT 1 FROM geo.audit_log AS audit
+                WHERE audit.tenant_id = handoff.tenant_id
+                  AND audit.resource_id = handoff.id
+                  AND audit.action = 'publication_assisted_handoff.readback_claimed'
+                  AND audit.details ->> 'claimMode' = 'targeted'
+              ) AS targeted_claim
+       FROM geo.publication_assisted_handoffs AS handoff
+       WHERE handoff.tenant_id = $1 AND handoff.id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    expect(targetedExpiredReadbackLease.rows[0]).toEqual({
+      current_owner: ids.ctripBridgePrincipal,
+      lease_after_handoff_expiry: true,
+      targeted_claim: true,
+    });
+    await adminClient.query(
+      `UPDATE geo.publication_assisted_handoffs
+       SET expires_at = clock_timestamp() + interval '30 minutes',
+           submit_permit_expires_at = clock_timestamp() + interval '5 minutes',
+           readback_owner_principal_id = NULL,
+           readback_lease_expires_at = NULL
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ids.ctripAssistedHandoff],
+    );
+    await adminClient.query(
+      `UPDATE geo.publication_jobs
+       SET execution_level = 'assisted'
+       WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, ctripJobId],
+    );
+    await adminClient.query(
+      "ALTER TABLE geo.publication_assisted_handoffs ENABLE TRIGGER publication_assisted_handoffs_transition_only",
+    );
+
     const leakedPermit = await adminClient.query<{ leaked: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM geo.audit_log
@@ -3286,14 +3425,16 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           `SELECT * FROM geo.record_publication_assisted_readback(
              $1, 'confirmed', 'platform_readback', $2::geo.sha256_hex,
              $3::geo.sha256_hex, 'ctrip-live-contract-id',
-             'https://you.ctrip.com/travels/contract.html', clock_timestamp()
+             'https://m.ctrip.com/webapp/you/community/detail?articleId=ctrip-live-contract-id',
+             clock_timestamp()
            )`,
           [ids.ctripAssistedHandoff, readbackEvidenceHash, payloadHash],
         );
         expect(live.rows[0]).toEqual({
           state: "confirmed",
           external_id: "ctrip-live-contract-id",
-          external_url: "https://you.ctrip.com/travels/contract.html",
+          external_url:
+            "https://m.ctrip.com/webapp/you/community/detail?articleId=ctrip-live-contract-id",
         });
         await client.query("ROLLBACK TO SAVEPOINT prove_live_confirmation_contract");
 
@@ -3583,6 +3724,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       const firstSuccessorPayload = { ...sourcePayload, media: [firstReference] };
       const firstAsset = await repository.completeMediaJob(context, {
         jobId: ids.mediaJob,
+        attemptId: ids.mediaAttempt,
         assetId: ids.mediaAsset,
         inspectionId: ids.mediaInspection,
         bindingId: ids.mediaBinding,
@@ -3683,6 +3825,7 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       const secondSuccessorPayload = { ...sourcePayload, media: [secondReference] };
       await repository.completeMediaJob(context, {
         jobId: ids.mediaJobWithDifferentRights,
+        attemptId: ids.mediaAttemptWithDifferentRights,
         assetId: ids.mediaAssetWithDifferentRights,
         inspectionId: ids.mediaInspectionWithDifferentRights,
         bindingId: ids.mediaBindingWithDifferentRights,
@@ -3692,6 +3835,81 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         successorPayload: secondSuccessorPayload,
         successorPayloadHash: sha256Canonical(secondSuccessorPayload),
         completedAt: "2026-07-15T04:05:00.000Z",
+      });
+
+      const importedJobInput = {
+        ...createJobInput,
+        jobId: ids.mediaImportedJob,
+        idempotencyKey: "media-customer-upload",
+        requestHash: "b".repeat(64),
+        providerId: "customer-upload",
+        providerMode: "live" as const,
+      };
+      await repository.createMediaJob(context, importedJobInput);
+      await repository.recordMediaAttempt(context, {
+        attemptId: ids.mediaImportedAttempt,
+        jobId: ids.mediaImportedJob,
+        attemptNo: 1,
+        status: "succeeded",
+        providerId: "customer-upload",
+        providerMode: "live",
+        model: "direct-file-upload-v1",
+        inputHash: assetSha256,
+        requestHash: importedJobInput.requestHash,
+        responseHash: "c".repeat(64),
+        outputSha256: assetSha256,
+        providerRequestId: null,
+        errorCode: null,
+        errorMessage: null,
+        startedAt: "2026-07-15T04:05:10.000Z",
+        finishedAt: "2026-07-15T04:05:20.000Z",
+      });
+      const importedReference = {
+        ...firstReference,
+        id: ids.mediaImportedAsset,
+        rights: {
+          basis: "tenant_owned",
+          licenseName: "Tenant original photograph",
+          verifiedAt: "2026-07-15T04:05:20.000Z",
+        },
+        provenance: {
+          kind: "tenant_owned",
+          evidenceSourceId: ids.mediaContentItem,
+          ownershipAssertion: "The tenant created and owns this photograph.",
+        },
+        inspection: {
+          assetSha256,
+          status: "passed",
+          evaluator: "server-image-structure-inspector",
+          evaluatorMode: "live",
+          evaluatorVersion: "1.0.0",
+          responseSha256: "d".repeat(64),
+          inspectedAt: "2026-07-15T04:05:20.000Z",
+          ocrText: "",
+          labels: ["byte-integrity:verified", "dimensions:verified", "ocr:not-run"],
+        },
+      };
+      const importedSuccessorPayload = { ...sourcePayload, media: [importedReference] };
+      const importedAsset = await repository.completeMediaJob(context, {
+        jobId: ids.mediaImportedJob,
+        attemptId: ids.mediaImportedAttempt,
+        assetId: ids.mediaImportedAsset,
+        inspectionId: ids.mediaImportedInspection,
+        bindingId: ids.mediaImportedBinding,
+        successorContentVersionId: ids.mediaImportedSuccessorVersion,
+        storageKey,
+        reference: importedReference,
+        successorPayload: importedSuccessorPayload,
+        successorPayloadHash: sha256Canonical(importedSuccessorPayload),
+        completedAt: "2026-07-15T04:05:30.000Z",
+      });
+      expect(importedAsset).toMatchObject({
+        id: ids.mediaImportedAsset,
+        contentVersionId: ids.mediaImportedSuccessorVersion,
+        reference: {
+          provenance: { kind: "tenant_owned" },
+          inspection: { evaluatorMode: "live" },
+        },
       });
 
       const failed = await repository.createMediaJob(context, {
@@ -3714,6 +3932,8 @@ describe("real PostgreSQL tenant and publication invariants", () => {
         asset_count: string;
         binding_count: string;
         inspection_count: string;
+        imported_provider_mode: string;
+        imported_source_class: string;
         job_state: string;
         source_payload_hash: string;
         source_version: number;
@@ -3723,9 +3943,13 @@ describe("real PostgreSQL tenant and publication invariants", () => {
            (SELECT count(*)::text FROM geo.media_assets
              WHERE tenant_id = $1 AND sha256 = $2) AS asset_count,
            (SELECT count(*)::text FROM geo.media_inspections
-             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4)) AS inspection_count,
+             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4, $8)) AS inspection_count,
            (SELECT count(*)::text FROM geo.content_media_bindings
-             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4)) AS binding_count,
+             WHERE tenant_id = $1 AND media_asset_id IN ($3, $4, $8)) AS binding_count,
+           (SELECT source_class FROM geo.media_assets
+             WHERE tenant_id = $1 AND id = $8) AS imported_source_class,
+           (SELECT provider_mode FROM geo.media_generation_jobs
+             WHERE tenant_id = $1 AND id = $9) AS imported_provider_mode,
            (SELECT state FROM geo.media_generation_jobs
              WHERE tenant_id = $1 AND id = $5) AS job_state,
            (SELECT version FROM geo.content_versions
@@ -3742,16 +3966,20 @@ describe("real PostgreSQL tenant and publication invariants", () => {
           ids.mediaJob,
           ids.mediaSourceVersion,
           ids.mediaContentItem,
+          ids.mediaImportedAsset,
+          ids.mediaImportedJob,
         ],
       );
       expect(persisted.rows[0]).toEqual({
-        asset_count: "2",
-        inspection_count: "2",
-        binding_count: "2",
+        asset_count: "3",
+        inspection_count: "3",
+        binding_count: "3",
+        imported_source_class: "tenant_owned",
+        imported_provider_mode: "live",
         job_state: "succeeded",
         source_version: 1,
         source_payload_hash: sha256Canonical(sourcePayload),
-        successor_count: "2",
+        successor_count: "3",
       });
 
       await expect(
@@ -5028,6 +5256,15 @@ describe("real PostgreSQL tenant and publication invariants", () => {
        WHERE tenant_id = $1 AND id = $2`,
       [tenantId, SEED_IDS.zhongtong.ctripBridgePrincipal],
     );
+    const automationControl = await adminClient.query<{
+      mode: string;
+      kill_switch_enabled: boolean;
+      reason: string;
+    }>(
+      `SELECT mode, kill_switch_enabled, reason FROM geo.automation_controls
+       WHERE tenant_id = $1 AND scope_type = 'tenant' AND scope_key = '*'`,
+      [tenantId],
+    );
     const audit = await adminClient.query<{
       details: { externalPublishingEnabled?: boolean };
     }>(
@@ -5045,6 +5282,11 @@ describe("real PostgreSQL tenant and publication invariants", () => {
       profile: "ctrip_bridge",
       capabilities: ["tenant:read", "content:read", "publish:bridge"],
     });
+    expect(automationControl.rows[0]).toMatchObject({
+      mode: "supervised",
+      kill_switch_enabled: false,
+    });
+    expect(automationControl.rows[0]?.reason).toContain("final submit remains operator-confirmed");
     expect(audit.rows.at(-1)?.details.externalPublishingEnabled).toBe(false);
   });
 });

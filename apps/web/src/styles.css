@@ -4465,6 +4465,206 @@ tbody tr:hover td {
   gap: 11px;
 }
 
+.ops-media-import {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+  margin-top: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.ops-media-search {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+  margin-top: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.ops-media-search .ops-subheading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ops-media-search .ops-subheading strong,
+.ops-media-search .ops-subheading span {
+  display: block;
+}
+
+.ops-media-search .ops-subheading strong {
+  font-size: 11px;
+}
+
+.ops-media-search .ops-subheading div > span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.ops-media-search-list {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ops-media-search-list li {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.ops-media-search-index {
+  display: grid !important;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--surface-muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.ops-media-search-list li > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ops-media-search-list li strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 10px;
+}
+
+.ops-media-search-list li div span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ops-media-search-list li a {
+  color: var(--accent);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.ops-media-import .ops-subheading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ops-media-import .ops-subheading strong,
+.ops-media-import .ops-subheading span {
+  display: block;
+}
+
+.ops-media-import .ops-subheading strong {
+  font-size: 11px;
+}
+
+.ops-media-import .ops-subheading div > span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.ops-media-import-grid,
+.ops-media-rights {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.ops-media-import label,
+.ops-media-claims legend {
+  color: #48534d;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.ops-media-import-grid label,
+.ops-media-rights label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ops-media-import input,
+.ops-media-import select,
+.ops-media-import textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ops-media-import input[type="file"] {
+  padding: 6px 8px;
+}
+
+.ops-media-import textarea {
+  resize: vertical;
+}
+
+.ops-media-claims {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.ops-media-claims label {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.ops-media-claims input {
+  width: 14px;
+  min-height: 14px;
+  margin: 1px 0 0;
+}
+
+.ops-media-claims span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .ops-version-meta {
   display: grid;
   min-width: 0;
@@ -5293,9 +5493,19 @@ tbody tr:hover td {
   .ops-source-grid,
   .ops-content-layout,
   .ops-version-meta,
+  .ops-media-import-grid,
+  .ops-media-rights,
   .ops-audit-browser,
   .ops-audit-detail .ops-version-meta {
     grid-template-columns: 1fr;
+  }
+
+  .ops-media-search-list li {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+  }
+
+  .ops-media-search-list li a {
+    grid-column: 2 / -1;
   }
 
   .ops-form-wide {

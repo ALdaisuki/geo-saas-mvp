@@ -184,7 +184,7 @@ export class OutboxWorker {
       this.#assertWorkMatchesEvent(work, payload);
       connector = this.#getConnector(payload.platform);
 
-      if (this.#isCtripAssisted(work) && work.assistedHandoff !== null) {
+      if (this.#isCtripBrowser(work) && work.assistedHandoff !== null) {
         this.#assertExistingAssistedHandoff(work);
         const acknowledged = await this.#dispatcher.acknowledge(event.eventId, this.#workerId);
         return { ...EMPTY_OUTCOME, acknowledged: acknowledged ? 1 : 0 };
@@ -377,23 +377,26 @@ export class OutboxWorker {
     }
   }
 
-  #isCtripAssisted(work: PublicationWork): boolean {
-    return work.job.platform === "ctrip_community" && work.job.executionLevel === "assisted";
+  #isCtripBrowser(work: PublicationWork): boolean {
+    return (
+      work.job.platform === "ctrip_community" &&
+      (work.job.executionLevel === "assisted" || work.job.executionLevel === "unattended")
+    );
   }
 
   #assertCapability(
     work: PublicationWork,
     context: TenantContext,
   ): CtripAssistedAccountConfig | null {
-    if (this.#isCtripAssisted(work)) {
+    if (this.#isCtripBrowser(work)) {
       if (
         work.account.status !== "active" ||
         work.account.capability !== "browser_assisted" ||
-        !work.account.supportedExecutionLevels.includes("assisted")
+        !work.account.supportedExecutionLevels.includes(work.job.executionLevel)
       ) {
         throw new PermanentWorkerError(
           "ACCOUNT_CAPABILITY_BLOCKED",
-          "Ctrip account cannot create an assisted handoff",
+          "Ctrip account cannot create a browser handoff at the requested execution level",
         );
       }
       const config = this.#ctripAssistedAccounts.get(`${context.tenantId}:${work.account.id}`);
@@ -459,7 +462,7 @@ export class OutboxWorker {
     const renderedDraft = renderCtripCommunityAssistedDraft({
       tenantId: context.tenantId,
       channelAccountId: work.account.id,
-      executionLevel: "assisted",
+      executionLevel: work.job.executionLevel,
       variantId: work.variant.id,
       payload: work.variant.payload,
     });

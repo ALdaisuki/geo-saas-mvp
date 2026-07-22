@@ -50,6 +50,7 @@ describe("static agent policy", () => {
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_brand_profile");
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_production_request");
     expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_job_status");
+    expect(AGENT_TOOL_ALLOWLIST).toContain("geo_media_search_import");
   });
 
   it("checks principal tenant, capability, and resource scope before a tool call", async () => {
@@ -102,6 +103,11 @@ describe("static agent policy", () => {
     expect(AGENT_TOOL_POLICIES.geo_media_job_status).toMatchObject({
       stateChanging: false,
       sequential: false,
+    });
+    expect(AGENT_TOOL_POLICIES.geo_media_search_import).toMatchObject({
+      requiredCapability: "content:write",
+      stateChanging: true,
+      sequential: true,
     });
     expect(AGENT_TOOL_POLICIES.geo_template_catalog).toMatchObject({
       requiredCapability: "content:read",

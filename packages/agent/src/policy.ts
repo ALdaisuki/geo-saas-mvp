@@ -13,6 +13,7 @@ export const GEO_AGENT_TOOL_NAMES = [
   "geo_visibility_request",
   "geo_media_production_request",
   "geo_media_job_status",
+  "geo_media_search_import",
 ] as const;
 
 export const PLASTIC_PROMISE_TOOL_NAMES = [
@@ -91,6 +92,11 @@ export const AGENT_TOOL_POLICIES = {
     requiredCapability: "content:read",
     stateChanging: false,
     sequential: false,
+  },
+  geo_media_search_import: {
+    requiredCapability: "content:write",
+    stateChanging: true,
+    sequential: true,
   },
   plastic_context_supply: {
     requiredCapability: "tenant:read",

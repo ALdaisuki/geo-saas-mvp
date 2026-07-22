@@ -7,6 +7,7 @@ import {
   type BrandAgentProfile,
   type Campaign,
   type ChannelAccount,
+  type CtripBridgeStatus,
   type ClaimFact,
   type ContentItem,
   type EvidenceSource,
@@ -59,6 +60,7 @@ export interface LiveDashboard {
   readonly receipts: ApiResource<readonly PublicationReceipt[]>;
   readonly visibility: ApiResource<readonly VisibilityProviderSummary[]>;
   readonly automation: ApiResource<AutomationSnapshot | null>;
+  readonly ctripBridge: ApiResource<CtripBridgeStatus | null>;
   readonly servicePrincipals: ApiResource<readonly ServicePrincipal[]>;
   readonly loadedAt: string | null;
 }
@@ -89,6 +91,7 @@ export function createLoadingDashboard(): LiveDashboard {
     receipts: loading("GET /api/receipts", []),
     visibility: loading("GET /api/visibility/summary", []),
     automation: loading("GET /api/automation", null),
+    ctripBridge: loading("GET /api/ctrip-bridge/status", null),
     servicePrincipals: loading("GET /api/service-principals", []),
     loadedAt: null,
   };
@@ -136,6 +139,7 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     api.getReceipts(),
     api.getVisibilitySummary(),
     api.getAutomation(),
+    api.getCtripBridgeStatus(),
     api.getServicePrincipals(),
     api.getArticleTemplates(),
     api.getBrandAgentProfiles(),
@@ -160,10 +164,11 @@ export async function loadLiveDashboard(api: GeoApi): Promise<LiveDashboard> {
     receipts: settled("GET /api/receipts", results[14], []),
     visibility: settled("GET /api/visibility/summary", results[15], []),
     automation: settled("GET /api/automation", results[16], null),
-    servicePrincipals: settled("GET /api/service-principals", results[17], []),
-    articleTemplates: settled("GET /api/article-templates", results[18], null),
-    brandAgentProfiles: settled("GET /api/brand-agent-profiles", results[19], []),
-    publicationAssistedHandoffs: settled("GET /api/publication-assisted-handoffs", results[20], []),
+    ctripBridge: settled("GET /api/ctrip-bridge/status", results[17], null),
+    servicePrincipals: settled("GET /api/service-principals", results[18], []),
+    articleTemplates: settled("GET /api/article-templates", results[19], null),
+    brandAgentProfiles: settled("GET /api/brand-agent-profiles", results[20], []),
+    publicationAssistedHandoffs: settled("GET /api/publication-assisted-handoffs", results[21], []),
     loadedAt: new Date().toISOString(),
   };
 }

@@ -3,6 +3,7 @@ import type {
   AutomationRunStage,
   AutomationRunState,
   AutomationRunTargetState,
+  ExecutionLevel,
   Platform,
   PublicationJobState,
 } from "@geo/contracts";
@@ -29,6 +30,7 @@ export interface AutomationRunView {
   readonly batchId: string;
   readonly campaignId: string;
   readonly brandId: string;
+  readonly executionLevel: ExecutionLevel;
   readonly slotKey: string;
   readonly topicKey: string;
   readonly brief: string;

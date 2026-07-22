@@ -10,10 +10,14 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_AUDIT_POLICY, type FactSnapshot } from "./audit.js";
 import { buildBaselineAuditPolicyDocument, compileAuditPolicy } from "./audit-policy-document.js";
 import { sha256Canonical, sha256Text } from "./canonical.js";
+import { renderCanonicalContent } from "./content-renderer.js";
 import { EDITORIAL_PROFILES, renderEditorialSourcePayload } from "./editorial-profile.js";
 import { CoreInvariantError } from "./errors.js";
 import { buildVisualBrief } from "./media-production.js";
-import { renderPlatformPublicationVariant } from "./platform-variant.js";
+import {
+  assertPlatformPublicationVariantBoundaries,
+  renderPlatformPublicationVariant,
+} from "./platform-variant.js";
 
 const tenantId = "30000000-0000-4000-8000-000000000001";
 const brandId = "30000000-0000-4000-8000-000000000002";
@@ -125,6 +129,33 @@ function mediaReference(platform: Platform, suffix: number, role: "cover" | "inl
 }
 
 describe("platform publication variant rendering", () => {
+  it("blocks Ctrip variants before persistence when inspected media is missing", () => {
+    expect(() =>
+      assertPlatformPublicationVariantBoundaries("ctrip_community", {
+        ...sourcePayload(),
+        title: "京都亲子行前核验清单",
+        bodyMarkdown: "这是一段用于验证携程固定正文边界的内容。".repeat(8),
+        media: [],
+      }),
+    ).toThrowError(expect.objectContaining({ code: "CTRIP_MEDIA_GATE_BLOCKED" }));
+  });
+
+  it("accepts a bounded Ctrip payload with four inspected images and one cover", () => {
+    expect(() =>
+      assertPlatformPublicationVariantBoundaries("ctrip_community", {
+        ...sourcePayload(),
+        title: "京都亲子行前核验清单",
+        bodyMarkdown: "这是一段用于验证携程固定正文边界的内容。".repeat(8),
+        media: [
+          mediaReference("ctrip_community", 11),
+          mediaReference("ctrip_community", 12, "inline"),
+          mediaReference("ctrip_community", 13, "inline"),
+          mediaReference("ctrip_community", 14, "inline"),
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it("binds the selected article template to the canonical source payload", () => {
     const source = renderEditorialSourcePayload({
       editorialProfile: "comparison",
@@ -170,6 +201,114 @@ describe("platform publication variant rendering", () => {
     expect(variant.brandAgentProfile).toEqual(source.brandAgentProfile);
   });
 
+  it("preserves Pi-authored prose without carrying fixture platform body templates", () => {
+    const base = sourcePayload();
+    const authoredCandidate: PublicationVariantPayload = {
+      ...base,
+      title: "出发前先核对这项材料",
+      summary: "按已核验资料整理的出发前检查顺序。",
+      bodyMarkdown: "先核对材料，再联系旅行社确认。\n\n24小时热线: 4001133986",
+      titleBlocks: [{ type: "authored", text: "出发前先核对这项材料", claimIds: [factId] }],
+      summaryBlocks: [
+        { type: "authored", text: "按已核验资料整理的出发前检查顺序。", claimIds: [factId] },
+      ],
+      bodyBlocks: [
+        { type: "authored", text: "先核对材料，再联系旅行社确认。", claimIds: [factId] },
+        { type: "contact", contactId, presentation: "paragraph" },
+      ],
+    };
+    const rendered = renderCanonicalContent({
+      payload: authoredCandidate,
+      policy: policy(),
+      factSnapshot: snapshot,
+      contacts,
+    });
+    const source: PublicationVariantPayload = {
+      ...authoredCandidate,
+      title: rendered.title!,
+      summary: rendered.summary!,
+      bodyMarkdown: rendered.bodyMarkdown!,
+      tags: [...rendered.tags!],
+    };
+
+    const variant = renderPlatformPublicationVariant({
+      sourcePayload: source,
+      platform: "ctrip_community",
+      policy: policy(),
+      factSnapshot: snapshot,
+      contacts,
+    });
+
+    expect(variant.title).toBe(source.title);
+    expect(variant.bodyMarkdown).toContain("先核对材料，再联系旅行社确认。");
+    expect(variant.bodyMarkdown).not.toContain("4001133986");
+    expect(variant.bodyBlocks?.some((block) => block.type === "authored")).toBe(true);
+    expect(variant.bodyBlocks?.some((block) => block.type === "contact")).toBe(false);
+    expect(variant.contactIds).toEqual([]);
+  });
+
+  it("renders contact facts as exact claims without duplicating contact rows", () => {
+    const contactSnapshot: FactSnapshot = {
+      ...snapshot,
+      facts: [
+        {
+          ...snapshot.facts[0]!,
+          text: "中通国际旅行社提供 24 小时咨询热线 4001133986。",
+        },
+      ],
+    };
+    const base = renderEditorialSourcePayload({
+      editorialProfile: "local_service",
+      policy: policy(),
+      factSnapshot: contactSnapshot,
+      contacts,
+    });
+    const authoredCandidate: PublicationVariantPayload = {
+      ...base,
+      title: "日本亲子游首次咨询准备单",
+      summary: "先整理家庭条件，再集中确认仍未知的旅行安排。",
+      bodyMarkdown: "先整理人数、日期、预算和节奏偏好。\n\n24小时热线: 4001133986",
+      titleBlocks: [{ type: "authored", text: "日本亲子游首次咨询准备单", claimIds: [factId] }],
+      summaryBlocks: [
+        {
+          type: "authored",
+          text: "先整理家庭条件，再集中确认仍未知的旅行安排。",
+          claimIds: [factId],
+        },
+      ],
+      bodyBlocks: [
+        { type: "authored", text: "先整理人数、日期、预算和节奏偏好。", claimIds: [factId] },
+        { type: "contact", contactId, presentation: "paragraph" },
+      ],
+    };
+    const renderedSource = renderCanonicalContent({
+      payload: authoredCandidate,
+      policy: policy(),
+      factSnapshot: contactSnapshot,
+      contacts,
+    });
+    const source: PublicationVariantPayload = {
+      ...authoredCandidate,
+      title: renderedSource.title!,
+      summary: renderedSource.summary!,
+      bodyMarkdown: renderedSource.bodyMarkdown!,
+      tags: [...renderedSource.tags!],
+    };
+
+    const variant = renderPlatformPublicationVariant({
+      sourcePayload: source,
+      platform: "ctrip_community",
+      policy: policy(),
+      factSnapshot: contactSnapshot,
+      contacts,
+    });
+
+    expect(variant.bodyBlocks?.some((block) => block.type === "authored")).toBe(true);
+    expect(variant.bodyBlocks?.some((block) => block.type === "contact")).toBe(false);
+    expect(variant.contactIds).toEqual([]);
+    expect(variant.bodyMarkdown).not.toContain("4001133986");
+  });
+
   it("renders fifteen distinct profile/platform payloads without changing facts or contacts", () => {
     const auditPolicy = policy();
     const platforms: readonly Platform[] = ["toutiao", "sohu", "ctrip_community"];
@@ -186,6 +325,7 @@ describe("platform publication variant rendering", () => {
 
       return platforms.map((platform) => ({
         source,
+        platform,
         variant: renderPlatformPublicationVariant({
           sourcePayload: source,
           platform,
@@ -205,9 +345,13 @@ describe("platform publication variant rendering", () => {
     expect(new Set(variants.map((variant) => variant.tags.join("|"))).size).toBe(15);
     expect(DEFAULT_AUDIT_POLICY.duplicateThreshold).toBe(0.86);
 
-    for (const { source, variant } of matrix) {
-      expect(variant.claims).toEqual(source.claims);
-      expect(variant.contactIds).toEqual(source.contactIds);
+    for (const { source, platform, variant } of matrix) {
+      if (platform === "ctrip_community") {
+        expect(variant.contactIds).toEqual([]);
+      } else {
+        expect(variant.claims).toEqual(source.claims);
+        expect(variant.contactIds).toEqual(source.contactIds);
+      }
       expect(variant.media).toEqual([]);
       expect(Object.isFrozen(variant)).toBe(true);
       expect(Object.isFrozen(variant.titleBlocks)).toBe(true);

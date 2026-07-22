@@ -99,6 +99,7 @@ describe("Ctrip bridge contracts", () => {
         service: "geo-ctrip-bridge",
         mode: "simulator",
         adapterVersion: "ctrip-community-simulator-v1",
+        commandCapabilities: { prepare: true, submit: true, readback: true },
       }),
     ).toMatchObject({ mode: "simulator" });
     expect(
@@ -107,7 +108,17 @@ describe("Ctrip bridge contracts", () => {
         service: "geo-ctrip-bridge",
         mode: "browser_preflight",
         adapterVersion: "ctrip-community-browser-preflight-v1",
+        commandCapabilities: { prepare: true, submit: false, readback: false },
       }),
     ).toMatchObject({ mode: "browser_preflight" });
+    expect(
+      ctripBridgeHealthSchema.parse({
+        status: "ok",
+        service: "geo-ctrip-bridge",
+        mode: "browser_supervised",
+        adapterVersion: "ctrip-community-browser-supervised-v1",
+        commandCapabilities: { prepare: true, submit: true, readback: false },
+      }),
+    ).toMatchObject({ mode: "browser_supervised", commandCapabilities: { submit: true } });
   });
 });

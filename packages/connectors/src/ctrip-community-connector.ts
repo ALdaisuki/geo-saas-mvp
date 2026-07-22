@@ -62,7 +62,7 @@ export interface CtripSessionProbe {
 export interface CtripPrepareDraftInput {
   readonly tenantId: string;
   readonly channelAccountId: string;
-  readonly executionLevel: "assisted";
+  readonly executionLevel: "assisted" | "unattended";
   readonly renderedDraft: RenderedDraft;
   readonly idempotencyKey: string;
   readonly requestHash: string;
@@ -110,8 +110,8 @@ function draftHashMaterial(draft: Omit<RenderedDraft, "previewHash">): unknown {
 }
 
 export function renderCtripCommunityAssistedDraft(input: RenderDraftInput): RenderedDraft {
-  if (input.executionLevel !== "assisted") {
-    throw new TypeError("Ctrip assisted handoff rendering requires assisted execution");
+  if (input.executionLevel !== "assisted" && input.executionLevel !== "unattended") {
+    throw new TypeError("Ctrip browser handoff rendering requires assisted or unattended execution");
   }
   const payload = publicationVariantPayloadSchema.parse(input.payload);
   const hashMaterial: Omit<RenderedDraft, "previewHash"> = {
@@ -416,7 +416,7 @@ export class CtripCommunityConnector implements PlatformConnector {
     const preparation = await this.#assistedPort().prepareDraft({
       tenantId: input.tenantId,
       channelAccountId: input.channelAccountId,
-      executionLevel: "assisted",
+      executionLevel: input.executionLevel,
       renderedDraft: input.renderedDraft,
       idempotencyKey: input.idempotencyKey,
       requestHash,
@@ -485,9 +485,11 @@ export class CtripCommunityConnector implements PlatformConnector {
       requestHash,
       responseHash,
       evidenceHash: preparation.evidenceHash,
-      requiresManualAction: true,
+      requiresManualAction: input.executionLevel !== "unattended",
       reason:
-        "Ctrip draft was prepared in a supervised session; an operator must perform final submit.",
+        input.executionLevel === "unattended"
+          ? "Ctrip draft was prepared for the reviewed unattended browser controller."
+          : "Ctrip draft was prepared in a supervised session; an operator must perform final submit.",
     };
   }
 
@@ -541,7 +543,7 @@ export class CtripCommunityConnector implements PlatformConnector {
     this.#assertAllowed(input.executionLevel);
     if (
       input.receipt.platform !== this.platform ||
-      input.receipt.executionLevel !== "assisted" ||
+      input.receipt.executionLevel !== input.executionLevel ||
       input.receipt.evidenceType !== "browser_screenshot" ||
       input.receipt.confirmed
     ) {

@@ -4,6 +4,7 @@ import {
   CTRIP_SURFACE_REVIEW_MANIFEST,
   assertCtripLiveCanaryReady,
   canonicalCtripPageLocation,
+  ctripOperationalReadiness,
   reviewCtripAuthenticatedSurface,
   sanitizeCtripReviewLabel,
   type CtripSurfaceReviewPage,
@@ -186,5 +187,35 @@ describe("Ctrip authenticated surface review", () => {
     ]);
     expect(CTRIP_SURFACE_REVIEW_MANIFEST.reviewedSurfaces).toEqual([]);
     expect(() => assertCtripLiveCanaryReady()).toThrow(/not reviewed/iu);
+  });
+
+  it("separates operational login readiness from the reviewed live-canary gate", async () => {
+    const readyEvidence = await reviewCtripAuthenticatedSurface(
+      [reviewPage({ url: "https://we.ctrip.com/publish/publishPictureText" })],
+      { now: () => new Date(now) },
+    );
+    expect(readyEvidence.outcome).toBe("adapter_drift");
+    expect(ctripOperationalReadiness(readyEvidence)).toMatchObject({
+      schemaVersion: "geo.ctrip-operational-readiness.v1",
+      status: "ready",
+      observedAt: now,
+    });
+
+    const loginEvidence = await reviewCtripAuthenticatedSurface(
+      [reviewPage({ url: "https://accounts.ctrip.com/login" })],
+      { now: () => new Date(now) },
+    );
+    expect(ctripOperationalReadiness(loginEvidence).status).toBe("session_required");
+
+    const challengeEvidence = await reviewCtripAuthenticatedSurface(
+      [
+        reviewPage({
+          url: "https://we.ctrip.com/publish/publishPictureText",
+          challengeSignals: ["captcha_frame"],
+        }),
+      ],
+      { now: () => new Date(now) },
+    );
+    expect(ctripOperationalReadiness(challengeEvidence).status).toBe("challenge_required");
   });
 });

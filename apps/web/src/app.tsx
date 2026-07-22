@@ -50,6 +50,7 @@ import {
   type Campaign,
   type ChannelAccount,
   type ContentItem,
+  type CtripBridgeStatus,
   type CustomerSetupReadiness,
   type GeoApi,
   type PublicationJob,
@@ -458,6 +459,16 @@ function ctripEnvironmentLabel(
   }
   if (adapterVersion.includes("browser-preflight")) return "Browser preflight";
   return "Live bridge";
+}
+
+function ctripOperationalMessage(status: CtripBridgeStatus["operationalStatus"]): string {
+  const messages = {
+    ready: "携程已登录，自动化发布准备就绪",
+    session_required: "需要在专用 Edge 中登录携程，登录后系统会自动恢复",
+    challenge_required: "携程要求完成验证码或安全验证，请在专用 Edge 中人工完成",
+    unavailable: "携程自动化暂不可用，请检查宿主监督器和 Bridge 状态",
+  } as const;
+  return messages[status];
 }
 
 function ctripSubmitObservation(handoff: PublicationAssistedHandoff): string {
@@ -1817,6 +1828,39 @@ function PublishingView({
           </div>
         ))}
       </div>
+      {mode === "live" ? (
+        <section className="panel">
+          <PanelHeading title="携程连接状态" meta={dashboard.ctripBridge.endpoint} />
+          {dashboard.ctripBridge.error !== null ? (
+            <div className="ops-notice ops-notice-warning" role="status">
+              <WifiOff size={16} />
+              <span>{resourceErrorText(dashboard.ctripBridge.error)}</span>
+            </div>
+          ) : dashboard.ctripBridge.data === null ? (
+            <ResourceState
+              resource={dashboard.ctripBridge}
+              empty={true}
+              emptyLabel="正在读取连接状态"
+            />
+          ) : (
+            <div className="ops-notice ops-notice-info" role="status">
+              {dashboard.ctripBridge.data.reachable ? (
+                <CheckCircle2 size={16} />
+              ) : (
+                <WifiOff size={16} />
+              )}
+              <span>
+                {!dashboard.ctripBridge.data.configured
+                  ? "携程 Bridge 未配置"
+                  : !dashboard.ctripBridge.data.reachable
+                    ? "携程 Bridge 不可达，请检查宿主监督器"
+                    : ctripOperationalMessage(dashboard.ctripBridge.data.operationalStatus)}
+              </span>
+            </div>
+          )}
+          <SourceCaption endpoint="GET /api/ctrip-bridge/status" />
+        </section>
+      ) : null}
       <section className="panel">
         <PanelHeading
           title="投放队列"
@@ -1993,7 +2037,9 @@ function PublishingView({
                       ["handoff_pending", "session_required", "challenge_required"].includes(
                         handoff.state,
                       );
-                    const canSubmit = owned && handoff.state === "draft_prepared";
+                    const canSubmit =
+                      handoff.state === "draft_prepared" &&
+                      capabilities.includes("publish:request");
                     const canReadback =
                       (handoff.state === "readback_pending" ||
                         (handoff.state === "awaiting_operator_submit" && submitBoundaryCrossed)) &&
@@ -2648,7 +2694,9 @@ function SettingsView({
     input: { readonly targetState: "open" | "closed"; readonly reason: string },
   ) => Promise<void>;
 }) {
-  const [setupTarget, setSetupTarget] = useState<"demo" | "real">("demo");
+  const [setupTarget, setSetupTarget] = useState<"demo" | "real">(
+    mode === "live" ? "real" : "demo",
+  );
   const [setup, setSetup] = useState<ApiResource<CustomerSetupReadiness | null>>({
     endpoint: "GET /api/setup/readiness",
     data: null,
@@ -2723,9 +2771,9 @@ function SettingsView({
           },
           {
             label: "外部发布",
-            detail: "客户演示版固定关闭",
-            ready: false,
-            locked: true,
+            detail: "携程 browser_unattended、审计与公开回读均已就绪",
+            ready: readiness?.externalPublishingEnabled === true,
+            locked: false,
           },
         ]
       : [
@@ -2747,9 +2795,9 @@ function SettingsView({
           },
           {
             label: "外部发布",
-            detail: "当前版本尚未开放真实写入",
-            ready: false,
-            locked: true,
+            detail: "携程无人值守写入仅在账号、Bridge、审计和回读证据全部通过时开放",
+            ready: readiness?.externalPublishingEnabled === true,
+            locked: false,
           },
         ];
 
@@ -2818,9 +2866,9 @@ function SettingsView({
             </div>
             <div className="customer-setup-actions">
               <span>
-                {readiness?.deploymentProfile === "customer_demo"
-                  ? "客户演示版 · 外部发布关闭"
-                  : "标准部署 · 以实时证据为准"}
+                {readiness?.externalPublishingEnabled === true
+                  ? "携程无人值守发布 · 以实时账号和公开回读证据为准"
+                  : "外部发布尚未满足全部准入条件"}
               </span>
               <button
                 className="button-secondary"
@@ -2829,14 +2877,14 @@ function SettingsView({
               >
                 <RefreshCw size={16} /> 重新检测
               </button>
-              {setupTarget === "demo" && readiness?.articleGenerationReady === true ? (
+              {readiness?.articleGenerationReady === true ? (
                 <NavLink className="button-primary" to="/content">
                   <Sparkles size={16} /> 开始生成文章
                 </NavLink>
               ) : (
                 <button className="button-primary" type="button" disabled>
                   <LockKeyhole size={16} />
-                  {setupTarget === "demo" ? "等待配置完成" : "等待正式接入"}
+                  "等待配置完成"
                 </button>
               )}
             </div>
@@ -2850,7 +2898,11 @@ function SettingsView({
           ["多租户客户治理", "已接入", "租户、品牌、成员、联系方式与资源范围"],
           ["GEO 模板与规范草稿", "已接入", "21 套 V1 模板、事实引用、平台变体与确定性审计"],
           ["自动化批次", "Dry-run", "后台 Producer 可无人值守推进，但固定为 dry_run"],
-          ["头条 / 搜狐 / 携程外部发布", "未接入", "仅 manual_only、预览回执与人工发布包"],
+          [
+            "携程社区无人值守发布",
+            readiness?.externalPublishingEnabled === true ? "已接入" : "待准入",
+            "browser_unattended + 一次性提交许可 + 公开页面独立回读；头条和搜狐仍保持 Dry-run",
+          ],
           ["豆包 / 千问在线评测", "未接入", "仅 Fixture 或人工导入证据，不代表在线搜索结果"],
           ["生产级图片生成", "未接入", "确定性 Fixture 只验证管线，不作为生产图片"],
           ["品牌记忆正负反馈闭环", "未接入", "第一版不根据投放结果自动改写长期品牌记忆"],

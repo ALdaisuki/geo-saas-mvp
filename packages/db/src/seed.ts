@@ -228,7 +228,12 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
           ${SEED_IDS.zhongtong.tenant}, ${SEED_IDS.zhongtong.automation}, 'tenant', '*', 'shadow',
           '{"maxConcurrent":1,"perMinute":10,"perDay":100,"cooldownSeconds":0,"errorBudget":5}'::jsonb,
           false, 'MVP starts in shadow mode'
-        ) on conflict (tenant_id, scope_type, scope_key) do update set mode = 'shadow', kill_switch_enabled = false
+        ) on conflict (tenant_id, scope_type, scope_key) do update set
+          mode = CASE
+            WHEN geo.automation_controls.mode = 'unattended' THEN geo.automation_controls.mode
+            ELSE 'shadow'
+          END,
+          kill_switch_enabled = false
       `.execute(transaction);
 
       const accounts = [
@@ -246,7 +251,27 @@ export async function seedDatabase(database: Kysely<Database>): Promise<void> {
             ${SEED_IDS.zhongtong.tenant}, ${id}, ${platform}, ${displayName}, 'manual_only',
             ARRAY['dry_run']::text[], 'preview', '["seed:dry-run-only"]'::jsonb, 'active'
           ) on conflict (id) do update set
-            capability = 'manual_only', supported_execution_levels = ARRAY['dry_run']::text[], status = 'active'
+            capability = CASE
+              WHEN geo.channel_accounts.capability = 'browser_assisted'
+                THEN geo.channel_accounts.capability
+              ELSE 'manual_only'
+            END,
+            supported_execution_levels = CASE
+              WHEN geo.channel_accounts.capability = 'browser_assisted'
+                THEN geo.channel_accounts.supported_execution_levels
+              ELSE ARRAY['dry_run']::text[]
+            END,
+            capability_evidence_type = CASE
+              WHEN geo.channel_accounts.capability = 'browser_assisted'
+                THEN geo.channel_accounts.capability_evidence_type
+              ELSE 'preview'
+            END,
+            capability_evidence_refs = CASE
+              WHEN geo.channel_accounts.capability = 'browser_assisted'
+                THEN geo.channel_accounts.capability_evidence_refs
+              ELSE '["seed:dry-run-only"]'::jsonb
+            END,
+            status = 'active'
         `.execute(transaction);
       }
 

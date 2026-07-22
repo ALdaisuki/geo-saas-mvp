@@ -40,7 +40,13 @@ export const ctripBridgeResultSchema = z.discriminatedUnion("command", [
   z.strictObject({
     ...resultBase,
     command: z.literal("prepare"),
-    outcome: z.enum(["prepared", "session_required", "challenge_required", "adapter_drift"]),
+    outcome: z.enum([
+      "prepared",
+      "session_required",
+      "challenge_required",
+      "adapter_drift",
+      "payload_invalid",
+    ]),
     evidenceKind: z.enum(["simulation", "browser"]),
     state: z.enum(["draft_prepared", "session_required", "challenge_required", "failed"]),
   }),
@@ -68,7 +74,18 @@ export type CtripBridgeResult = z.infer<typeof ctripBridgeResultSchema>;
 export const ctripBridgeHealthSchema = z.strictObject({
   status: z.literal("ok"),
   service: z.literal("geo-ctrip-bridge"),
-  mode: z.enum(["simulator", "browser_preflight"]),
+  mode: z.enum([
+    "simulator",
+    "browser_preflight",
+    "browser_draft",
+    "browser_supervised",
+    "browser_unattended",
+  ]),
   adapterVersion: z.string().trim().min(1).max(100),
+  commandCapabilities: z.strictObject({
+    prepare: z.boolean(),
+    submit: z.boolean(),
+    readback: z.boolean(),
+  }),
 });
 export type CtripBridgeHealth = z.infer<typeof ctripBridgeHealthSchema>;

@@ -79,6 +79,7 @@ GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, te
 GRANT EXECUTE ON FUNCTION geo.list_tenant_member_identities() TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.get_tenant_member_identity(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.research_allowed_hosts_valid(text[]) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.ctrip_publication_payload_within_limits(jsonb) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.publication_assisted_block_reason(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(
   uuid, uuid, uuid, uuid, geo.sha256_hex, text, text, timestamptz
@@ -86,12 +87,18 @@ GRANT EXECUTE ON FUNCTION geo.create_publication_assisted_handoff(
 GRANT EXECUTE ON FUNCTION geo.claim_publication_assisted_handoff(uuid, integer) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.heartbeat_publication_assisted_handoff(uuid, integer)
   TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_publication_assisted_draft_prepare(uuid, integer)
+  TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_next_publication_assisted_draft_prepare(integer)
+  TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_next_publication_assisted_draft_prepare(integer, text)
+  TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(
   uuid, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex,
   text, timestamptz, text, text
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(
-  uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text
+  uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text, text
 ) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.issue_publication_assisted_submit_permit(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.consume_publication_assisted_submit_permit(uuid, text)
@@ -105,6 +112,9 @@ GRANT EXECUTE ON FUNCTION geo.recover_publication_assisted_submit_uncertain(
 GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(
   uuid, text, text, geo.sha256_hex, geo.sha256_hex, text, text, timestamptz
 ) TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_next_ctrip_unattended_submit() TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_next_ctrip_unattended_readback() TO geo_runtime;
+GRANT EXECUTE ON FUNCTION geo.claim_ctrip_unattended_readback(uuid) TO geo_runtime;
 GRANT EXECUTE ON FUNCTION geo.cancel_publication_assisted_handoff(uuid, text) TO geo_runtime;
 
 GRANT EXECUTE ON FUNCTION geo.claim_outbox_events(text, integer, integer) TO geo_dispatcher;
@@ -209,6 +219,21 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime',
+       'geo.claim_publication_assisted_draft_prepare(uuid,integer)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.claim_next_publication_assisted_draft_prepare(integer)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.claim_next_publication_assisted_draft_prepare(integer,text)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
        'geo.record_publication_assisted_draft(uuid,geo.sha256_hex,geo.sha256_hex,geo.sha256_hex,geo.sha256_hex,text,timestamptz,text,text)',
        'EXECUTE'
      )
@@ -219,7 +244,12 @@ BEGIN
      )
      OR NOT has_function_privilege(
        'geo_runtime',
-       'geo.record_publication_assisted_bridge_status(uuid,text,geo.sha256_hex,geo.sha256_hex,text,timestamptz,text,text)',
+       'geo.ctrip_publication_payload_within_limits(jsonb)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.record_publication_assisted_bridge_status(uuid,text,geo.sha256_hex,geo.sha256_hex,text,timestamptz,text,text,text)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(
@@ -240,6 +270,21 @@ BEGIN
      OR NOT has_function_privilege(
        'geo_runtime',
        'geo.record_publication_assisted_readback(uuid,text,text,geo.sha256_hex,geo.sha256_hex,text,text,timestamptz)',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.claim_next_ctrip_unattended_submit()',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.claim_next_ctrip_unattended_readback()',
+       'EXECUTE'
+     )
+     OR NOT has_function_privilege(
+       'geo_runtime',
+       'geo.claim_ctrip_unattended_readback(uuid)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(

@@ -11,6 +11,15 @@ import { sha256Canonical } from "./canonical.js";
 import { invariant } from "./errors.js";
 import { freezeDeep } from "./validation.js";
 
+export const MEDIA_SCENE_SIGNATURE_PREFIX = "scene-signature:";
+const MEDIA_SCENE_SIGNATURE_PATTERN = /^scene-signature:[a-z0-9_]+:[a-z0-9_]+:[a-z0-9_]+$/u;
+
+export function mediaSceneSignature(labels: readonly string[]): string | null {
+  const signatures = labels.filter((label) => label.startsWith(MEDIA_SCENE_SIGNATURE_PREFIX));
+  if (signatures.length !== 1 || !MEDIA_SCENE_SIGNATURE_PATTERN.test(signatures[0]!)) return null;
+  return signatures[0]!.slice(MEDIA_SCENE_SIGNATURE_PREFIX.length);
+}
+
 export interface BuildVisualBriefInput {
   readonly editorialProfile: EditorialProfile;
   readonly platform: Platform;
@@ -49,6 +58,7 @@ const ROLES = Object.keys(ROLE_LABELS) as MediaRole[];
 
 const CONTACT_MARKER = "联系方式不在图片中呈现";
 const SENSITIVE_MARKER = "敏感文本不在图片中呈现";
+const VERIFIED_CONTACT_SUMMARY = `已核验的品牌咨询渠道，${CONTACT_MARKER}`;
 const NEGATIVE_PROMPT = "文字、水印、二维码、电话号码、微信号、价格、证件、夸张承诺、虚构人物背书";
 const SAFETY_DIRECTIVE =
   "不得虚构地点、人物、日期、价格、资质、品牌标识、联系方式或保证性承诺；图片像素中不得呈现联系方式文字";
@@ -75,6 +85,8 @@ const UNDERSCORE_HANDLE_PATTERN =
   /(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]{1,15}_[A-Za-z0-9_]{2,31}(?![A-Za-z0-9_])/gu;
 const QR_PATTERN = /(?:二维码|QR\s*码?)/giu;
 const PHONE_PUNCTUATION_PATTERN = /[+＋()（）.．·/／\\\-‐‑‒–—―]{3,}/gu;
+const CONTACT_FACT_PATTERN =
+  /(?:电话|热线|手机|微信|客服(?:账号)?|联系(?:方式|账号)?|wechat|weixin|whatsapp|telegram|(?:wx|vx|qq)(?:号|账号)?)/iu;
 
 function sameOrderedValues(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -89,10 +101,8 @@ function clipWithSuffix(value: string, suffix: string, maxCodePoints: number): s
   return `${clipCodePoints(value, maxCodePoints - suffixLength)}${suffix}`;
 }
 
-function sanitizeFactText(value: string): string {
+function sanitizeNonContactText(value: string): string {
   return value
-    .trim()
-    .normalize("NFKC")
     .replace(EMAIL_PATTERN, CONTACT_MARKER)
     .replace(URL_PATTERN, CONTACT_MARKER)
     .replace(CREDENTIAL_PATTERN, SENSITIVE_MARKER)
@@ -109,6 +119,23 @@ function sanitizeFactText(value: string): string {
     .replace(CURRENCY_PATTERN, SENSITIVE_MARKER)
     .replace(PHONE_PUNCTUATION_PATTERN, " ")
     .replace(/\s+/gu, " ");
+}
+
+function sanitizeFactText(value: string): string {
+  const normalized = value.trim().normalize("NFKC");
+  const contact = normalized.match(CONTACT_FACT_PATTERN);
+  if (contact?.index !== undefined) {
+    const context = sanitizeNonContactText(
+      normalized
+        .slice(0, contact.index)
+        .replace(/\s*24\s*小时/gu, "全天")
+        .replace(/[，,；;：:\s]+$/gu, ""),
+    );
+    return context.length === 0
+      ? VERIFIED_CONTACT_SUMMARY
+      : `${context}；${VERIFIED_CONTACT_SUMMARY}`;
+  }
+  return sanitizeNonContactText(normalized);
 }
 
 function validateInput(input: BuildVisualBriefInput): void {
@@ -159,8 +186,10 @@ export function buildVisualBrief(input: BuildVisualBriefInput): Readonly<VisualB
   const profileLabel = PROFILE_LABELS[input.editorialProfile];
   const roleLabel = ROLE_LABELS[input.role];
   const factText = input.facts.map((fact) => sanitizeFactText(fact.text)).join("；");
-  const contactSuffix = `；${CONTACT_MARKER}`;
-  const promptSuffix = `；${CONTACT_MARKER}；${SAFETY_DIRECTIVE}`;
+  const contactSuffix = factText.includes(CONTACT_MARKER) ? "" : `；${CONTACT_MARKER}`;
+  const promptSuffix = factText.includes(CONTACT_MARKER)
+    ? `；${SAFETY_DIRECTIVE}`
+    : `；${CONTACT_MARKER}；${SAFETY_DIRECTIVE}`;
   const prompt = clipWithSuffix(
     `为${platformLabel}生成${roleLabel}，采用${profileLabel}表达。仅依据以下已核验事实构图：${factText}`,
     promptSuffix,

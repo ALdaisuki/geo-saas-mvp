@@ -21,6 +21,7 @@ const handoffRowSchema = z.strictObject({
   variant_id: z.string().uuid(),
   content_version_id: z.string().uuid(),
   platform: z.literal("ctrip_community"),
+  execution_level: z.enum(["assisted", "unattended"]),
   state: z.enum([
     "handoff_pending",
     "session_required",
@@ -41,7 +42,12 @@ const handoffRowSchema = z.strictObject({
   bridge_service_principal_id: z.string().uuid(),
   external_draft_id: z.string().nullable(),
   submit_outcome: z.enum(["accepted", "uncertain", "rejected"]).nullable(),
+  submit_evidence_hash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .nullable(),
   submit_evidence_kind: z.enum(["simulation", "browser"]).nullable(),
+  submit_observed_at: z.coerce.date().nullable(),
   submit_candidate_external_id: z.string().nullable(),
   submit_candidate_external_url: z.string().nullable(),
   submit_permit_consumed_at: z.coerce.date().nullable(),
@@ -57,6 +63,7 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     variantId: parsed.variant_id,
     contentVersionId: parsed.content_version_id,
     platform: parsed.platform,
+    executionLevel: parsed.execution_level,
     state: parsed.state,
     previewHash: parsed.preview_hash,
     payloadHash: parsed.payload_hash,
@@ -64,7 +71,9 @@ function handoffView(row: unknown): CtripBridgeHandoffDraft {
     bridgePrincipalId: parsed.bridge_service_principal_id,
     externalDraftId: parsed.external_draft_id,
     submitOutcome: parsed.submit_outcome,
+    submitEvidenceHash: parsed.submit_evidence_hash,
     submitEvidenceKind: parsed.submit_evidence_kind,
+    submitObservedAt: parsed.submit_observed_at?.toISOString() ?? null,
     submitCandidateExternalId: parsed.submit_candidate_external_id,
     submitCandidateExternalUrl: parsed.submit_candidate_external_url,
     submitPermitConsumedAt: parsed.submit_permit_consumed_at?.toISOString() ?? null,
@@ -169,6 +178,81 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
     );
   }
 
+  claimDraftPreparation(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+    leaseSeconds: number,
+  ): Promise<void> {
+    return this.#transaction(context, async (transaction) => {
+      await sql`
+        select geo.claim_publication_assisted_draft_prepare(
+          ${handoffId}::uuid, ${leaseSeconds}
+        )
+      `.execute(transaction);
+    });
+  }
+
+  claimNextDraftPreparation(
+    context: CtripBridgeExecutionContext,
+    leaseSeconds: number,
+    executionLevel?: "assisted" | "unattended",
+  ): Promise<string | null> {
+    return this.#transaction(context, async (transaction) => {
+      const result =
+        executionLevel === undefined
+          ? await sql<{ handoff_id: string | null }>`
+              select geo.claim_next_publication_assisted_draft_prepare(
+                ${leaseSeconds}
+              ) as handoff_id
+            `.execute(transaction)
+          : await sql<{ handoff_id: string | null }>`
+              select geo.claim_next_publication_assisted_draft_prepare(
+                ${leaseSeconds}, ${executionLevel}
+              ) as handoff_id
+            `.execute(transaction);
+      return result.rows[0]?.handoff_id ?? null;
+    });
+  }
+
+  claimNextUnattendedSubmit(
+    context: CtripBridgeExecutionContext,
+  ): Promise<{ readonly handoffId: string; readonly submitPermit: string } | null> {
+    return this.#transaction(context, async (transaction) => {
+      const result = await sql<{
+        handoff_id: string;
+        submit_permit: string;
+      }>`
+        select handoff_id, submit_permit
+        from geo.claim_next_ctrip_unattended_submit()
+      `.execute(transaction);
+      const row = result.rows[0];
+      return row === undefined
+        ? null
+        : { handoffId: row.handoff_id, submitPermit: row.submit_permit };
+    });
+  }
+
+  claimNextUnattendedReadback(context: CtripBridgeExecutionContext): Promise<string | null> {
+    return this.#transaction(context, async (transaction) => {
+      const result = await sql<{ handoff_id: string | null }>`
+        select geo.claim_next_ctrip_unattended_readback() as handoff_id
+      `.execute(transaction);
+      return result.rows[0]?.handoff_id ?? null;
+    });
+  }
+
+  claimUnattendedReadback(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+  ): Promise<boolean> {
+    return this.#transaction(context, async (transaction) => {
+      const result = await sql<{ claimed: boolean }>`
+        select geo.claim_ctrip_unattended_readback(${handoffId}::uuid) as claimed
+      `.execute(transaction);
+      return result.rows[0]?.claimed ?? false;
+    });
+  }
+
   loadHandoff(
     context: CtripBridgeExecutionContext,
     handoffId: string,
@@ -179,14 +263,18 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
                handoff.variant_id, handoff.platform, handoff.state,
                handoff.preview_hash, handoff.payload_hash, handoff.adapter_version,
                handoff.bridge_service_principal_id, handoff.external_draft_id,
-               handoff.submit_outcome, handoff.submit_evidence_kind,
+               handoff.submit_outcome, handoff.submit_evidence_hash,
+               handoff.submit_evidence_kind, handoff.submit_observed_at,
                handoff.submit_candidate_external_id,
                handoff.submit_candidate_external_url,
-               handoff.submit_permit_consumed_at, variant.content_version_id,
+               handoff.submit_permit_consumed_at, job.execution_level,
+               variant.content_version_id,
                variant.payload
         from geo.publication_assisted_handoffs as handoff
         join geo.publication_variants as variant
           on variant.tenant_id = handoff.tenant_id and variant.id = handoff.variant_id
+        join geo.publication_jobs as job
+          on job.tenant_id = handoff.tenant_id and job.id = handoff.job_id
         where handoff.id = ${handoffId}::uuid
         limit 1
       `.execute(transaction);
@@ -202,7 +290,8 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
   ): Promise<readonly CtripBridgeMediaAsset[]> {
     return this.#transaction(context, async (transaction) => {
       const result = await sql<z.input<typeof mediaAssetRowSchema>>`
-        select variant.content_version_id, binding.position,
+        select binding.content_version_id,
+               (payload_media.ordinal - 1)::integer as position,
                binding.platform as binding_platform, binding.role as binding_role,
                binding.alt_text as binding_alt_text,
                binding.caption as binding_caption, asset.storage_key,
@@ -222,7 +311,6 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
         join geo.media_assets as asset
           on asset.tenant_id = variant.tenant_id
          and asset.id = (payload_media.reference ->> 'id')::uuid
-         and asset.content_version_id = variant.content_version_id
         join geo.content_media_bindings as binding
           on binding.tenant_id = variant.tenant_id
          and binding.content_version_id = variant.content_version_id
@@ -278,8 +366,14 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
     blocker: CtripBridgePreparationBlocker,
   ): Promise<void> {
     return this.#transaction(context, async (transaction) => {
-      const status = blocker.outcome === "adapter_drift" ? "failed" : blocker.outcome;
-      const errorCode = blocker.outcome === "adapter_drift" ? "ASSISTED_ADAPTER_DRIFT" : null;
+      const terminal = blocker.outcome === "adapter_drift" || blocker.outcome === "payload_invalid";
+      const status = terminal ? "failed" : blocker.outcome;
+      const errorCode =
+        blocker.outcome === "adapter_drift"
+          ? "ASSISTED_ADAPTER_DRIFT"
+          : blocker.outcome === "payload_invalid"
+            ? "CTRIP_PAYLOAD_INVALID"
+            : null;
       await sql`
         select geo.record_publication_assisted_bridge_status(
           ${handoff.id}::uuid,
@@ -289,7 +383,8 @@ export class PostgresCtripBridgeControlPlane implements CtripBridgeControlPlane 
           ${blocker.evidenceKind},
           ${blocker.observedAt}::timestamptz,
           ${handoff.adapterVersion},
-          ${errorCode}
+          ${errorCode},
+          ${`prepare:${blocker.diagnosticCode}`}
         )
       `.execute(transaction);
     });

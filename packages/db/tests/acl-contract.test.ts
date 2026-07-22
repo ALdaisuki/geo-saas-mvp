@@ -73,6 +73,9 @@ describe("replayable application ACL contract", () => {
       "GRANT EXECUTE ON FUNCTION geo.research_allowed_hosts_valid(text[]) TO geo_runtime",
     );
     expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.ctrip_publication_payload_within_limits(jsonb) TO geo_runtime",
+    );
+    expect(aclSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.create_tenant_member_identity(uuid, uuid, text, text, text, text)",
     );
     expect(aclSql).toContain(
@@ -87,7 +90,7 @@ describe("replayable application ACL contract", () => {
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_bridge_status(",
     );
     expect(aclSql).toContain(
-      "uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text",
+      "uuid, text, geo.sha256_hex, geo.sha256_hex, text, timestamptz, text, text, text",
     );
     expect(aclSql).toContain(
       "uuid, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex, geo.sha256_hex,",
@@ -103,6 +106,9 @@ describe("replayable application ACL contract", () => {
       "GRANT EXECUTE ON FUNCTION geo.recover_publication_assisted_submit_uncertain(",
     );
     expect(aclSql).toContain("GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_readback(");
+    expect(aclSql).toContain(
+      "GRANT EXECUTE ON FUNCTION geo.claim_ctrip_unattended_readback(uuid) TO geo_runtime",
+    );
     expect(aclSql).toContain(
       "REVOKE ALL ON geo.media_generation_jobs, geo.media_generation_attempts",
     );

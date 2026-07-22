@@ -3,6 +3,7 @@ import type {
   AutomationRunStage,
   AutomationRunState,
   AutomationRunTargetState,
+  ExecutionLevel,
   Platform,
 } from "@geo/contracts";
 
@@ -13,7 +14,7 @@ export interface AutomationBatchView {
   readonly campaignId: string;
   readonly name: string | null;
   readonly state: AutomationBatchState;
-  readonly executionLevel: "dry_run";
+  readonly executionLevel: ExecutionLevel;
   readonly scheduledFor: string;
   readonly runCount: number;
   readonly completedRunCount: number;
@@ -44,6 +45,7 @@ export interface AutomationRunView {
   readonly batchId: string;
   readonly campaignId: string;
   readonly brandId: string;
+  readonly executionLevel: ExecutionLevel;
   readonly slotKey: string;
   readonly topicKey: string;
   readonly brief: string;
@@ -79,6 +81,7 @@ export interface CreateAutomationBatchInput {
   readonly idempotencyKey: string;
   readonly requestHash: string;
   readonly name: string | null;
+  readonly executionLevel: ExecutionLevel;
   readonly runs: readonly {
     readonly runId: string;
     readonly slotKey: string;

@@ -652,6 +652,7 @@ export interface RecordMediaAttemptInput {
 
 export interface CompleteMediaJobInput {
   readonly jobId: string;
+  readonly attemptId: string;
   readonly assetId: string;
   readonly inspectionId: string;
   readonly bindingId: string;

@@ -8,12 +8,98 @@ import type { GovernedAgentRuntime } from "./runtime.js";
 const tenantId = Type.String({ format: "uuid", description: "Authenticated tenant ID" });
 const resourceId = Type.String({ format: "uuid" });
 const idempotencyKey = Type.String({ minLength: 1, maxLength: 200 });
+const SAFE_DIAGNOSTIC_TOKEN = /^[A-Za-z][A-Za-z0-9_]{0,99}$/u;
+
+function safeDiagnosticMetadata(error: unknown): {
+  readonly errorType: string;
+  readonly errorCode?: string;
+  readonly statusCode?: number;
+} {
+  if (error === null || typeof error !== "object") {
+    return { errorType: "UnknownError" };
+  }
+  try {
+    const record = error as Readonly<Record<string, unknown>>;
+    const errorType =
+      error instanceof Error && SAFE_DIAGNOSTIC_TOKEN.test(error.name)
+        ? error.name
+        : "UnknownError";
+    const errorCode =
+      typeof record.code === "string" && SAFE_DIAGNOSTIC_TOKEN.test(record.code)
+        ? record.code
+        : undefined;
+    const statusCode =
+      typeof record.status === "number" &&
+      Number.isInteger(record.status) &&
+      record.status >= 100 &&
+      record.status <= 599
+        ? record.status
+        : undefined;
+    return {
+      errorType,
+      ...(errorCode === undefined ? {} : { errorCode }),
+      ...(statusCode === undefined ? {} : { statusCode }),
+    };
+  } catch {
+    return { errorType: "UnknownError" };
+  }
+}
 const articleTemplateId = Type.String({
   minLength: 1,
   maxLength: 100,
   pattern: "^[a-z0-9][a-z0-9-]*$",
   description: "ID returned by geo_template_catalog",
 });
+const authoredClaimIds = Type.Array(resourceId, {
+  minItems: 1,
+  maxItems: 20,
+  uniqueItems: true,
+  description: "Verified fact IDs that support this authored segment",
+});
+const authoredSection = Type.Object(
+  {
+    text: Type.String({ minLength: 1, maxLength: 8_000 }),
+    claimIds: authoredClaimIds,
+  },
+  { additionalProperties: false },
+);
+const mediaSearchIntent = Type.Object(
+  {
+    query: Type.String({
+      minLength: 2,
+      maxLength: 160,
+      description: "Specific visual search query, preferably Chinese plus English proper nouns",
+    }),
+    role: Type.Union([Type.Literal("cover"), Type.Literal("inline")]),
+    rationale: Type.String({
+      minLength: 2,
+      maxLength: 500,
+      description: "Visible article section and visual subject this image must support",
+    }),
+    claimIds: Type.Array(resourceId, { minItems: 1, maxItems: 3, uniqueItems: true }),
+  },
+  { additionalProperties: false },
+);
+const authoredDraft = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 2_000 }),
+    titleClaimIds: authoredClaimIds,
+    summary: Type.String({ minLength: 1, maxLength: 2_000 }),
+    summaryClaimIds: authoredClaimIds,
+    locationQuery: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 100, description: "Ctrip POI search query" }),
+    ),
+    body: Type.Array(authoredSection, { minItems: 1, maxItems: 50 }),
+    mediaSearchPlan: Type.Optional(
+      Type.Array(mediaSearchIntent, {
+        minItems: 4,
+        maxItems: 5,
+        description: "Distinct licensed-image searches with exactly one cover intent",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 const schemas = {
   geo_tenant_context: Type.Object({ tenantId }, { additionalProperties: false }),
@@ -37,9 +123,17 @@ const schemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: Type.String({ minLength: 1, maxLength: 10_000 }),
+      targetPlatform: Type.Optional(
+        Type.Union([
+          Type.Literal("toutiao"),
+          Type.Literal("sohu"),
+          Type.Literal("ctrip_community"),
+        ]),
+      ),
       articleTemplateId: Type.Optional(articleTemplateId),
       idempotencyKey,
       fixtureMode: Type.Optional(Type.Boolean()),
+      authoredDraft: Type.Optional(authoredDraft),
     },
     { additionalProperties: false },
   ),
@@ -101,6 +195,15 @@ const schemas = {
   ),
   geo_media_job_status: Type.Object(
     { tenantId, mediaJobId: resourceId },
+    { additionalProperties: false },
+  ),
+  geo_media_search_import: Type.Object(
+    {
+      tenantId,
+      contentVersionId: resourceId,
+      idempotencyKey,
+      maxImports: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })),
+    },
     { additionalProperties: false },
   ),
   plastic_context_supply: Type.Object(
@@ -174,6 +277,11 @@ const descriptions: Readonly<Record<AgentToolName, { label: string; description:
     label: "Media job status",
     description: "Read tenant-scoped media production status and immutable asset metadata.",
   },
+  geo_media_search_import: {
+    label: "Licensed image search",
+    description:
+      "Run the article's immutable keyword plan and attach only licensed, inspected, relevant images.",
+  },
   plastic_context_supply: {
     label: "Governance context",
     description: "Request task context from the Plastic Promise governance service.",
@@ -208,6 +316,15 @@ export function createPiAgentTools(runtime: GovernedAgentRuntime): AgentTool[] {
             details,
           };
         } catch (error) {
+          const diagnostic = safeDiagnosticMetadata(error);
+          console.error(
+            JSON.stringify({
+              level: "error",
+              event: "pi_agent.tool_failed",
+              toolName: name,
+              ...diagnostic,
+            }),
+          );
           throw new Error(publicErrorMessage(error), {
             // The original error may contain credentials, so it must not survive in agent history.
             // eslint-disable-next-line preserve-caught-error

@@ -56,6 +56,8 @@ FROM ${NODE_IMAGE} AS runtime-base
 
 ENV NODE_ENV=production
 WORKDIR /app
+RUN mkdir -p /var/lib/geo/evidence /var/lib/geo/media && \
+    chown -R node:node /var/lib/geo
 
 FROM runtime-base AS api
 

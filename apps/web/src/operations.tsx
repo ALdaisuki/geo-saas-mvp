@@ -16,6 +16,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Square,
+  Upload,
   X,
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +39,8 @@ import {
   type EvidenceSource,
   type GeoApi,
   type ManualPublicationPackage,
+  type MediaImportRights,
+  type MediaSearchImportResult,
   type PublicationAttempt,
   type PublicationJob,
   type PublicationPayload,
@@ -51,12 +54,32 @@ import {
 } from "./api.js";
 import { ArticleTemplateCatalog } from "./article-template-catalog.js";
 import {
+  CTRIP_COMMUNITY_PUBLICATION_LIMITS,
   DEFAULT_ARTICLE_TEMPLATE_ID,
   type ArticleTemplate,
   type GovernedEditorialProfile,
 } from "@geo/contracts";
 
 type WriteState = "idle" | "working" | "done" | "error";
+
+export function planCtripMediaImportRoles(
+  existingRoles: readonly ("cover" | "inline")[],
+  incomingCount: number,
+): readonly ("cover" | "inline")[] {
+  const coverCount = existingRoles.filter((role) => role === "cover").length;
+  if (coverCount > 1) throw new Error("Ctrip media plan already has more than one cover");
+  if (!Number.isSafeInteger(incomingCount) || incomingCount < 1) {
+    throw new Error("Ctrip five-image plan requires at least one incoming image");
+  }
+  if (existingRoles.length + incomingCount > CTRIP_COMMUNITY_PUBLICATION_LIMITS.targetImages) {
+    throw new Error("Ctrip five-image plan cannot exceed five images");
+  }
+  return Object.freeze(
+    Array.from({ length: incomingCount }, (_, index) =>
+      coverCount === 0 && index === 0 ? "cover" : "inline",
+    ),
+  );
+}
 
 interface OperationResources {
   readonly brands: "loading" | "ready" | "error";
@@ -190,6 +213,7 @@ function canonicalDraftPayload(
           ? `- ${fact.claim.replaceAll("\n", "\n  ")}`
           : fact.claim;
       }
+      if (block.type === "authored") return block.text;
       const contact = contacts.find((item) => item.id === block.contactId);
       if (contact === undefined) return null;
       const value = `${contact.label}: ${contact.value}`;
@@ -365,6 +389,15 @@ function downloadManualPublicationPackage(value: ManualPublicationPackage): void
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+async function fileAsBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
 }
 
 function OperationNotice({ children, tone = "info" }: { children: string; tone?: string }) {
@@ -1209,6 +1242,13 @@ function demoExecutionLevel(
   if (
     account.platform === "ctrip_community" &&
     account.capability === "browser_assisted" &&
+    account.supportedExecutionLevels.includes("unattended")
+  ) {
+    return "unattended";
+  }
+  if (
+    account.platform === "ctrip_community" &&
+    account.capability === "browser_assisted" &&
     account.supportedExecutionLevels.includes("assisted")
   ) {
     return "assisted";
@@ -1233,6 +1273,20 @@ export function ArticleOperations({
   const [error, setError] = useState<string | null>(null);
   const [writingVersion, setWritingVersion] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [importingMedia, setImportingMedia] = useState(false);
+  const [searchingMedia, setSearchingMedia] = useState(false);
+  const [mediaSearchResult, setMediaSearchResult] = useState<MediaSearchImportResult | null>(null);
+  const [mediaImportProgress, setMediaImportProgress] = useState<{
+    readonly completed: number;
+    readonly total: number;
+  } | null>(null);
+  const [mediaPlatform, setMediaPlatform] = useState<"toutiao" | "sohu" | "ctrip_community">(
+    "ctrip_community",
+  );
+  const [mediaRightsKind, setMediaRightsKind] = useState<"tenant_owned" | "licensed_stock">(
+    "tenant_owned",
+  );
+  const [mediaNotice, setMediaNotice] = useState<string | null>(null);
   const [auditing, setAuditing] = useState<string | null>(null);
   const [publishing, setPublishing] = useState<string | null>(null);
   const [auditState, setAuditState] = useState<Record<string, VariantAuditState>>({});
@@ -1261,6 +1315,12 @@ export function ArticleOperations({
     setVariants([]);
     setAuditState({});
     setAuditRequestKeys({});
+    setMediaRightsKind("tenant_owned");
+    setMediaPlatform("ctrip_community");
+    setMediaImportProgress(null);
+    setSearchingMedia(false);
+    setMediaSearchResult(null);
+    setMediaNotice(null);
     if (content.latestVersionId === null) {
       setVersion(null);
       setVariants([]);
@@ -1335,6 +1395,143 @@ export function ArticleOperations({
       setError(apiError(requestError));
     } finally {
       setGenerating(false);
+    }
+  }
+
+  async function importMedia(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canWrite || version === null) return;
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const files = form
+      .getAll("mediaFiles")
+      .filter((value): value is File => value instanceof File && value.size > 0);
+    if (files.length === 0 || files.length > CTRIP_COMMUNITY_PUBLICATION_LIMITS.targetImages) {
+      setError("请选择 1 至 5 张 PNG、JPEG 或 WebP 图片");
+      return;
+    }
+    if (files.some((file) => file.size > 10 * 1024 * 1024)) {
+      setError("每张图片不能超过 10 MiB");
+      return;
+    }
+    const claimIds = form
+      .getAll("claimId")
+      .map(String)
+      .filter((value) => value.length > 0);
+    if (claimIds.length === 0 || claimIds.length > 3) {
+      setError("请选择 1 至 3 条图片所依据的事实");
+      return;
+    }
+    const rights: MediaImportRights =
+      mediaRightsKind === "tenant_owned"
+        ? {
+            kind: "tenant_owned",
+            ownershipAssertion: String(form.get("ownershipAssertion") ?? "").trim(),
+            licenseName: String(form.get("licenseName") ?? "").trim(),
+          }
+        : {
+            kind: "licensed_stock",
+            basis: String(form.get("licenseBasis")) as "commercial_license" | "editorial_license",
+            sourceUrl: String(form.get("sourceUrl") ?? "").trim(),
+            licenseName: String(form.get("licenseName") ?? "").trim(),
+            licenseUrl: String(form.get("licenseUrl") ?? "").trim(),
+            ...(String(form.get("attribution") ?? "").trim().length === 0
+              ? {}
+              : { attribution: String(form.get("attribution")).trim() }),
+            rightsDescription: String(form.get("rightsDescription") ?? "").trim(),
+          };
+    const selectedPlatform = String(form.get("platform")) as typeof mediaPlatform;
+    let roles: readonly ("cover" | "inline")[];
+    try {
+      roles =
+        selectedPlatform === "ctrip_community"
+          ? planCtripMediaImportRoles(
+              version.payload.media
+                .filter((media) => media.platform === selectedPlatform)
+                .map((media) => media.role)
+                .filter(
+                  (role): role is "cover" | "inline" => role === "cover" || role === "inline",
+                ),
+              files.length,
+            )
+          : files.map(() => String(form.get("role") ?? "cover") as "cover" | "inline");
+    } catch {
+      setError("携程图文默认 5 张且只能有 1 张封面；请减少本次图片数量");
+      return;
+    }
+    setImportingMedia(true);
+    setMediaImportProgress({ completed: 0, total: files.length });
+    setError(null);
+    setMediaNotice(null);
+    let nextVersion = version;
+    try {
+      for (const [index, file] of files.entries()) {
+        const role = roles[index];
+        if (role === undefined) throw new Error("媒体位置规划不完整");
+        const bytesBase64 = await fileAsBase64(file);
+        const result = await api.importMedia(nextVersion.id, {
+          platform: selectedPlatform,
+          role,
+          claimIds,
+          idempotencyKey: `web-media-import:${nextVersion.id}:${index}:${Date.now().toString(36)}`,
+          bytesBase64,
+          rights,
+        });
+        if (result.asset === null) throw new Error("媒体导入未返回不可变资产");
+        nextVersion = await api.getContentVersion(result.asset.contentVersionId);
+        setVersion(nextVersion);
+        setVariants([]);
+        setAuditState({});
+        setAuditRequestKeys({});
+        setMediaImportProgress({ completed: index + 1, total: files.length });
+      }
+      setMediaNotice(
+        `${files.length} 张真实图片已绑定到 v${nextVersion.version}；字节、权利、OCR、旅行相关性和场景差异均已检查。`,
+      );
+      formElement.reset();
+      setMediaRightsKind("tenant_owned");
+      setMediaPlatform("ctrip_community");
+    } catch (requestError) {
+      setError(apiError(requestError));
+    } finally {
+      setImportingMedia(false);
+      setMediaImportProgress(null);
+    }
+  }
+
+  async function searchAndImportMedia() {
+    const plan = version?.payload.mediaSearchPlan;
+    if (
+      !canWrite ||
+      version === null ||
+      plan === undefined ||
+      plan.length < 4 ||
+      plan.length > 5 ||
+      version.payload.media.length > 0
+    ) {
+      return;
+    }
+    setSearchingMedia(true);
+    setMediaSearchResult(null);
+    setMediaNotice(null);
+    setError(null);
+    try {
+      const result = await api.searchAndImportMedia(version.id, {
+        idempotencyKey: `web-media-search:${version.id}:${Date.now().toString(36)}`,
+      });
+      const nextVersion = await api.getContentVersion(result.finalContentVersionId);
+      setVersion(nextVersion);
+      setVariants([]);
+      setAuditState({});
+      setAuditRequestKeys({});
+      setMediaSearchResult(result);
+      setMediaNotice(
+        `已按 ${result.plannedCount} 组文章关键词绑定 ${result.imported.length} 张不同图片到 v${nextVersion.version}；另有 ${result.rejectedCandidateCount} 个候选未通过审计。`,
+      );
+    } catch (requestError) {
+      setError(apiError(requestError));
+    } finally {
+      setSearchingMedia(false);
     }
   }
 
@@ -1560,11 +1757,244 @@ export function ArticleOperations({
             </div>
           </form>
 
+          <section className="ops-media-search" aria-labelledby={`media-search-${version.id}`}>
+            <div className="ops-subheading">
+              <div>
+                <strong id={`media-search-${version.id}`}>文章关键词自动配图</strong>
+                <span>
+                  {version.payload.mediaSearchPlan === undefined
+                    ? "当前版本没有搜图计划"
+                    : `${version.payload.mediaSearchPlan.length} 组独立画面意图`}
+                </span>
+              </div>
+              <span className="ops-state-chip">Wikimedia Commons</span>
+            </div>
+            {version.payload.mediaSearchPlan === undefined ? (
+              <OperationNotice>请先让 Pi Agent 生成带图片搜索计划的新文章。</OperationNotice>
+            ) : (
+              <ol className="ops-media-search-list">
+                {version.payload.mediaSearchPlan.map((intent, index) => {
+                  const imported = mediaSearchResult?.imported.find(
+                    (item) => item.query === intent.query && item.role === intent.role,
+                  );
+                  return (
+                    <li key={`${intent.role}:${intent.query}`}>
+                      <span className="ops-media-search-index">{index + 1}</span>
+                      <div>
+                        <strong>{intent.query}</strong>
+                        <span>{intent.rationale}</span>
+                      </div>
+                      <span className={`ops-state-chip${imported === undefined ? "" : " success"}`}>
+                        {searchingMedia
+                          ? "检索与审核中"
+                          : imported === undefined
+                            ? intent.role === "cover"
+                              ? "封面待检索"
+                              : "正文图待检索"
+                            : "已通过"}
+                      </span>
+                      {imported === undefined ? null : (
+                        <a href={imported.sourceUrl} target="_blank" rel="noreferrer">
+                          授权来源
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            <div className="ops-form-actions">
+              <button
+                className="button-primary"
+                type="button"
+                onClick={() => void searchAndImportMedia()}
+                disabled={
+                  !canWrite ||
+                  searchingMedia ||
+                  importingMedia ||
+                  version.payload.mediaSearchPlan === undefined ||
+                  version.payload.media.length > 0
+                }
+                title={
+                  version.payload.media.length > 0
+                    ? "当前版本已有图片；自动搜图要求空白媒体版本，避免混合来源"
+                    : undefined
+                }
+              >
+                {searchingMedia ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <FileSearch size={16} />
+                )}
+                {searchingMedia ? "正在匹配 4 至 5 张图片" : "按文章关键词自动配图"}
+              </button>
+            </div>
+          </section>
+
+          <form className="ops-media-import" onSubmit={(event) => void importMedia(event)}>
+            <div className="ops-subheading">
+              <div>
+                <strong>真实图片资产</strong>
+                <span>
+                  携程{" "}
+                  {
+                    version.payload.media.filter((media) => media.platform === "ctrip_community")
+                      .length
+                  }
+                  /{CTRIP_COMMUNITY_PUBLICATION_LIMITS.targetImages}
+                </span>
+              </div>
+              <span className="ops-state-chip">服务端验真</span>
+            </div>
+            {mediaNotice === null ? null : <OperationNotice>{mediaNotice}</OperationNotice>}
+            <div className="ops-media-import-grid">
+              <label>
+                图片文件
+                <input
+                  name="mediaFiles"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  multiple
+                  disabled={!canWrite || importingMedia}
+                  required
+                />
+              </label>
+              <label>
+                平台
+                <select
+                  name="platform"
+                  value={mediaPlatform}
+                  disabled={importingMedia}
+                  onChange={(event) => setMediaPlatform(event.target.value as typeof mediaPlatform)}
+                >
+                  {[...new Set(eligibleAccounts.map((account) => account.platform))].map(
+                    (platform) => (
+                      <option key={platform} value={platform}>
+                        {platformName(platform)}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </label>
+              {mediaPlatform === "ctrip_community" ? (
+                <label>
+                  图片编排
+                  <input value="自动：1 张封面，其余正文图" readOnly />
+                </label>
+              ) : (
+                <label>
+                  图片位置
+                  <select name="role" defaultValue="cover" disabled={importingMedia}>
+                    <option value="cover">封面</option>
+                    <option value="inline">正文配图</option>
+                  </select>
+                </label>
+              )}
+              <label>
+                权利来源
+                <select
+                  name="rightsKind"
+                  value={mediaRightsKind}
+                  disabled={importingMedia}
+                  onChange={(event) =>
+                    setMediaRightsKind(event.target.value as typeof mediaRightsKind)
+                  }
+                >
+                  <option value="tenant_owned">客户自有图片</option>
+                  <option value="licensed_stock">已授权图库图片</option>
+                </select>
+              </label>
+            </div>
+            <fieldset className="ops-media-claims">
+              <legend>图片依据事实（选 1 至 3 条）</legend>
+              {version.payload.claims.slice(0, 3).map((claim, index) => (
+                <label key={claim.id}>
+                  <input
+                    type="checkbox"
+                    name="claimId"
+                    value={claim.id}
+                    defaultChecked={index === 0}
+                    disabled={importingMedia}
+                  />
+                  <span>{claim.text}</span>
+                </label>
+              ))}
+            </fieldset>
+            <div className="ops-media-rights">
+              <label>
+                权利名称
+                <input
+                  key={mediaRightsKind}
+                  name="licenseName"
+                  defaultValue={
+                    mediaRightsKind === "tenant_owned" ? "客户原创图片" : "商业图片授权"
+                  }
+                  disabled={importingMedia}
+                  required
+                />
+              </label>
+              {mediaRightsKind === "tenant_owned" ? (
+                <label>
+                  所有权声明
+                  <textarea
+                    name="ownershipAssertion"
+                    rows={2}
+                    placeholder="说明图片由本机构或已授权摄影师创作，并拥有当前投放用途的权利。"
+                    disabled={importingMedia}
+                    required
+                  />
+                </label>
+              ) : (
+                <>
+                  <label>
+                    授权类型
+                    <select name="licenseBasis" defaultValue="commercial_license">
+                      <option value="commercial_license">商业授权</option>
+                      <option value="editorial_license">编辑用途授权</option>
+                    </select>
+                  </label>
+                  <label>
+                    图片来源 URL
+                    <input name="sourceUrl" type="url" placeholder="https://" required />
+                  </label>
+                  <label>
+                    授权条款 URL
+                    <input name="licenseUrl" type="url" placeholder="https://" required />
+                  </label>
+                  <label>
+                    署名（可选）
+                    <input name="attribution" />
+                  </label>
+                  <label>
+                    授权说明
+                    <textarea name="rightsDescription" rows={2} required />
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="ops-form-actions">
+              <button
+                className="button-primary"
+                type="submit"
+                disabled={!canWrite || importingMedia || eligibleAccounts.length === 0}
+              >
+                {importingMedia ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <Upload size={16} />
+                )}
+                {mediaImportProgress === null
+                  ? "批量导入并生成新版本"
+                  : `正在导入 ${mediaImportProgress.completed}/${mediaImportProgress.total}`}
+              </button>
+            </div>
+          </form>
+
           <div className="ops-platform-boundary">
             <ShieldAlert size={17} />
             <span>
-              仅列出 manual_only + dry_run，或携程 browser_assisted + assisted 的账号；不提供
-              unattended，客户演示不会写入真实外部平台。
+              头条和搜狐保持 manual_only + dry_run；携程社区在账号、审计、Bridge
+              与公开回读证据满足时可使用 browser_assisted + unattended。
             </span>
           </div>
           <div className="ops-variant-list">
@@ -1685,7 +2115,11 @@ export function ArticleOperations({
                             ) : (
                               <CalendarClock size={15} />
                             )}
-                            {executionLevel === "assisted" ? "提交携程模拟" : "提交排期 Dry-run"}
+                            {executionLevel === "assisted"
+                              ? "提交携程模拟"
+                              : executionLevel === "unattended"
+                                ? "启动携程无人值守流程"
+                                : "提交排期 Dry-run"}
                           </button>
                           <button
                             className="button-secondary danger-text"
@@ -1703,7 +2137,9 @@ export function ArticleOperations({
                             <strong>
                               {state.executionLevel === "assisted"
                                 ? "携程模拟作业已创建"
-                                : "Dry-run 作业已创建"}
+                                : state.executionLevel === "unattended"
+                                  ? "携程无人值守作业已创建"
+                                  : "Dry-run 作业已创建"}
                             </strong>
                             <span className="mono">{state.publication.publicationJobId}</span>
                           </div>
@@ -1770,7 +2206,10 @@ export function OperationsWorkspace({
     () => setCampaigns((current) => mergeById(current, incomingCampaigns)),
     [incomingCampaigns],
   );
-  useEffect(() => setContent((current) => mergeById(current, incomingContent)), [incomingContent]);
+  useEffect(() => {
+    setContent((current) => mergeById(current, incomingContent));
+    setSelectedContentId((current) => current ?? incomingContent[0]?.id ?? null);
+  }, [incomingContent]);
 
   const selectedContent = content.find((item) => item.id === selectedContentId) ?? null;
   const readyStages = [
@@ -1802,8 +2241,9 @@ export function OperationsWorkspace({
       </section>
 
       <OperationNotice>
-        头条号、搜狐号使用 manual_only + dry_run；客户演示中的携程社区使用 browser_assisted +
-        assisted 内部模拟。所有路径均先审计，不提供 unattended。
+        头条号、搜狐号使用 manual_only + dry_run；携程社区使用
+        browser_assisted，并按实时准入结果选择 assisted 或
+        unattended。所有路径均先审计，失败或证据不完整时自动停止。
       </OperationNotice>
 
       {!canWrite ? (

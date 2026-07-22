@@ -274,6 +274,58 @@ function mediaReference(overrides: Partial<MediaReference> = {}): MediaReference
   };
 }
 
+function ctripMediaReference(
+  index: number,
+  sceneSignature: string,
+  role: "cover" | "inline" = index === 0 ? "cover" : "inline",
+): MediaReference {
+  const visualBrief = buildVisualBrief({
+    editorialProfile: "guide",
+    platform: "ctrip_community",
+    role,
+    facts: factSnapshot.facts,
+  });
+  const hashCharacter = String(index + 1);
+  const sha256 = hashCharacter.repeat(64);
+  const idSuffix = String(100 + index * 4).padStart(12, "0");
+  return {
+    id: `00000000-0000-4000-8000-${idSuffix}`,
+    sha256,
+    mimeType: "image/jpeg",
+    byteLength: 1_024 + index,
+    width: 1200,
+    height: 900,
+    platform: "ctrip_community",
+    role,
+    altText: visualBrief.altText,
+    caption: visualBrief.caption,
+    factIds: [...visualBrief.factIds],
+    visualBrief,
+    visualBriefHash: sha256Canonical(visualBrief),
+    rights: {
+      basis: "tenant_owned",
+      licenseName: "Tenant original travel image",
+      verifiedAt: "2026-07-13T11:30:00.000Z",
+    },
+    provenance: {
+      kind: "tenant_owned",
+      evidenceSourceId: `00000000-0000-4000-8000-${String(101 + index * 4).padStart(12, "0")}`,
+      ownershipAssertion: "The tenant owns this original travel image.",
+    },
+    inspection: {
+      assetSha256: sha256,
+      status: "passed",
+      evaluator: "pi-vision-inspector",
+      evaluatorMode: "live",
+      evaluatorVersion: "1.0.0",
+      responseSha256: hashCharacter.repeat(64),
+      inspectedAt: "2026-07-13T11:31:00.000Z",
+      ocrText: "",
+      labels: ["travel-relevance:passed", "contact-text:none", `scene-signature:${sceneSignature}`],
+    },
+  };
+}
+
 function run(
   payloadOverride: PublicationVariantPayload = payload(),
   overrides: {
@@ -321,6 +373,71 @@ describe("publication variant audit", () => {
     expect(Object.isFrozen(artifact.findings)).toBe(true);
   });
 
+  it("requires one natural brand mention on Ctrip Community variants", () => {
+    const missing = run(
+      payload({
+        title: "东京亲子行前核验",
+        summary: "先核对材料和时间，再安排每天的游览节奏。",
+        bodyMarkdown: "## 行前材料\n\n逐项核对证件与预订信息。\n\n## 每日安排\n\n按同行人的体力留出机动时间。",
+      }),
+      { platform: "ctrip_community" },
+    );
+    const natural = run(
+      payload({
+        title: "东京亲子行前核验",
+        summary: "先核对材料和时间，再安排每天的游览节奏。",
+        bodyMarkdown: [
+          "## 行前材料",
+          "逐项核对证件与预订信息。",
+          "## 每日安排",
+          "这份清单由 Zhongtong Travel 结合常见亲子出行准备问题整理，具体材料仍应在出发前逐项核验。",
+        ].join("\n\n"),
+      }),
+      { platform: "ctrip_community" },
+    );
+
+    expect(ruleIds(missing)).toContain("platform.brand.missing");
+    expect(ruleIds(natural)).not.toContain("platform.brand.missing");
+    expect(ruleIds(natural)).not.toContain("platform.brand.repetition");
+    expect(ruleIds(natural)).not.toContain("platform.brand.hard_promotion");
+  });
+
+  it("blocks repeated brand mentions on Ctrip Community variants", () => {
+    const artifact = run(
+      payload({
+        title: "东京亲子行前核验",
+        summary: "Zhongtong Travel 整理的行前要点。",
+        bodyMarkdown: [
+          "## 行前材料",
+          "Zhongtong Travel 建议先核对证件与预订信息。",
+          "## 每日安排",
+          "Zhongtong Travel 提醒同行人按体力留出机动时间。",
+        ].join("\n\n"),
+      }),
+      { platform: "ctrip_community" },
+    );
+
+    expect(ruleIds(artifact)).toContain("platform.brand.repetition");
+    expect(artifact.status).toBe("failed");
+  });
+
+  it.each(["立即咨询 Zhongtong Travel", "马上预订 Zhongtong Travel 行程", "加微信了解 Zhongtong Travel 服务"])(
+    "blocks hard-promotion wording on Ctrip Community: %s",
+    (promotion) => {
+      const artifact = run(
+        payload({
+          title: "东京亲子行前核验",
+          summary: "先核对材料和时间，再安排每天的游览节奏。",
+          bodyMarkdown: `## 行前材料\n\n逐项核对证件与预订信息。\n\n## 下一步\n\n${promotion}`,
+        }),
+        { platform: "ctrip_community" },
+      );
+
+      expect(ruleIds(artifact)).toContain("platform.brand.hard_promotion");
+      expect(artifact.status).toBe("failed");
+    },
+  );
+
   it("requires the payload to bind the exact immutable Brand Agent Profile snapshot", () => {
     const document = {
       schemaVersion: "geo.brand-agent-profile.v1" as const,
@@ -360,6 +477,22 @@ describe("publication variant audit", () => {
     expect(artifact.findings).toEqual([]);
     expect(artifact.mediaSnapshotHash).toBe(mediaSnapshotHash([media]));
     expect(artifact.payloadHash).toBe(sha256Canonical(payload({ media: [media] })));
+  });
+
+  it("accepts the exact allowlisted live Pi vision evaluator", () => {
+    const media = mediaReference();
+    const inspected = {
+      ...media,
+      inspection: {
+        ...media.inspection,
+        evaluator: "pi-vision-inspector",
+        evaluatorMode: "live" as const,
+        evaluatorVersion: "1.0.0",
+        ocrText: "Mount Fuji",
+      },
+    };
+
+    expect(run(payload({ media: [inspected] })).status).toBe("passed");
   });
 
   it("blocks duplicate IDs, wrong platforms, and unknown media facts", () => {
@@ -635,6 +768,111 @@ describe("publication variant audit", () => {
     expect(ruleIds(audited)).toEqual(
       expect.arrayContaining(["claims.prohibited_guarantee", "platform.title.too_long"]),
     );
+  });
+
+  it("enforces fixed Ctrip publication limits even when a tenant policy is looser", () => {
+    const audited = run(
+      payload({
+        title: "123456789012345678901",
+        media: [],
+      }),
+      { platform: "ctrip_community" },
+    );
+
+    expect(ruleIds(audited)).toEqual(
+      expect.arrayContaining(["platform.title.too_long", "platform.media.count_invalid"]),
+    );
+  });
+
+  it("enforces the Ctrip four-to-five image plan with exactly one cover", () => {
+    const four = [
+      ctripMediaReference(0, "mountain_lake:outdoor:wide"),
+      ctripMediaReference(1, "rail_transport:transit:wide"),
+      ctripMediaReference(2, "temple_shrine:outdoor:medium"),
+      ctripMediaReference(3, "urban_street:outdoor:wide"),
+    ];
+    const three = run(payload({ media: four.slice(0, 3) }), { platform: "ctrip_community" });
+    const fourAudited = run(payload({ media: four }), { platform: "ctrip_community" });
+    const six = run(
+      payload({
+        media: [
+          ...four,
+          ctripMediaReference(4, "food:indoor:closeup"),
+          ctripMediaReference(5, "lodging:indoor:interior"),
+        ],
+      }),
+      { platform: "ctrip_community" },
+    );
+    const twoCovers = run(
+      payload({
+        media: [
+          four[0]!,
+          ctripMediaReference(1, "rail_transport:transit:wide", "cover"),
+          ...four.slice(2),
+        ],
+      }),
+      { platform: "ctrip_community" },
+    );
+
+    expect(ruleIds(three)).toContain("platform.media.count_invalid");
+    expect(ruleIds(fourAudited)).not.toContain("platform.media.count_invalid");
+    expect(ruleIds(fourAudited)).not.toContain("platform.media.cover_count_invalid");
+    expect(ruleIds(six)).toContain("platform.media.count_invalid");
+    expect(ruleIds(twoCovers)).toContain("platform.media.cover_count_invalid");
+  });
+
+  it("blocks repeated Ctrip image bytes, scene signatures, or missing scene evidence", () => {
+    const media = [
+      ctripMediaReference(0, "mountain_lake:outdoor:wide"),
+      ctripMediaReference(1, "rail_transport:transit:wide"),
+      ctripMediaReference(2, "temple_shrine:outdoor:medium"),
+      ctripMediaReference(3, "urban_street:outdoor:wide"),
+    ];
+    const repeatedBytes = {
+      ...media[1]!,
+      sha256: media[0]!.sha256,
+      inspection: { ...media[1]!.inspection, assetSha256: media[0]!.sha256 },
+    };
+    const repeatedScene = {
+      ...media[1]!,
+      inspection: {
+        ...media[1]!.inspection,
+        labels: [
+          "travel-relevance:passed",
+          "contact-text:none",
+          "scene-signature:mountain_lake:outdoor:wide",
+        ],
+      },
+    };
+    const missingScene = {
+      ...media[1]!,
+      inspection: {
+        ...media[1]!.inspection,
+        labels: ["travel-relevance:passed", "contact-text:none"],
+      },
+    };
+
+    expect(
+      ruleIds(
+        run(payload({ media: [media[0]!, repeatedBytes, ...media.slice(2)] }), {
+          platform: "ctrip_community",
+        }),
+      ),
+    ).toContain("media.sha256.duplicate");
+    expect(
+      ruleIds(
+        run(payload({ media: [media[0]!, repeatedScene, ...media.slice(2)] }), {
+          platform: "ctrip_community",
+        }),
+      ),
+    ).toContain("media.scene.duplicate");
+    expect(
+      ruleIds(
+        run(payload({ media: [media[0]!, missingScene, ...media.slice(2)] }), {
+          platform: "ctrip_community",
+        }),
+      ),
+    ).toContain("media.scene.missing");
   });
 
   it("blocks weak structure and near-duplicate bodies", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CTRIP_BRIDGE_COMMAND_TIMEOUT_MS,
   CtripBridgeGatewayError,
   HttpCtripBridgeGateway,
   parseCtripBridgeCredentials,
@@ -43,6 +44,10 @@ function preparedResult() {
 }
 
 describe("HttpCtripBridgeGateway", () => {
+  it("allows the reviewed browser preparation window without weakening health checks", () => {
+    expect(CTRIP_BRIDGE_COMMAND_TIMEOUT_MS).toBe(300_000);
+  });
+
   it("rejects unsafe destinations and duplicate credentials", () => {
     expect(() => validateCtripBridgeUrl("http://bridge.example.test:9030")).toThrow(/HTTPS/iu);
     expect(() => validateCtripBridgeUrl(`https://${token}@bridge.example.test`)).toThrow(
@@ -105,6 +110,53 @@ describe("HttpCtripBridgeGateway", () => {
       code: "CTRIP_BRIDGE_TENANT_NOT_CONFIGURED",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("accepts the live browser-supervised health contract", async () => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      jsonResponse({
+        status: "ok",
+        service: "geo-ctrip-bridge",
+        mode: "browser_supervised",
+        adapterVersion: "ctrip-community-browser-supervised-v1",
+        commandCapabilities: { prepare: true, submit: true, readback: false },
+      }),
+    );
+    const gateway = new HttpCtripBridgeGateway({
+      baseUrl: "http://127.0.0.1:9030",
+      credentials: [{ tenantId, accessToken: token }],
+      fetchImpl,
+    });
+
+    await expect(gateway.health?.()).resolves.toBe(true);
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://127.0.0.1:9030/health/live");
+  });
+
+  it("reads tenant-authenticated operational readiness without exposing evidence", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        jsonResponse({
+          schemaVersion: "geo.ctrip-operational-readiness.v1",
+          status: "session_required",
+          observedAt: "2026-07-21T19:00:00.000Z",
+          sessionEvidenceHash: "must-not-escape",
+          mode: "browser_unattended",
+        }, 503),
+    );
+    const gateway = new HttpCtripBridgeGateway({
+      baseUrl: "http://127.0.0.1:9030",
+      credentials: [{ tenantId, accessToken: token }],
+      fetchImpl,
+    });
+
+    await expect(gateway.readiness?.(tenantId)).resolves.toEqual({
+      status: "session_required",
+      observedAt: "2026-07-21T19:00:00.000Z",
+    });
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("http://127.0.0.1:9030/health/ready");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: `Bearer ${token}`,
+    });
   });
 
   it("sanitizes upstream errors and enforces its deadline", async () => {

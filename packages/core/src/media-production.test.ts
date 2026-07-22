@@ -64,11 +64,33 @@ describe("visual brief production", () => {
       expect(value).not.toContain("400-113-3986");
       expect(value).not.toContain("ZTGL3411");
       expect(value).toContain("联系方式不在图片中呈现");
+      expect(value).toContain("已核验的品牌咨询渠道");
+      expect(value).not.toContain("敏感文本不在图片中呈现L");
     }
     expect(brief.negativePrompt).toContain(
       "文字、水印、二维码、电话号码、微信号、价格、证件、夸张承诺、虚构人物背书",
     );
     expect(brief.prompt).toContain("不得虚构");
+  });
+
+  it("collapses verified phone and WeChat facts into clean visual-safe summaries", () => {
+    const contactFacts = [
+      fact(7, "中通国际旅行社微信咨询账号为 ZTGL3411 或 ZTGL6431。"),
+      fact(8, "中通国际旅行社提供 24 小时咨询热线 4001133986。"),
+    ];
+    const brief = buildVisualBrief({
+      editorialProfile: "local_service",
+      platform: "ctrip_community",
+      role: "cover",
+      facts: contactFacts,
+    });
+
+    for (const value of [brief.prompt, brief.altText, brief.caption]) {
+      expect(value).not.toMatch(/ZTGL|4001133986|敏感文本不在图片中呈现/u);
+      expect(value.match(/已核验的品牌咨询渠道/gu)).toHaveLength(2);
+      expect(value.match(/联系方式不在图片中呈现/gu)).toHaveLength(2);
+      expect(value).not.toContain("提供 全天咨询");
+    }
   });
 
   it("aggressively redacts numeric and contact-like visual content while preserving context", () => {

@@ -12,6 +12,7 @@ import {
   executionLevelSchema,
   idSchema,
   isoDateTimeSchema,
+  mediaSearchPlanSchema,
   platformSchema,
   publicationJobStateSchema,
   publicationVariantPayloadSchema,
@@ -27,6 +28,7 @@ import {
   compileAuditPolicy,
   editorialProfileForBrief,
   geoAuditPolicyDocumentSchema,
+  renderCanonicalContent,
   renderEditorialSourcePayload,
   type FactSnapshot,
 } from "@geo/core";
@@ -43,6 +45,7 @@ import type {
   VisibilityRequestInput,
   MediaJobStatusInput,
   MediaProductionRequestInput,
+  MediaSearchImportInput,
 } from "./api-client.js";
 import type {
   AutomationGeoApiClient,
@@ -183,6 +186,7 @@ const automationRunViewSchema = z.object({
   batchId: idSchema,
   campaignId: idSchema,
   brandId: idSchema,
+  executionLevel: executionLevelSchema,
   slotKey: z.string().min(1),
   topicKey: z.string().min(1),
   brief: z.string().min(1),
@@ -307,6 +311,29 @@ function briefTerms(value: string): ReadonlySet<string> {
     }
   }
   return terms;
+}
+
+function normalizedContactText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replaceAll(/\s+/gu, "");
+}
+
+function authoredDraftContainsTenantContact(
+  draft: NonNullable<DraftProposalInput["authoredDraft"]>,
+  contacts: readonly TenantContact[],
+): boolean {
+  const prose = [draft.title, draft.summary, ...draft.body.map((section) => section.text)].join(
+    "\n",
+  );
+  const normalizedProse = normalizedContactText(prose);
+  const normalizedDigits = normalizedProse.replaceAll(/\D/gu, "");
+  return contacts.some((contact) => {
+    const normalizedValue = normalizedContactText(contact.value);
+    if (contact.type === "phone") {
+      const digits = normalizedValue.replaceAll(/\D/gu, "");
+      return digits.length > 0 && normalizedDigits.includes(digits);
+    }
+    return normalizedValue.length > 0 && normalizedProse.includes(normalizedValue);
+  });
 }
 
 function factRelevance(brief: ReadonlySet<string>, fact: z.infer<typeof factSchema>): number {
@@ -767,13 +794,77 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
         Date.parse(contact.validFrom) <= now &&
         (contact.validUntil === null || Date.parse(contact.validUntil) > now),
     );
+    if (
+      input.targetPlatform === "ctrip_community" &&
+      input.authoredDraft !== undefined &&
+      authoredDraftContainsTenantContact(input.authoredDraft, currentContacts)
+    ) {
+      throw new GeoApiRequestError("CTRIP_AUTHORED_CONTACT_FORBIDDEN", 422);
+    }
+    const contactsForSource =
+      input.targetPlatform === "ctrip_community"
+        ? []
+        : (currentContacts as readonly TenantContact[]);
     const terms = briefTerms(input.brief);
-    const selectedFacts = currentFacts
+    const relevantFacts = currentFacts
       .map((fact, index) => ({ fact, index, relevance: factRelevance(terms, fact) }))
       .filter((candidate) => candidate.relevance > 0)
       .sort((left, right) => right.relevance - left.relevance || left.index - right.index)
       .slice(0, 8)
       .map((candidate) => candidate.fact);
+    const authoredClaimIds =
+      input.authoredDraft === undefined
+        ? []
+        : [
+            ...new Set([
+              ...input.authoredDraft.titleClaimIds,
+              ...input.authoredDraft.summaryClaimIds,
+              ...input.authoredDraft.body.flatMap((section) => section.claimIds),
+            ]),
+          ];
+    const mediaSearchPlan =
+      input.authoredDraft?.mediaSearchPlan === undefined
+        ? undefined
+        : mediaSearchPlanSchema.safeParse(input.authoredDraft.mediaSearchPlan);
+    if (input.authoredDraft !== undefined) {
+      if (input.authoredDraft.body.length === 0) {
+        throw new GeoApiRequestError("AUTHORED_DRAFT_EMPTY", 422);
+      }
+      if (
+        input.authoredDraft.titleClaimIds.length === 0 ||
+        input.authoredDraft.summaryClaimIds.length === 0 ||
+        input.authoredDraft.body.some((section) => section.claimIds.length === 0)
+      ) {
+        throw new GeoApiRequestError("AUTHORED_DRAFT_FACT_REQUIRED", 422);
+      }
+      const currentFactIds = new Set(currentFacts.map((fact) => fact.id));
+      const unsupportedClaimIds = authoredClaimIds.filter(
+        (claimId) => !currentFactIds.has(claimId),
+      );
+      if (unsupportedClaimIds.length > 0) {
+        throw new GeoApiRequestError("AUTHORED_DRAFT_FACT_UNSUPPORTED", 422);
+      }
+      if (mediaSearchPlan !== undefined && !mediaSearchPlan.success) {
+        throw new GeoApiRequestError("AUTHORED_DRAFT_MEDIA_SEARCH_PLAN_INVALID", 422);
+      }
+      const authoredClaimIdSet = new Set(authoredClaimIds);
+      if (
+        mediaSearchPlan?.success === true &&
+        mediaSearchPlan.data.some((intent) =>
+          intent.claimIds.some((claimId) => !authoredClaimIdSet.has(claimId)),
+        )
+      ) {
+        throw new GeoApiRequestError("AUTHORED_DRAFT_MEDIA_SEARCH_FACT_UNSUPPORTED", 422);
+      }
+    }
+    const authoredFacts = authoredClaimIds
+      .map((claimId) => currentFacts.find((fact) => fact.id === claimId))
+      .filter((fact): fact is (typeof currentFacts)[number] => fact !== undefined);
+    const selectedFacts = [
+      ...new Map(
+        [...authoredFacts, ...relevantFacts].map((fact) => [fact.id, fact] as const),
+      ).values(),
+    ];
     if (selectedFacts.length === 0) {
       throw new GeoApiRequestError("NO_RELEVANT_VERIFIED_FACTS", 422);
     }
@@ -790,8 +881,15 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       })),
       sources: [],
     };
+    const sourceFactSnapshot =
+      input.authoredDraft === undefined
+        ? factSnapshot
+        : {
+            ...factSnapshot,
+            facts: factSnapshot.facts.filter((fact) => authoredClaimIds.includes(fact.id)),
+          };
     const editorialProfile = template?.editorialProfile ?? editorialProfileForBrief(input.brief);
-    const payload = renderEditorialSourcePayload({
+    const sourcePayload = renderEditorialSourcePayload({
       editorialProfile,
       ...(template === null ? {} : { articleTemplateId: template.id }),
       ...(brandAgentProfile === null
@@ -804,9 +902,74 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
             },
           }),
       policy,
-      factSnapshot,
-      contacts: currentContacts as readonly TenantContact[],
+      factSnapshot: sourceFactSnapshot,
+      contacts: contactsForSource,
     });
+    const payload =
+      input.authoredDraft === undefined
+        ? sourcePayload
+        : (() => {
+            const candidate = {
+              ...sourcePayload,
+              ...(input.authoredDraft.locationQuery === undefined
+                ? {}
+                : { locationQuery: input.authoredDraft.locationQuery }),
+              ...(mediaSearchPlan?.success === true
+                ? { mediaSearchPlan: mediaSearchPlan.data }
+                : {}),
+              title: "placeholder",
+              summary: "placeholder",
+              bodyMarkdown: "placeholder",
+              titleBlocks: [
+                {
+                  type: "authored" as const,
+                  text: input.authoredDraft.title,
+                  claimIds: [...new Set(input.authoredDraft.titleClaimIds)],
+                },
+              ],
+              summaryBlocks: [
+                {
+                  type: "authored" as const,
+                  text: input.authoredDraft.summary,
+                  claimIds: [...new Set(input.authoredDraft.summaryClaimIds)],
+                },
+              ],
+              bodyBlocks: [
+                ...input.authoredDraft.body.map((section) => ({
+                  type: "authored" as const,
+                  text: section.text,
+                  claimIds: [...new Set(section.claimIds)],
+                })),
+                ...contactsForSource.map((contact) => ({
+                  type: "contact" as const,
+                  contactId: contact.id,
+                  presentation: "paragraph" as const,
+                })),
+              ],
+            };
+            const rendered = renderCanonicalContent({
+              payload: candidate,
+              policy,
+              factSnapshot: sourceFactSnapshot,
+              contacts: contactsForSource,
+            });
+            if (
+              rendered.issues.length > 0 ||
+              rendered.title === null ||
+              rendered.summary === null ||
+              rendered.bodyMarkdown === null ||
+              rendered.tags === null
+            ) {
+              throw new GeoApiRequestError("AUTHORED_DRAFT_INVALID", 422);
+            }
+            return {
+              ...candidate,
+              title: rendered.title,
+              summary: rendered.summary,
+              bodyMarkdown: rendered.bodyMarkdown,
+              tags: [...rendered.tags],
+            };
+          })();
     const result = await this.#request(principal, "/api/content", {
       method: "POST",
       body: {
@@ -826,7 +989,13 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
       contentItemId: content.id,
       contentVersionId: content.latestVersionId,
       version: content.latestVersion,
-      providerMode: input.fixtureMode === true ? "fixture" : "agent_proposal",
+      claimIds: payload.claims.map((claim) => claim.id),
+      providerMode:
+        input.authoredDraft !== undefined
+          ? "pi_authored"
+          : input.fixtureMode === true
+            ? "fixture"
+            : "agent_proposal",
       ...(template === null ? {} : { articleTemplateId: template.id }),
       ...(brandAgentProfile === null
         ? {}
@@ -1027,6 +1196,23 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
     input: Readonly<MediaJobStatusInput>,
   ): Promise<unknown> {
     return this.#request(principal, `/api/media-jobs/${encodeURIComponent(input.mediaJobId)}`, {});
+  }
+
+  async requestMediaSearchImport(
+    principal: Readonly<ActorContext>,
+    input: Readonly<MediaSearchImportInput>,
+  ): Promise<unknown> {
+    return this.#request(
+      principal,
+      `/api/content-versions/${encodeURIComponent(input.contentVersionId)}/media-search-imports`,
+      {
+        method: "POST",
+        body: {
+          idempotencyKey: input.idempotencyKey,
+          ...(input.maxImports === undefined ? {} : { maxImports: input.maxImports }),
+        },
+      },
+    );
   }
 
   async claimAutomationRuns(
@@ -1261,6 +1447,9 @@ export class HttpInternalGeoApiClient implements InternalGeoApiClient, Automatio
         break;
       case "geo_media_job_status":
         add("media_job", "mediaJobId");
+        break;
+      case "geo_media_search_import":
+        add("content_version", "contentVersionId");
         break;
       default:
         return false;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { articleTemplateById } from "@geo/contracts";
+import { articleTemplateById, mediaSearchPlanSchema } from "@geo/contracts";
 
 const tenantId = z.string().uuid();
 const resourceId = z.string().uuid();
@@ -12,6 +12,28 @@ const articleTemplateId = z
   .max(100)
   .regex(/^[a-z0-9][a-z0-9-]*$/u)
   .refine((value) => articleTemplateById(value) !== null);
+const authoredClaimIds = z
+  .array(resourceId)
+  .min(1)
+  .max(20)
+  .refine((values) => new Set(values).size === values.length);
+const authoredSection = z
+  .object({
+    text: z.string().trim().min(1).max(8_000),
+    claimIds: authoredClaimIds,
+  })
+  .strict();
+const authoredDraft = z
+  .object({
+    title: z.string().trim().min(1).max(2_000),
+    titleClaimIds: authoredClaimIds,
+    summary: z.string().trim().min(1).max(2_000),
+    summaryClaimIds: authoredClaimIds,
+    locationQuery: z.string().trim().min(1).max(100).optional(),
+    body: z.array(authoredSection).min(1).max(50),
+    mediaSearchPlan: mediaSearchPlanSchema.optional(),
+  })
+  .strict();
 
 export const geoMcpToolSchemas = {
   geo_tenant_context: z.object({ tenantId }).strict(),
@@ -31,9 +53,11 @@ export const geoMcpToolSchemas = {
       brandId: resourceId,
       campaignId: resourceId,
       brief: z.string().trim().min(1).max(10_000),
+      targetPlatform: z.enum(["toutiao", "sohu", "ctrip_community"]).optional(),
       articleTemplateId: articleTemplateId.optional(),
       idempotencyKey,
       fixtureMode: z.boolean().optional(),
+      authoredDraft: authoredDraft.optional(),
     })
     .strict(),
   geo_variant_preview: z
@@ -78,6 +102,14 @@ export const geoMcpToolSchemas = {
     })
     .strict(),
   geo_media_job_status: z.object({ tenantId, mediaJobId: resourceId }).strict(),
+  geo_media_search_import: z
+    .object({
+      tenantId,
+      contentVersionId: resourceId,
+      idempotencyKey,
+      maxImports: z.number().int().min(1).max(5).optional(),
+    })
+    .strict(),
 } as const;
 
 export type GeoMcpToolName = keyof typeof geoMcpToolSchemas;
@@ -149,5 +181,11 @@ export const geoMcpToolMetadata: Readonly<
     title: "Media job status",
     description: "Read tenant-scoped media production job status and immutable asset metadata.",
     readOnly: true,
+  },
+  geo_media_search_import: {
+    title: "Licensed image search import",
+    description:
+      "Search licensed images from the immutable article plan, inspect candidates, and attach accepted images to successor content versions.",
+    readOnly: false,
   },
 };

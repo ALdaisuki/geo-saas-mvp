@@ -127,13 +127,49 @@ describe("HttpAgentRunGateway", () => {
     });
 
     await gateway.run(request);
-    const runBody = runBodies[0];
-    expect(runBody).toMatchObject({ workflow: "prompt", brandId: request.brandId });
-    expect(String(runBody?.prompt)).toContain("Article template ID: step-by-step-guide");
-    expect(String(runBody?.prompt)).toContain(
+    await gateway.run({
+      ...request,
+      platform: "ctrip_community",
+      idempotencyKey: "agent-run-ctrip-assisted",
+    });
+    const dryRunBody = runBodies[0];
+    const assistedBody = runBodies[1];
+    expect(dryRunBody).toMatchObject({ workflow: "prompt", brandId: request.brandId });
+    expect(String(dryRunBody?.prompt)).toContain("Article template ID: step-by-step-guide");
+    expect(String(dryRunBody?.prompt)).toContain(`Authenticated tenant ID: ${request.tenantId}`);
+    expect(String(dryRunBody?.prompt)).toContain(
+      "Templates are structural GEO constraints, not article prose",
+    );
+    expect(String(dryRunBody?.prompt)).toContain("at least two substantive `##` section headings");
+    expect(String(dryRunBody?.prompt)).toContain("geo_draft_proposal.authoredDraft");
+    expect(String(dryRunBody?.prompt)).toContain(
+      "Never invent, inflate, or imply unsupported ratings",
+    );
+    expect(String(dryRunBody?.prompt)).toContain(
       `<article_brief>\n${request.topic}\n</article_brief>`,
     );
-    expect(String(runBody?.prompt)).toContain("dry_run only");
+    expect(String(dryRunBody?.prompt)).toContain("Execution level: dry_run");
+    expect(String(assistedBody?.prompt)).toContain("Execution level: unattended");
+    expect(String(dryRunBody?.prompt)).toContain("Do not call geo_media_production_request");
+    expect(String(assistedBody?.prompt)).toContain("Do not call geo_media_production_request");
+    expect(String(assistedBody?.prompt)).toContain("geo_media_search_import exactly once");
+    expect(assistedBody).toMatchObject({ targetPlatform: "ctrip_community" });
+    expect(String(assistedBody?.prompt)).toContain("targetPlatform to ctrip_community");
+    expect(String(assistedBody?.prompt)).toContain("authoredDraft.mediaSearchPlan");
+    expect(String(assistedBody?.prompt)).toContain("one cover and four inline");
+    expect(String(assistedBody?.prompt)).toContain(
+      "mention the selected travel-service brand naturally once and no more than twice",
+    );
+    expect(String(assistedBody?.prompt)).toContain(
+      "content organizer, source of service experience, or verification helper",
+    );
+    expect(String(assistedBody?.prompt)).toContain("Do not use a hard-sell call to action");
+    expect(String(assistedBody?.prompt)).toContain(
+      "do not create a variant, audit, publication request, or submit permit",
+    );
+    expect(String(assistedBody?.prompt)).not.toContain("asset.contentVersionId");
+    expect(String(dryRunBody?.prompt)).toContain("never downgrade or bypass a rejected gate");
+    expect(String(assistedBody?.prompt)).toContain("reviewed adapter");
   });
 
   it("sanitizes upstream authentication errors and rejects oversized responses", async () => {

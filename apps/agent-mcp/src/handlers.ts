@@ -15,6 +15,7 @@ const REQUIRED_CAPABILITY = {
   geo_visibility_request: "visibility:run",
   geo_media_production_request: "content:write",
   geo_media_job_status: "content:read",
+  geo_media_search_import: "content:write",
 } as const satisfies Readonly<Record<GeoMcpToolName, Capability>>;
 
 const SENSITIVE_KEY = /(?:authorization|cookie|password|secret|token|api[_-]?key|session)/i;
@@ -124,11 +125,35 @@ export async function invokeGeoMcpTool(options: {
         brandId: String(input.brandId),
         campaignId: String(input.campaignId),
         brief: String(input.brief),
+        ...(input.targetPlatform === undefined
+          ? {}
+          : { targetPlatform: input.targetPlatform as "toutiao" | "sohu" | "ctrip_community" }),
         ...(input.articleTemplateId === undefined
           ? {}
           : { articleTemplateId: String(input.articleTemplateId) }),
         idempotencyKey: String(input.idempotencyKey),
         ...(input.fixtureMode === undefined ? {} : { fixtureMode: input.fixtureMode === true }),
+        ...(input.authoredDraft === undefined
+          ? {}
+          : {
+              authoredDraft: input.authoredDraft as {
+                readonly title: string;
+                readonly titleClaimIds: readonly string[];
+                readonly summary: string;
+                readonly summaryClaimIds: readonly string[];
+                readonly locationQuery?: string;
+                readonly body: readonly {
+                  readonly text: string;
+                  readonly claimIds: readonly string[];
+                }[];
+                readonly mediaSearchPlan?: readonly {
+                  readonly query: string;
+                  readonly role: "cover" | "inline";
+                  readonly rationale: string;
+                  readonly claimIds: readonly string[];
+                }[];
+              },
+            }),
       });
       break;
     case "geo_variant_preview":
@@ -172,6 +197,13 @@ export async function invokeGeoMcpTool(options: {
     case "geo_media_job_status":
       result = await options.api.getMediaJobStatus(options.principal, {
         mediaJobId: String(input.mediaJobId),
+      });
+      break;
+    case "geo_media_search_import":
+      result = await options.api.requestMediaSearchImport(options.principal, {
+        contentVersionId: String(input.contentVersionId),
+        idempotencyKey: String(input.idempotencyKey),
+        ...(input.maxImports === undefined ? {} : { maxImports: Number(input.maxImports) }),
       });
       break;
   }

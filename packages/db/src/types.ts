@@ -625,6 +625,7 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   submit_permit_expires_at: NullableDbTimestamp;
   submit_permit_consumed_at: NullableDbTimestamp;
   submit_permit_issued_by_actor_id: string | null;
+  submit_permit_issued_by_principal_id: string | null;
   submit_permit_consumed_by_principal_id: string | null;
   submit_outcome: "accepted" | "uncertain" | "rejected" | null;
   submit_evidence_kind: "simulation" | "browser" | null;
@@ -639,6 +640,8 @@ export interface PublicationAssistedHandoffsTable extends TenantRow, MutableRow 
   readback_evidence_hash: string | null;
   readback_observed_at: NullableDbTimestamp;
   observed_payload_hash: string | null;
+  readback_owner_principal_id: string | null;
+  readback_lease_expires_at: NullableDbTimestamp;
   external_draft_id: string | null;
   external_id: string | null;
   external_url: string | null;

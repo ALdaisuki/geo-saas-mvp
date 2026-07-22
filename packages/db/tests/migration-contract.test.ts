@@ -112,6 +112,17 @@ function functionOverloadDefinition(functionName: string, signatureFragment: str
 }
 
 describe("PostgreSQL migration contract", () => {
+  it("keeps automation execution levels explicit and batch-bound", async () => {
+    const migrationSql = await readFile(
+      new URL("../migrations/0035_automation_execution_levels.sql", import.meta.url),
+      "utf8",
+    );
+
+    expect(migrationSql).toContain("'dry_run', 'assisted', 'unattended'");
+    expect(migrationSql).toContain("job.execution_level = (");
+    expect(migrationSql).toContain("batch.id = run_row.batch_id");
+    expect(migrationSql).toContain("IF updated_definition = definition THEN");
+  });
   it("materializes every planned core table", () => {
     for (const tableName of expectedTables) {
       expect(migrationSql).toMatch(new RegExp(`CREATE TABLE geo\\.${tableName}\\s*\\(`, "i"));
@@ -737,6 +748,21 @@ describe("PostgreSQL migration contract", () => {
     );
   });
 
+  it("synchronizes every terminal Ctrip handoff into its publication job and attempt", () => {
+    const terminalSync = latestFunctionDefinition("sync_ctrip_handoff_terminal_job");
+    expect(terminalSync).toContain("SECURITY DEFINER");
+    expect(terminalSync).toContain("NEW.state NOT IN ('confirmed', 'needs_review', 'failed', 'expired', 'cancelled')");
+    expect(terminalSync).toContain("UPDATE geo.publication_attempts AS attempt");
+    expect(terminalSync).toContain("governance_finished_at = terminal_at");
+    expect(terminalSync).toContain("UPDATE geo.publication_jobs AS job");
+    expect(terminalSync).toContain("lease_owner = NULL");
+    expect(terminalSync).toContain("'publication_assisted_handoff.job_terminal_synced'");
+    expect(migrationSql).toContain(
+      "CREATE TRIGGER publication_assisted_handoff_terminal_sync",
+    );
+    expect(migrationSql).toContain("Repair terminal handoffs created before this trigger existed");
+  });
+
   it("separates Ctrip operator approval from exact bridge execution authority", () => {
     const create = functionOverloadDefinition(
       "create_publication_assisted_handoff",
@@ -774,11 +800,9 @@ describe("PostgreSQL migration contract", () => {
     expect(migrationSql).toMatch(
       /REVOKE EXECUTE ON FUNCTION geo\.create_publication_assisted_handoff\(\s*uuid, uuid, uuid, geo\.sha256_hex, text, text, timestamptz\s*\) FROM geo_runtime/u,
     );
-    expect(migrationSql).toContain(
-      "publication_assisted_handoff_permit_actor_consistency\n    CHECK",
-    );
+    expect(migrationSql).toContain("publication_assisted_handoff_permit_issuer_consistency");
     expect(migrationSql).toMatch(
-      /publication_assisted_handoff_permit_actor_consistency[\s\S]*?\) NOT VALID,/u,
+      /publication_assisted_handoff_permit_issuer_consistency[\s\S]*?\) NOT VALID;/u,
     );
   });
 
@@ -797,10 +821,12 @@ describe("PostgreSQL migration contract", () => {
       expect(migrationSql).toContain(`ADD COLUMN ${column}`);
     }
     expect(migrationSql).toContain("publication_assisted_handoff_prepare_observation_complete");
-    expect(bridgeStatus).toContain("prepare_outcome = CASE");
+    expect(bridgeStatus).toContain("prepare_outcome = next_prepare_outcome");
     expect(bridgeStatus).toContain("prepare_evidence_hash = p_prepare_evidence_hash");
     expect(bridgeStatus).toContain("prepare_evidence_kind = p_prepare_evidence_kind");
     expect(bridgeStatus).toContain("prepare_observed_at = p_prepare_observed_at");
+    expect(bridgeStatus).toContain("last_error_message = next_error_message");
+    expect(bridgeStatus).toContain("'diagnosticCode', next_error_message");
     expect(draft).toContain("prepare_outcome = 'prepared'");
     expect(draft).toContain("media_manifest_hash = p_media_manifest_hash");
     expect(draft).toContain("'mediaManifestHash', p_media_manifest_hash");
@@ -812,6 +838,25 @@ describe("PostgreSQL migration contract", () => {
     expect(migrationSql).toContain(
       "GRANT EXECUTE ON FUNCTION geo.record_publication_assisted_draft(",
     );
+  });
+
+  it("enforces fixed Ctrip payload limits before publication and records terminal invalid payloads", () => {
+    const bridgeStatus = latestFunctionDefinition("record_publication_assisted_bridge_status");
+    const jobGate = latestFunctionDefinition("enforce_ctrip_publication_job_payload_limits");
+
+    expect(migrationSql).toContain("publication_variants_ctrip_payload_limits");
+    expect(migrationSql).toContain("char_length(trim(p_payload ->> 'title')) BETWEEN 5 AND 20");
+    expect(migrationSql).toContain(
+      "char_length(trim(p_payload ->> 'bodyMarkdown')) BETWEEN 60 AND 3000",
+    );
+    expect(migrationSql).toContain("jsonb_array_length(p_payload -> 'media') BETWEEN 1 AND 20");
+    expect(migrationSql).toContain("CREATE TRIGGER publication_jobs_ctrip_payload_limits");
+    expect(jobGate).toContain(
+      "Ctrip publication payload is outside fixed title, body, or media limits",
+    );
+    expect(bridgeStatus).toContain("'CTRIP_PAYLOAD_INVALID'");
+    expect(bridgeStatus).toContain("'payload_invalid'");
+    expect(bridgeStatus).toContain("next_error_code = 'ASSISTED_ADAPTER_DRIFT'");
   });
 
   it("records Ctrip submit observations before independent readback confirmation", () => {
@@ -847,7 +892,8 @@ describe("PostgreSQL migration contract", () => {
     expect(submit).toContain("INSERT INTO geo.publication_receipts");
     expect(submit).toContain("confirmed, payload");
     expect(submit).toContain("INSERT INTO geo.publication_readbacks");
-    expect(submit).toContain("'pending', true, 'assisted_publication_unconfirmed'");
+    expect(submit).toContain("'pending', true");
+    expect(submit).toContain("'browser_publication_unconfirmed'");
     expect(submit).toContain("state = 'readback_pending'");
     expect(submit).toContain("publication_assisted_handoff.submit_observed");
     expect(recover).toContain("geo.require_bound_ctrip_bridge");

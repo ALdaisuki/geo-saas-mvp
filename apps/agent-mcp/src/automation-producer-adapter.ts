@@ -9,6 +9,7 @@ import {
 import type { ActorContext, AutomationRunStage } from "@geo/contracts";
 
 import type { InternalGeoApiClient } from "./api-client.js";
+import type { PiAgentRunService } from "./pi-runner.js";
 import type {
   AutomationGeoApiClient,
   AutomationPublicationJobView,
@@ -59,6 +60,7 @@ export interface GeoAutomationProducerAdapterOptions {
   readonly api: InternalGeoApiClient & AutomationGeoApiClient;
   readonly governance?: PlasticPromiseGovernanceClient;
   readonly runtimeForPrincipal?: (principal: Readonly<ActorContext>) => AutomationToolRuntime;
+  readonly agentRunner?: PiAgentRunService;
   readonly deliveryPollIntervalMs?: number;
   readonly wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   readonly now?: () => Date;
@@ -72,6 +74,10 @@ interface LeaseBinding {
   readonly leaseSeconds: number;
   stage: AutomationRunStage;
   checkpoint: Readonly<Record<string, unknown>>;
+  draftProviderMode?: "pi_authored";
+  mediaProvider?: "wikimedia_commons";
+  mediaComplete?: boolean;
+  mediaCount?: number;
   mutationTail: Promise<void>;
 }
 
@@ -120,10 +126,34 @@ function safeErrorCode(value: string | null | undefined, fallback: string): stri
   return value !== null && value !== undefined && SAFE_ERROR_CODE.test(value) ? value : fallback;
 }
 
-function targetCheckpointRecord(
-  checkpoint: ScheduledAutomationCheckpoint,
+function checkpointRecord(
+  binding: LeaseBinding,
+  checkpoint: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
-  return { ...checkpoint };
+  const mediaProvider =
+    checkpoint.stage === "media" && checkpoint.provider === "wikimedia_commons"
+      ? "wikimedia_commons"
+      : binding.mediaProvider;
+  const mediaComplete =
+    checkpoint.stage === "media" && typeof checkpoint.mediaComplete === "boolean"
+      ? checkpoint.mediaComplete
+      : binding.mediaComplete;
+  const mediaCount =
+    checkpoint.stage === "media" &&
+    typeof checkpoint.mediaCount === "number" &&
+    Number.isInteger(checkpoint.mediaCount) &&
+    checkpoint.mediaCount >= 0
+      ? checkpoint.mediaCount
+      : binding.mediaCount;
+  return {
+    ...checkpoint,
+    ...(binding.draftProviderMode === undefined
+      ? {}
+      : { draftProviderMode: binding.draftProviderMode }),
+    ...(mediaProvider === undefined ? {} : { mediaProvider }),
+    ...(mediaComplete === undefined ? {} : { mediaComplete }),
+    ...(mediaCount === undefined ? {} : { mediaCount }),
+  };
 }
 
 function summarizeRun(run: AutomationRunView): GeoAutomationRunResult {
@@ -157,6 +187,7 @@ function assertRunLease(run: AutomationRunView, binding: LeaseBinding): void {
 function assertPublicationBinding(
   job: AutomationPublicationJobView,
   target: AutomationRunTargetView,
+  executionLevel: AutomationRunView["executionLevel"],
 ): void {
   if (
     job.id !== target.publicationJobId ||
@@ -164,7 +195,7 @@ function assertPublicationBinding(
     job.auditArtifactId !== target.auditArtifactId ||
     job.channelAccountId !== target.channelAccountId ||
     job.platform !== target.platform ||
-    job.executionLevel !== "dry_run"
+    job.executionLevel !== executionLevel
   ) {
     throw new AutomationAdapterError("AUTOMATION_PUBLICATION_BINDING_MISMATCH");
   }
@@ -174,6 +205,7 @@ export class GeoAutomationProducerAdapter {
   readonly #sessions: AutomationPrincipalRegistry;
   readonly #api: InternalGeoApiClient & AutomationGeoApiClient;
   readonly #runtimeForPrincipal: (principal: Readonly<ActorContext>) => AutomationToolRuntime;
+  readonly #agentRunner: PiAgentRunService | undefined;
   readonly #deliveryPollIntervalMs: number;
   readonly #wait: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   readonly #now: () => Date;
@@ -185,6 +217,7 @@ export class GeoAutomationProducerAdapter {
   constructor(options: GeoAutomationProducerAdapterOptions) {
     this.#sessions = options.sessions;
     this.#api = options.api;
+    this.#agentRunner = options.agentRunner;
     if (options.runtimeForPrincipal !== undefined) {
       this.#runtimeForPrincipal = options.runtimeForPrincipal;
     } else {
@@ -285,6 +318,22 @@ export class GeoAutomationProducerAdapter {
         leaseSeconds: leaseSeconds(request.leaseDurationMs),
         stage: run.stage,
         checkpoint: run.checkpoint,
+        ...(run.checkpoint.draftProviderMode === "pi_authored" ||
+        run.checkpoint.providerMode === "pi_authored"
+          ? { draftProviderMode: "pi_authored" as const }
+          : {}),
+        ...(run.checkpoint.mediaProvider === "wikimedia_commons" ||
+        (run.checkpoint.stage === "media" && run.checkpoint.provider === "wikimedia_commons")
+          ? { mediaProvider: "wikimedia_commons" as const }
+          : {}),
+        ...(typeof run.checkpoint.mediaComplete === "boolean"
+          ? { mediaComplete: run.checkpoint.mediaComplete }
+          : {}),
+        ...(typeof run.checkpoint.mediaCount === "number" &&
+        Number.isInteger(run.checkpoint.mediaCount) &&
+        run.checkpoint.mediaCount >= 0
+          ? { mediaCount: run.checkpoint.mediaCount }
+          : {}),
         mutationTail: Promise.resolve(),
       };
       assertRunLease(run, binding);
@@ -398,12 +447,29 @@ export class GeoAutomationProducerAdapter {
     await this.#serializeLeaseMutation(binding, async () => {
       let result: { readonly accepted: boolean };
       if (checkpoint.stage === "draft") {
+        if (checkpoint.providerMode === "pi_authored") {
+          binding.draftProviderMode = "pi_authored";
+        }
         result = await this.#api.checkpointAutomationDraft(binding.principal, binding.runId, {
           producerId: binding.producerId,
           attempt: binding.attempt,
           contentItemId: checkpoint.contentItemId,
           contentVersionId: checkpoint.contentVersionId,
-          checkpoint: targetCheckpointRecord(checkpoint),
+          checkpoint: checkpointRecord(binding, checkpoint),
+          leaseSeconds: binding.leaseSeconds,
+          signal,
+        });
+        binding.stage = "draft";
+      } else if (checkpoint.stage === "media") {
+        if (checkpoint.providerMode === "pi_authored") {
+          binding.draftProviderMode = "pi_authored";
+        }
+        result = await this.#api.checkpointAutomationDraft(binding.principal, binding.runId, {
+          producerId: binding.producerId,
+          attempt: binding.attempt,
+          contentItemId: checkpoint.contentItemId,
+          contentVersionId: checkpoint.contentVersionId,
+          checkpoint: checkpointRecord(binding, checkpoint),
           leaseSeconds: binding.leaseSeconds,
           signal,
         });
@@ -426,7 +492,7 @@ export class GeoAutomationProducerAdapter {
               ? {}
               : { publicationJobId: checkpoint.publicationJobId }),
             ...(checkpoint.errorCode === undefined ? {} : { errorCode: checkpoint.errorCode }),
-            checkpoint: targetCheckpointRecord(checkpoint),
+            checkpoint: checkpointRecord(binding, checkpoint),
             leaseSeconds: binding.leaseSeconds,
             signal,
           },
@@ -434,7 +500,12 @@ export class GeoAutomationProducerAdapter {
         binding.stage = checkpoint.state === "awaiting_delivery" ? "delivery" : "targets";
       }
       assertMutationAccepted(result);
-      binding.checkpoint = targetCheckpointRecord(checkpoint);
+      if (checkpoint.stage === "media") {
+        binding.mediaProvider = checkpoint.provider;
+        binding.mediaComplete = checkpoint.mediaComplete;
+        binding.mediaCount = checkpoint.mediaCount;
+      }
+      binding.checkpoint = checkpointRecord(binding, checkpoint);
     });
   }
 
@@ -446,16 +517,54 @@ export class GeoAutomationProducerAdapter {
     let run = await this.#api.getAutomationRun(binding.principal, binding.runId, signal);
     assertRunLease(run, binding);
     if (run.targets.some((target) => ["pending", "variant_ready"].includes(target.state))) {
-      const runtime = new ScheduledAutomationRuntime(this.#runtimeForPrincipal(binding.principal));
+      const requiresNewDraft = run.contentItemId === null && run.contentVersionId === null;
+      if (
+        requiresNewDraft &&
+        run.executionLevel !== "dry_run" &&
+        (this.#agentRunner?.capability.mode !== "pi" ||
+          this.#agentRunner.authorAutomationDraft === undefined)
+      ) {
+        throw new AutomationAdapterError("AUTOMATION_PI_DRAFT_AUTHOR_UNAVAILABLE");
+      }
+      const draftAuthor =
+        requiresNewDraft &&
+        this.#agentRunner?.capability.mode === "pi" &&
+        this.#agentRunner.authorAutomationDraft !== undefined
+          ? {
+              author: async (
+                input: Parameters<NonNullable<PiAgentRunService["authorAutomationDraft"]>>[1],
+                authorSignal?: AbortSignal,
+              ) => {
+                const result = await this.#agentRunner?.authorAutomationDraft?.(
+                  binding.principal,
+                  input,
+                  authorSignal,
+                );
+                if (result?.providerMode !== "pi_authored") {
+                  throw new AutomationAdapterError("AUTOMATION_PI_DRAFT_NOT_AUTHORED");
+                }
+                return result;
+              },
+            }
+          : undefined;
+      const runtime = new ScheduledAutomationRuntime(
+        this.#runtimeForPrincipal(binding.principal),
+        draftAuthor,
+      );
       await runtime.run(
         {
           tenantId: binding.principal.tenantId,
           brandId: run.brandId,
           campaignId: run.campaignId,
           runId: run.id,
+          executionLevel: run.executionLevel,
           topic: run.brief,
           ...(run.contentItemId === null ? {} : { contentItemId: run.contentItemId }),
           ...(run.contentVersionId === null ? {} : { contentVersionId: run.contentVersionId }),
+          mediaSearchCompleted:
+            (run.checkpoint.stage === "media" && run.checkpoint.mediaComplete !== false) ||
+            (run.checkpoint.mediaProvider === "wikimedia_commons" &&
+              run.checkpoint.mediaComplete !== false),
           targets: run.targets.map((target) => ({
             targetId: target.id,
             channelAccountId: target.channelAccountId,
@@ -496,7 +605,7 @@ export class GeoAutomationProducerAdapter {
           target.publicationJobId,
           signal,
         );
-        assertPublicationBinding(job, target);
+        assertPublicationBinding(job, target, run.executionLevel);
         if (job.state === "preview_completed") {
           await this.#checkpointDeliveryTarget(
             binding,
@@ -508,11 +617,22 @@ export class GeoAutomationProducerAdapter {
           progressed = true;
           continue;
         }
+        if (job.state === "confirmed") {
+          await this.#checkpointDeliveryTarget(
+            binding,
+            target,
+            "confirmed",
+            undefined,
+            signal,
+          );
+          progressed = true;
+          continue;
+        }
         if (ACTIVE_DELIVERY_STATES.has(job.state)) continue;
-        const code =
-          job.state === "confirmed"
-            ? "AUTOMATION_DRY_RUN_STATE_INVALID"
-            : safeErrorCode(job.lastErrorCode, `AUTOMATION_PUBLICATION_${job.state.toUpperCase()}`);
+        const code = safeErrorCode(
+          job.lastErrorCode,
+          `AUTOMATION_PUBLICATION_${job.state.toUpperCase()}`,
+        );
         await this.#checkpointDeliveryTarget(binding, target, "failed", code, signal);
         progressed = true;
       }
@@ -523,7 +643,7 @@ export class GeoAutomationProducerAdapter {
   async #checkpointDeliveryTarget(
     binding: LeaseBinding,
     target: AutomationRunTargetView,
-    state: "preview_completed" | "failed",
+    state: "preview_completed" | "confirmed" | "failed",
     errorCode: string | undefined,
     signal: AbortSignal,
   ): Promise<void> {
@@ -545,14 +665,18 @@ export class GeoAutomationProducerAdapter {
           ...(auditArtifactId === undefined ? {} : { auditArtifactId }),
           ...(publicationJobId === undefined ? {} : { publicationJobId }),
           ...(errorCode === undefined ? {} : { errorCode }),
-          checkpoint: { stage: "delivery", targetId: target.id, state },
+          checkpoint: checkpointRecord(binding, { stage: "delivery", targetId: target.id, state }),
           leaseSeconds: binding.leaseSeconds,
           signal,
         },
       );
       assertMutationAccepted(result);
       binding.stage = "delivery";
-      binding.checkpoint = { stage: "delivery", targetId: target.id, state };
+      binding.checkpoint = checkpointRecord(binding, {
+        stage: "delivery",
+        targetId: target.id,
+        state,
+      });
     });
   }
 
@@ -572,13 +696,21 @@ export class GeoAutomationProducerAdapter {
             state: "failed",
             ...(target.variantId === null ? {} : { variantId: target.variantId }),
             errorCode: safeErrorCode(failure.code, "AUTOMATION_EXECUTION_FAILED"),
-            checkpoint: { stage: "targets", targetId: target.id, state: "failed" },
+            checkpoint: checkpointRecord(binding, {
+              stage: "targets",
+              targetId: target.id,
+              state: "failed",
+            }),
             leaseSeconds: binding.leaseSeconds,
           },
         );
         assertMutationAccepted(result);
         binding.stage = "targets";
-        binding.checkpoint = { stage: "targets", targetId: target.id, state: "failed" };
+        binding.checkpoint = checkpointRecord(binding, {
+          stage: "targets",
+          targetId: target.id,
+          state: "failed",
+        });
       });
     }
   }

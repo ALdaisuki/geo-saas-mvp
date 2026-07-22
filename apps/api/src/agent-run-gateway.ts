@@ -214,13 +214,22 @@ function runTransportError(error: unknown): AgentRunGatewayError {
 }
 
 function realPiPrompt(input: Readonly<AgentRunRequest>): string {
+  const executionLevel = input.platform === "ctrip_community" ? "unattended" : "dry_run";
+  const workflow =
+    input.platform === "ctrip_community"
+      ? "Use this exact order: geo_tenant_context; geo_template_catalog and geo_brand_profile; geo_fact_lookup; geo_draft_proposal; then geo_media_search_import exactly once. Stop after returning the finalContentVersionId with inspected licensed media; do not create a variant, audit, publication request, or submit permit."
+      : "Use this exact order: geo_tenant_context; geo_template_catalog and geo_brand_profile; geo_fact_lookup; geo_draft_proposal; geo_variant_preview; geo_audit_request; then geo_publication_request exactly once.";
   return [
     "Execute one governed article workflow for the authenticated tenant.",
-    "Use this exact order: geo_tenant_context; geo_template_catalog and geo_brand_profile; geo_fact_lookup; geo_draft_proposal; geo_variant_preview; geo_audit_request; then geo_publication_request at dry_run only.",
+    `Authenticated tenant ID: ${input.tenantId}. Use this exact UUID for every tenant-scoped tool call; do not ask the user to provide it.`,
+    workflow,
     `Brand ID: ${input.brandId}`,
     `Campaign ID: ${input.campaignId}`,
     `Channel account ID: ${input.channelAccountId}`,
     `Platform: ${input.platform}`,
+    "For Ctrip Community, set geo_draft_proposal.targetPlatform to ctrip_community so its source version excludes tenant contact blocks.",
+    `Execution level: ${executionLevel}`,
+    "For Ctrip Community use unattended only when the reviewed adapter, current platform-readback capability evidence, audit, kill-switch and circuit-breaker gates allow it; never downgrade or bypass a rejected gate.",
     `Article template ID: ${input.articleTemplateId}`,
     `Idempotency key: ${input.idempotencyKey}`,
     `Gateway request ID: ${input.requestId}`,
@@ -229,7 +238,17 @@ function realPiPrompt(input: Readonly<AgentRunRequest>): string {
     "<article_brief>",
     input.topic,
     "</article_brief>",
-    "Return a concise completion summary with created resource IDs and the audit result. Never claim live publication.",
+    "Templates are structural GEO constraints, not article prose. Write original Chinese title, summary, and body sections.",
+    "Write the body as Markdown with at least two substantive `##` section headings; keep each section scannable and do not flatten the article into one paragraph.",
+    "Every authored title, summary, and body section must carry supporting verified fact IDs; pass the prose through geo_draft_proposal.authoredDraft.",
+    "Never invent, inflate, or imply unsupported ratings, scores, rankings, complaint records, credentials, years of experience, customer counts, guarantees, or outcomes. If a brief asks for them and no matching verified fact is returned, omit the claim and state the limitation rather than making it sound plausible.",
+    "For Ctrip Community, include authoredDraft.locationQuery as a destination or city POI search query that matches the article; the Bridge will select and verify the returned platform POI.",
+    "For Ctrip Community include exactly five distinct authoredDraft.mediaSearchPlan entries: one cover and four inline. Each query must name a concrete visible subject from a real article section, preferably with Chinese destination wording plus an English proper noun; each rationale must name the supported section, and every claim ID must already be cited by the prose.",
+    "Do not call geo_media_production_request. No production image provider is approved. Use geo_media_search_import only; it searches licensed Wikimedia Commons media and still requires rights evidence, visual relevance, duplicate-scene, OCR, safety, and count inspection.",
+    "Contacts must be selected and rendered by the server from the tenant snapshot; never invent or paste contact details into the draft input.",
+    "For Ctrip Community personal-account variants, mention the selected travel-service brand naturally once and no more than twice in the body. Present it only as the content organizer, source of service experience, or verification helper; lead with useful travel guidance and do not put the brand in the title or repeat it in every section.",
+    "Do not use a hard-sell call to action on Ctrip such as contact now, book now, add WeChat, call a phone number, scan a QR code, limited-time offer, or limited availability. Contact details belong to other platform variants and must not be inserted into Ctrip prose or images.",
+    "Return a concise completion summary with the source and final content version IDs plus accepted image count. If licensed search is disabled or cannot fill at least four distinct intents, report that boundary instead of inventing an audit or publication result. Never claim live publication.",
   ].join("\n");
 }
 
@@ -346,6 +365,7 @@ export class HttpAgentRunGateway implements AgentRunGateway {
         : {
             workflow: "prompt",
             brandId: input.brandId,
+            targetPlatform: input.platform,
             prompt: realPiPrompt(input),
           };
     let response: Response;

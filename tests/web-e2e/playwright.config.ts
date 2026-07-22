@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 const configuredChannel = process.env.PLAYWRIGHT_CHANNEL;
 const channel = configuredChannel ?? (process.platform === "win32" ? "msedge" : undefined);
-const webPort = process.env.WEB_E2E_PORT ?? "4174";
+const webPort = process.env.WEB_E2E_PORT ?? "10030";
 if (!/^\d+$/.test(webPort)) {
   throw new TypeError("WEB_E2E_PORT must contain only digits");
 }

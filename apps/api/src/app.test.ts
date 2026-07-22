@@ -13,7 +13,7 @@ import {
   sha256Text,
   type FactSnapshot,
 } from "@geo/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildApp,
@@ -55,6 +55,7 @@ import type {
   MediaProductionController,
   MediaProductionRequest,
 } from "./media-production-service.js";
+import type { MediaImportController, MediaImportRequest } from "./media-import-service.js";
 
 const ids = {
   tenant: "10000000-0000-4000-8000-000000000001",
@@ -774,7 +775,7 @@ class FakeRepository implements ApiRepository {
       campaignId: input.campaignId,
       name: input.name,
       state: this.automationBatchState,
-      executionLevel: "dry_run",
+      executionLevel: input.executionLevel,
       scheduledFor: input.runs[0]?.availableAt ?? fixedNow.toISOString(),
       runCount: input.runs.length,
       completedRunCount: 0,
@@ -795,6 +796,7 @@ class FakeRepository implements ApiRepository {
       batchId: input.batchId,
       campaignId: input.campaignId,
       brandId: ids.brand,
+      executionLevel: input.executionLevel,
       slotKey: run.slotKey,
       topicKey: run.topicKey,
       brief: run.brief,
@@ -1305,14 +1307,21 @@ class FakeRepository implements ApiRepository {
       throw new RepositoryConflictError("Media job is not ready for completion");
     }
     const provenance = input.reference.provenance;
+    const generatedProvenanceMatches =
+      provenance.kind !== "generated" ||
+      (provenance.jobId === input.jobId &&
+        provenance.attemptId === input.attemptId &&
+        provenance.provider === job.providerId &&
+        provenance.providerMode === job.providerMode);
+    const importedProvenanceMatches =
+      provenance.kind === "generated" ||
+      (job.providerId === "customer-upload" && job.providerMode === "live");
     if (
       input.reference.platform !== job.platform ||
       input.reference.role !== job.role ||
       input.reference.visualBriefHash !== job.visualBriefHash ||
-      provenance.kind !== "generated" ||
-      provenance.jobId !== input.jobId ||
-      provenance.provider !== job.providerId ||
-      provenance.providerMode !== job.providerMode ||
+      !generatedProvenanceMatches ||
+      !importedProvenanceMatches ||
       input.reference.inspection.status !== "passed"
     ) {
       throw new RepositoryConflictError("Media asset does not match its generation job");
@@ -1320,12 +1329,11 @@ class FakeRepository implements ApiRepository {
     const successfulAttempt = this.mediaAttempts.some(
       (attempt) =>
         attempt.jobId === input.jobId &&
-        attempt.attemptId === provenance.attemptId &&
+        attempt.attemptId === input.attemptId &&
         attempt.status === "succeeded" &&
         attempt.outputSha256 === input.reference.sha256 &&
-        attempt.providerId === provenance.provider &&
-        attempt.providerMode === provenance.providerMode &&
-        attempt.model === provenance.model,
+        attempt.providerId === job.providerId &&
+        attempt.providerMode === job.providerMode,
     );
     if (!successfulAttempt) {
       throw new RepositoryConflictError("Media job has no matching successful attempt");
@@ -2035,6 +2043,7 @@ async function testApp(
     readonly deploymentProfile: "standard" | "customer_demo";
     readonly governanceMode: "external" | "demo_fixture";
   },
+  mediaImport?: MediaImportController,
 ) {
   const app = await buildApp({
     repository,
@@ -2052,6 +2061,7 @@ async function testApp(
     ...(agentRunGateway === undefined ? {} : { agentRunGateway }),
     ...(ctripBridgeGateway === undefined ? {} : { ctripBridgeGateway }),
     ...(mediaProduction === undefined ? {} : { mediaProduction }),
+    ...(mediaImport === undefined ? {} : { mediaImport }),
   });
   apps.push(app);
   return app;
@@ -2895,7 +2905,7 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(cancelled.json()).toMatchObject({ state: "cancelled", wasChanged: true });
   });
 
-  it("rejects client-selected unattended automation and principals without execute authority", async () => {
+  it("accepts an authorized unattended batch but rejects principals without execute authority", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
     const authenticated = await login(app);
@@ -2921,8 +2931,9 @@ describe("Fastify API security and vertical publication flow", () => {
         ],
       },
     });
-    expect(create.statusCode).toBe(400);
-    expect(repository.automationBatchInputs).toHaveLength(0);
+    expect(create.statusCode).toBe(201);
+    expect(repository.automationBatchInputs).toHaveLength(1);
+    expect(repository.automationBatchInputs[0]).toMatchObject({ executionLevel: "unattended" });
 
     const restrictedRepository = new FakeRepository("editor");
     const restrictedApp = await testApp(restrictedRepository);
@@ -3399,6 +3410,41 @@ describe("Fastify API security and vertical publication flow", () => {
     );
     expect(injected.statusCode).toBe(400);
     expect(repository.variantInputs).toHaveLength(1);
+  });
+
+  it("returns a deterministic Ctrip media gate error before variant persistence", async () => {
+    const repository = new FakeRepository();
+    repository.listChannelAccounts = (async () => [
+      {
+        id: ids.account,
+        platform: "ctrip_community" as const,
+        displayName: "Ctrip unattended",
+        capability: "browser_assisted" as const,
+        supportedExecutionLevels: ["dry_run" as const, "assisted" as const, "unattended" as const],
+        evidenceType: "platform_readback" as const,
+        evidenceRefs: ["ctrip:public-readback"],
+        status: "active",
+        lastVerifiedAt: fixedNow.toISOString(),
+      },
+    ]) as ApiRepository["listChannelAccounts"];
+    const app = await testApp(repository);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/content/${ids.content}/variants`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: { contentVersionId: ids.version, channelAccountId: ids.account },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({
+      error: { code: "CTRIP_MEDIA_GATE_BLOCKED" },
+    });
+    expect(repository.variantInputs).toHaveLength(0);
   });
 
   it("persists an immutable passing audit and service-issued one-time grant", async () => {
@@ -4191,6 +4237,89 @@ describe("Fastify API security and vertical publication flow", () => {
     expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
   });
 
+  it("claims the operator lease inside the confirmed Ctrip submit request", async () => {
+    const repository = new FakeRepository();
+    repository.assistedHandoffState = "draft_prepared";
+    repository.assistedHandoffLeaseOwner = null;
+    const commands: Parameters<CtripBridgeGateway["execute"]>[0][] = [];
+    const health = vi.fn(async () => true);
+    const gateway: CtripBridgeGateway = {
+      health,
+      execute: async (command) => {
+        commands.push(command);
+        repository.assistedHandoffState = "readback_pending";
+        return {
+          schemaVersion: "geo.ctrip-bridge.result.v1" as const,
+          tenantId: ids.tenant,
+          handoffId: ids.assistedHandoff,
+          bridgePrincipalId: "10000000-0000-4000-8000-000000000802",
+          adapterVersion: "ctrip-community-web-v1",
+          observedAt: fixedNow.toISOString(),
+          evidenceHash: "1".repeat(64),
+          evidenceKind: "simulation" as const,
+          command: "submit" as const,
+          outcome: "accepted" as const,
+          state: "readback_pending" as const,
+          receiptId: "10000000-0000-4000-8000-000000000715",
+          readbackId: "10000000-0000-4000-8000-000000000716",
+        };
+      },
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, gateway);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(health).toHaveBeenCalledOnce();
+    expect(repository.assistedHandoffClaims).toEqual([
+      { handoffId: ids.assistedHandoff, leaseSeconds: 300 },
+    ]);
+    expect(repository.assistedHandoffPermitIssues).toEqual([ids.assistedHandoff]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      command: "submit",
+      handoffId: ids.assistedHandoff,
+      submitPermit: "f".repeat(64),
+    });
+  });
+
+  it("does not claim or issue a Ctrip submit permit while the bridge is unhealthy", async () => {
+    const repository = new FakeRepository();
+    repository.assistedHandoffState = "draft_prepared";
+    const execute = vi.fn<CtripBridgeGateway["execute"]>();
+    const gateway: CtripBridgeGateway = {
+      health: async () => false,
+      execute,
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, gateway);
+    const authenticated = await login(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/publication-assisted-handoffs/${ids.assistedHandoff}/submit`,
+      headers: {
+        cookie: authenticated.cookie,
+        "x-csrf-token": authenticated.body.csrfToken,
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "CTRIP_BRIDGE_UNAVAILABLE" } });
+    expect(repository.assistedHandoffClaims).toEqual([]);
+    expect(repository.assistedHandoffPermitIssues).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("allows readback recovery only after the Ctrip submit permit was consumed", async () => {
     const repository = new FakeRepository();
     repository.assistedHandoffState = "awaiting_operator_submit";
@@ -4511,6 +4640,44 @@ describe("Fastify API security and vertical publication flow", () => {
     });
   });
 
+  it("reports the tenant-scoped Ctrip bridge mode and command capabilities", async () => {
+    const repository = new FakeRepository();
+    const bridge: CtripBridgeGateway = {
+      execute: async () => {
+        throw new Error("not used");
+      },
+      healthDetails: async () => ({
+        status: "ok",
+        service: "geo-ctrip-bridge",
+        mode: "browser_supervised",
+        adapterVersion: "ctrip-community-browser-supervised-v1",
+        commandCapabilities: { prepare: true, submit: true, readback: false },
+      }),
+      readiness: async () => ({
+        status: "ready",
+        observedAt: "2026-07-21T19:00:00.000Z",
+      }),
+    };
+    const app = await testApp(repository, undefined, undefined, undefined, bridge);
+    const authenticated = await login(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/ctrip-bridge/status",
+      headers: { cookie: authenticated.cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      configured: true,
+      reachable: true,
+      mode: "browser_supervised",
+      adapterVersion: "ctrip-community-browser-supervised-v1",
+      commandCapabilities: { prepare: true, submit: true, readback: false },
+      operationalStatus: "ready",
+      operationalCheckedAt: "2026-07-21T19:00:00.000Z",
+    });
+  });
+
   it("keeps media production disabled by default after authorization", async () => {
     const repository = new FakeRepository();
     const app = await testApp(repository);
@@ -4629,6 +4796,91 @@ describe("Fastify API security and vertical publication flow", () => {
       payload: validPayload,
     });
     expect(denied.statusCode).toBe(403);
+  });
+
+  it("accepts customer media bytes without accepting client-computed asset metadata", async () => {
+    const repository = new FakeRepository();
+    let receivedInput: MediaImportRequest | null = null;
+    const mediaImport: MediaImportController = {
+      request: async (_context, input) => {
+        receivedInput = input;
+        return {
+          job: {
+            id: ids.variant,
+            contentVersionId: input.contentVersionId,
+            platform: input.platform,
+            role: input.role,
+            factIds: input.claimIds,
+            visualBrief: {
+              schemaVersion: "geo.visual-brief.v1",
+              editorialProfile: "guide",
+              platform: input.platform,
+              role: input.role,
+              aspectRatio: "4:3",
+              factIds: input.claimIds,
+              prompt: "server-generated",
+              negativePrompt: "server-generated",
+              altText: "server-generated",
+              caption: "server-generated",
+            },
+            visualBriefHash: "a".repeat(64),
+            requestHash: "b".repeat(64),
+            idempotencyKey: input.idempotencyKey,
+            providerId: "customer-upload",
+            providerMode: "live",
+            state: "pending",
+            attemptCount: 0,
+            assetId: null,
+            lastErrorCode: null,
+            lastErrorMessage: null,
+            createdAt: fixedNow.toISOString(),
+            updatedAt: fixedNow.toISOString(),
+            completedAt: null,
+          },
+          asset: null,
+          wasCreated: true,
+          contentInspectionRequired: true,
+        };
+      },
+    };
+    const app = await testApp(
+      repository,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mediaImport,
+    );
+    const owner = await login(app);
+    const validPayload = {
+      platform: "ctrip_community",
+      role: "cover",
+      claimIds: [ids.fact],
+      idempotencyKey: "customer-upload-1",
+      bytesBase64: "iVBORw==",
+      rights: {
+        kind: "tenant_owned",
+        ownershipAssertion: "Tenant owns the original photograph.",
+        licenseName: "Tenant original photograph",
+      },
+    } as const;
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-imports`,
+      headers: { cookie: owner.cookie, "x-csrf-token": owner.body.csrfToken },
+      payload: validPayload,
+    });
+    const forged = await app.inject({
+      method: "POST",
+      url: `/api/content-versions/${ids.version}/media-imports`,
+      headers: { cookie: owner.cookie, "x-csrf-token": owner.body.csrfToken },
+      payload: { ...validPayload, sha256: "0".repeat(64), width: 1200, storageKey: "forged" },
+    });
+
+    expect(accepted.statusCode).toBe(201);
+    expect(receivedInput).toEqual({ contentVersionId: ids.version, ...validPayload });
+    expect(forged.statusCode).toBe(400);
   });
 
   it("allows a read-only principal to inspect tenant-scoped media job status", async () => {

@@ -33,6 +33,7 @@ describe("CtripCommunityBrowserPreflightAdapter", () => {
 
     await expect(adapter.prepare()).resolves.toEqual({
       outcome,
+      diagnosticCode: `preflight:${review}`,
       sessionEvidenceHash: "a".repeat(64),
       evidenceHash: "b".repeat(64),
       observedAt: now,

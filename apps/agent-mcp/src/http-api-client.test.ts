@@ -401,7 +401,11 @@ describe("GEO API session and destination policy", () => {
         idempotencyKey: "draft-once",
         fixtureMode: true,
       }),
-    ).resolves.toMatchObject({ providerMode: "fixture", contentVersionId: ids.version });
+    ).resolves.toMatchObject({
+      providerMode: "fixture",
+      contentVersionId: ids.version,
+      claimIds: [ids.fact],
+    });
 
     const recordedBody: unknown = contentBody;
     if (
@@ -436,6 +440,139 @@ describe("GEO API session and destination policy", () => {
     });
     expect(JSON.stringify(payload.bodyBlocks)).not.toContain('"text"');
     expect(String(payload.bodyMarkdown)).toContain("4001133986");
+    await expect(
+      api.proposeDraft(principal, {
+        brandId: ids.brand,
+        campaignId: ids.campaign,
+        brief: "travel risk and service boundary authored",
+        articleTemplateId: "step-by-step-guide",
+        idempotencyKey: "draft-authored-once",
+        authoredDraft: {
+          title: "出发前先核对这项材料",
+          titleClaimIds: [ids.fact],
+          summary: "按已核验资料整理一份可执行的检查顺序。",
+          summaryClaimIds: [ids.fact],
+          body: [{ text: "先核对材料，再联系旅行社确认。", claimIds: [ids.fact] }],
+          mediaSearchPlan: [
+            {
+              query: "京都 金阁寺 Kinkakuji",
+              role: "cover",
+              rationale: "封面对应路线主题",
+              claimIds: [ids.fact],
+            },
+            {
+              query: "京都 伏见稻荷 Fushimi Inari",
+              role: "inline",
+              rationale: "对应景点段落",
+              claimIds: [ids.fact],
+            },
+            {
+              query: "京都 岚山 Arashiyama",
+              role: "inline",
+              rationale: "对应路线段落",
+              claimIds: [ids.fact],
+            },
+            {
+              query: "京都 锦市场 Nishiki Market",
+              role: "inline",
+              rationale: "对应餐饮段落",
+              claimIds: [ids.fact],
+            },
+            {
+              query: "京都 鸭川 Kamo River",
+              role: "inline",
+              rationale: "对应城市漫步段落",
+              claimIds: [ids.fact],
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      providerMode: "pi_authored",
+      contentVersionId: ids.version,
+      claimIds: [ids.fact],
+    });
+    const authoredRequest = JSON.parse(JSON.stringify(contentBody)) as Record<string, unknown>;
+    const authoredPayload = authoredRequest.payload as Record<string, unknown>;
+    expect(authoredPayload).toMatchObject({
+      title: "出发前先核对这项材料",
+      titleBlocks: [{ type: "authored", text: "出发前先核对这项材料", claimIds: [ids.fact] }],
+      bodyBlocks: expect.arrayContaining([
+        { type: "authored", text: "先核对材料，再联系旅行社确认。", claimIds: [ids.fact] },
+      ]),
+      mediaSearchPlan: expect.arrayContaining([
+        expect.objectContaining({ query: "京都 金阁寺 Kinkakuji", role: "cover" }),
+      ]),
+    });
+    expect(String(authoredPayload.bodyMarkdown)).toContain("4001133986");
+    await expect(
+      api.proposeDraft(principal, {
+        brandId: ids.brand,
+        campaignId: ids.campaign,
+        brief: "Ctrip pre-departure checklist",
+        articleTemplateId: "step-by-step-guide",
+        idempotencyKey: "draft-ctrip-no-contacts",
+        targetPlatform: "ctrip_community",
+        authoredDraft: {
+          title: "Ctrip checklist",
+          titleClaimIds: [ids.fact],
+          summary: "Check the verified service boundary before departure.",
+          summaryClaimIds: [ids.fact],
+          body: [
+            {
+              text: "## Before departure\nUse the verified service boundary as the checklist baseline.",
+              claimIds: [ids.fact],
+            },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({ providerMode: "pi_authored", contentVersionId: ids.version });
+    const ctripRequest = JSON.parse(JSON.stringify(contentBody)) as Record<string, unknown>;
+    const ctripPayload = ctripRequest.payload as Record<string, unknown>;
+    expect(ctripPayload.contactIds).toEqual([]);
+    expect(JSON.stringify(ctripPayload.bodyBlocks)).not.toContain('"type":"contact"');
+    expect(String(ctripPayload.bodyMarkdown)).not.toContain("4001133986");
+    await expect(
+      api.proposeDraft(principal, {
+        brandId: ids.brand,
+        campaignId: ids.campaign,
+        brief: "Ctrip copied contact rejection",
+        idempotencyKey: "draft-ctrip-contact-rejected",
+        targetPlatform: "ctrip_community",
+        authoredDraft: {
+          title: "Ctrip contact check",
+          titleClaimIds: [ids.fact],
+          summary: "Check the verified service boundary before departure.",
+          summaryClaimIds: [ids.fact],
+          body: [
+            {
+              text: "For help call 4001133986 before departure.",
+              claimIds: [ids.fact],
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "CTRIP_AUTHORED_CONTACT_FORBIDDEN", status: 422 });
+    await expect(
+      api.proposeDraft(principal, {
+        brandId: ids.brand,
+        campaignId: ids.campaign,
+        brief: "unsupported authored fact",
+        idempotencyKey: "draft-authored-unsupported",
+        authoredDraft: {
+          title: "无证据标题",
+          titleClaimIds: ["00000000-0000-4000-8000-000000000099"],
+          summary: "无证据摘要",
+          summaryClaimIds: ["00000000-0000-4000-8000-000000000099"],
+          body: [
+            {
+              text: "这段文字引用了不在当前事实快照中的 ID。",
+              claimIds: ["00000000-0000-4000-8000-000000000099"],
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: "AUTHORED_DRAFT_FACT_UNSUPPORTED", status: 422 });
     expect(String(payload.bodyMarkdown)).toContain("最终服务范围以签约前确认材料为准");
 
     await expect(
@@ -447,7 +584,7 @@ describe("GEO API session and destination policy", () => {
         idempotencyKey: "invalid-template",
       }),
     ).rejects.toMatchObject({ code: "ARTICLE_TEMPLATE_UNKNOWN", status: 400 });
-    expect(contentRequests).toBe(1);
+    expect(contentRequests).toBe(3);
 
     automationBlocked = true;
     await expect(
@@ -462,7 +599,7 @@ describe("GEO API session and destination policy", () => {
       code: "AUTOMATION_GENERATION_BLOCKED",
       status: 409,
     });
-    expect(contentRequests).toBe(1);
+    expect(contentRequests).toBe(3);
   });
 
   it("keeps publication grant credentials internal and consumes them once", async () => {
@@ -700,6 +837,7 @@ describe("GEO API session and destination policy", () => {
 
   it("maps bounded media operations without exposing prompt or provider controls", async () => {
     let mediaBody: unknown;
+    let mediaSearchBody: unknown;
     const scopeBodies: unknown[] = [];
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -727,6 +865,10 @@ describe("GEO API session and destination policy", () => {
       }
       if (url.pathname === `/api/media-jobs/${ids.job}`) {
         return jsonResponse({ job: { id: ids.job, state: "succeeded" } });
+      }
+      if (url.pathname === `/api/content-versions/${ids.version}/media-search-imports`) {
+        mediaSearchBody = JSON.parse(String(init?.body));
+        return jsonResponse({ finalContentVersionId: ids.version, imported: [] });
       }
       if (url.pathname === "/api/resource-scope-check") {
         scopeBodies.push(JSON.parse(String(init?.body)));
@@ -765,12 +907,23 @@ describe("GEO API session and destination policy", () => {
       job: { id: ids.job, state: "succeeded" },
     });
     await expect(
+      api.requestMediaSearchImport(principal, {
+        contentVersionId: ids.version,
+        idempotencyKey: "media-search-1",
+      }),
+    ).resolves.toMatchObject({ finalContentVersionId: ids.version });
+    await expect(
       api.authorizeResourceScope(principal, "geo_media_production_request", {
         contentVersionId: ids.version,
       }),
     ).resolves.toBe(true);
     await expect(
       api.authorizeResourceScope(principal, "geo_media_job_status", { mediaJobId: ids.job }),
+    ).resolves.toBe(true);
+    await expect(
+      api.authorizeResourceScope(principal, "geo_media_search_import", {
+        contentVersionId: ids.version,
+      }),
     ).resolves.toBe(true);
 
     expect(mediaBody).toEqual({
@@ -780,9 +933,11 @@ describe("GEO API session and destination policy", () => {
       idempotencyKey: "media-1",
     });
     expect(JSON.stringify(mediaBody)).not.toMatch(/prompt|provider|url|storage|credential/iu);
+    expect(mediaSearchBody).toEqual({ idempotencyKey: "media-search-1" });
     expect(scopeBodies).toEqual([
       { resources: [{ kind: "content_version", id: ids.version }] },
       { resources: [{ kind: "media_job", id: ids.job }] },
+      { resources: [{ kind: "content_version", id: ids.version }] },
     ]);
   });
 });

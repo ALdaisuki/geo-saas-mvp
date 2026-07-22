@@ -6,7 +6,7 @@ import type {
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
-import { mediaReferenceSchema } from "@geo/contracts";
+import { CTRIP_COMMUNITY_PUBLICATION_LIMITS, mediaReferenceSchema } from "@geo/contracts";
 
 import type {
   AuditPolicy,
@@ -30,6 +30,49 @@ export interface RenderPlatformPublicationVariantInput {
   readonly contacts: readonly TenantContact[];
 }
 
+function codePointLength(value: string): number {
+  return [...value.trim()].length;
+}
+
+export function assertPlatformPublicationVariantBoundaries(
+  platform: Platform,
+  payload: Readonly<PublicationVariantPayload>,
+): void {
+  if (platform !== "ctrip_community") return;
+  const titleLength = codePointLength(payload.title);
+  const bodyLength = codePointLength(payload.bodyMarkdown);
+  invariant(
+    titleLength >= CTRIP_COMMUNITY_PUBLICATION_LIMITS.minTitleCharacters &&
+      titleLength <= CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxTitleCharacters &&
+      bodyLength >= CTRIP_COMMUNITY_PUBLICATION_LIMITS.minBodyCharacters &&
+      bodyLength <= CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxBodyCharacters,
+    "CTRIP_PAYLOAD_LIMITS_INVALID",
+    "Ctrip title or body is outside the fixed publication boundary",
+    {
+      titleLength,
+      bodyLength,
+      minTitleCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.minTitleCharacters,
+      maxTitleCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxTitleCharacters,
+      minBodyCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.minBodyCharacters,
+      maxBodyCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxBodyCharacters,
+    },
+  );
+  const coverCount = payload.media.filter((media) => media.role === "cover").length;
+  invariant(
+    payload.media.length >= CTRIP_COMMUNITY_PUBLICATION_LIMITS.minImages &&
+      payload.media.length <= CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxImages &&
+      coverCount === 1,
+    "CTRIP_MEDIA_GATE_BLOCKED",
+    "Ctrip publication requires four to five inspected images with exactly one cover",
+    {
+      mediaCount: payload.media.length,
+      coverCount,
+      minImages: CTRIP_COMMUNITY_PUBLICATION_LIMITS.minImages,
+      maxImages: CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxImages,
+    },
+  );
+}
+
 function sameArray(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -43,6 +86,35 @@ function sameUniqueSet(left: readonly string[], right: readonly string[]): boole
     leftSet.size === rightSet.size &&
     [...leftSet].every((value) => rightSet.has(value))
   );
+}
+
+function normalizedPhone(value: string): string {
+  return value.replace(/\D/gu, "");
+}
+
+function contactAppearsInText(contact: TenantContact, text: string): boolean {
+  if (contact.type === "phone") {
+    return normalizedPhone(text).includes(normalizedPhone(contact.value));
+  }
+  return text.toLocaleLowerCase("zh-CN").includes(contact.value.toLocaleLowerCase("zh-CN"));
+}
+
+function authoredSourceContainsContactText(
+  source: PublicationVariantPayload,
+  contacts: readonly TenantContact[],
+): boolean {
+  const text = [
+    ...(source.titleBlocks ?? [])
+      .filter((block): block is Extract<CanonicalBodyBlock, { type: "authored" }> => block.type === "authored")
+      .map((block) => block.text),
+    ...(source.summaryBlocks ?? [])
+      .filter((block): block is Extract<CanonicalBodyBlock, { type: "authored" }> => block.type === "authored")
+      .map((block) => block.text),
+    ...(source.bodyBlocks ?? [])
+      .filter((block): block is Extract<CanonicalBodyBlock, { type: "authored" }> => block.type === "authored")
+      .map((block) => block.text),
+  ].join("\n");
+  return contacts.some((contact) => contactAppearsInText(contact, text));
 }
 
 function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): Readonly<{
@@ -130,16 +202,36 @@ function validateCanonicalSource(input: RenderPlatformPublicationVariantInput): 
     input.sourcePayload.claims.map((claim) => claim.id),
     input.sourcePayload.contactIds,
   );
-  invariant(
-    sha256Canonical(input.sourcePayload.titleBlocks) === sha256Canonical(expectedTitleBlocks) &&
-      sha256Canonical(input.sourcePayload.summaryBlocks) ===
-        sha256Canonical(expectedSummaryBlocks) &&
-      sha256Canonical(input.sourcePayload.bodyBlocks) === sha256Canonical(expectedBodyBlocks) &&
+  const hasAuthoredBlocks = [
+    ...(input.sourcePayload.titleBlocks ?? []),
+    ...(input.sourcePayload.summaryBlocks ?? []),
+    ...(input.sourcePayload.bodyBlocks ?? []),
+  ].some((block) => block.type === "authored");
+  if (hasAuthoredBlocks) {
+    invariant(
+      input.sourcePayload.titleBlocks.some((block) => block.type === "authored") &&
+        input.sourcePayload.summaryBlocks.some((block) => block.type === "authored") &&
+        input.sourcePayload.bodyBlocks.some((block) => block.type === "authored"),
+      "PLATFORM_VARIANT_SOURCE_INVALID",
+      "Authored source payloads require authored title, summary, and body blocks",
+    );
+    invariant(
       sameArray(input.sourcePayload.tagTemplateIds, sourceProfile.tagTemplateIds),
-    "PLATFORM_VARIANT_SOURCE_INVALID",
-    "Canonical source references do not match the declared editorial profile",
-    { profile: input.sourcePayload.editorialProfile },
-  );
+      "PLATFORM_VARIANT_SOURCE_INVALID",
+      "Authored source tags must remain bound to the declared editorial profile",
+    );
+  } else {
+    invariant(
+      sha256Canonical(input.sourcePayload.titleBlocks) === sha256Canonical(expectedTitleBlocks) &&
+        sha256Canonical(input.sourcePayload.summaryBlocks) ===
+          sha256Canonical(expectedSummaryBlocks) &&
+        sha256Canonical(input.sourcePayload.bodyBlocks) === sha256Canonical(expectedBodyBlocks) &&
+        sameArray(input.sourcePayload.tagTemplateIds, sourceProfile.tagTemplateIds),
+      "PLATFORM_VARIANT_SOURCE_INVALID",
+      "Canonical source references do not match the declared editorial profile",
+      { profile: input.sourcePayload.editorialProfile },
+    );
+  }
   return { editorialProfile: input.sourcePayload.editorialProfile, media };
 }
 
@@ -148,6 +240,8 @@ function bodyBlocks(
   platformProfile: EditorialPlatformProfilePolicy,
   platformStyle: PlatformEditorialStylePolicy,
   source: PublicationVariantPayload,
+  tenantContacts: readonly TenantContact[],
+  suppressAuthored: boolean,
 ): CanonicalBodyBlock[] {
   const claims = source.claims.map(
     (claim) =>
@@ -165,6 +259,44 @@ function bodyBlocks(
         presentation: platformProfile.contactPresentation,
       }) as const,
   );
+
+  const authored = (source.bodyBlocks ?? []).filter(
+    (block): block is Extract<CanonicalBodyBlock, { type: "authored" }> =>
+      block.type === "authored",
+  );
+  if (authored.length > 0 && !suppressAuthored) {
+    const currentContacts = new Map(
+      tenantContacts
+        .filter((contact) => source.contactIds.includes(contact.id))
+        .map((contact) => [contact.id, contact] as const),
+    );
+    const coveredContactIds = new Set<string>();
+    const contactClaims: CanonicalBodyBlock[] = [];
+    for (const claim of source.claims) {
+      const normalizedClaim = claim.text.normalize("NFKC").toLocaleLowerCase("zh-CN");
+      const matchingContactIds = source.contactIds.filter((contactId) => {
+        if (coveredContactIds.has(contactId)) return false;
+        const contact = currentContacts.get(contactId);
+        return (
+          contact !== undefined &&
+          normalizedClaim.includes(contact.value.normalize("NFKC").toLocaleLowerCase("zh-CN"))
+        );
+      });
+      if (matchingContactIds.length === 0) continue;
+      matchingContactIds.forEach((contactId) => coveredContactIds.add(contactId));
+      contactClaims.push({
+        type: "claim",
+        claimId: claim.id,
+        presentation: platformProfile.claimPresentation,
+        contactIds: matchingContactIds,
+      });
+    }
+    return [
+      ...authored,
+      ...contactClaims,
+      ...contacts.filter((block) => !coveredContactIds.has(block.contactId)),
+    ];
+  }
 
   const slots: Readonly<Record<EditorialPlatformBodySlot, readonly CanonicalBodyBlock[]>> = {
     platform_opening: [{ type: "template", templateId: platformStyle.bodyTemplateIds.opening }],
@@ -197,6 +329,23 @@ export function renderPlatformPublicationVariant(
     "Active policy does not define the selected platform editorial style",
     { platform: input.platform },
   );
+  // Ctrip rejects promotional contact details in community posts. When the
+  // canonical draft contains any tenant contact value, use the fixed,
+  // evidence-backed platform structure and omit contact claims/rows entirely.
+  // This is a platform transformation, not a text substitution: the source
+  // payload remains immutable and other channels keep their contact policy.
+  const ctripPlatform = input.platform === "ctrip_community";
+  const ctripContactSuppression =
+    ctripPlatform && authoredSourceContainsContactText(input.sourcePayload, input.contacts);
+  const platformSource = ctripPlatform
+    ? {
+        ...input.sourcePayload,
+        claims: input.sourcePayload.claims.filter(
+          (claim) => !input.contacts.some((contact) => contactAppearsInText(contact, claim.text)),
+        ),
+        contactIds: [],
+      }
+    : input.sourcePayload;
   const candidate: PublicationVariantPayload = {
     editorialProfile,
     ...(input.sourcePayload.articleTemplateId === undefined
@@ -205,19 +354,37 @@ export function renderPlatformPublicationVariant(
     ...(input.sourcePayload.brandAgentProfile === undefined
       ? {}
       : { brandAgentProfile: { ...input.sourcePayload.brandAgentProfile } }),
+    ...(input.sourcePayload.locationQuery === undefined
+      ? {}
+      : { locationQuery: input.sourcePayload.locationQuery }),
     title: "placeholder",
     summary: "placeholder",
     bodyMarkdown: "placeholder",
-    titleBlocks: [{ type: "template", templateId: platformProfile.titleTemplateId }],
-    summaryBlocks: [{ type: "template", templateId: platformProfile.summaryTemplateId }],
-    bodyBlocks: bodyBlocks(profile.source, platformProfile, platformStyle, input.sourcePayload),
+    titleBlocks:
+      !ctripContactSuppression &&
+      input.sourcePayload.titleBlocks?.some((block) => block.type === "authored") === true
+        ? input.sourcePayload.titleBlocks
+        : [{ type: "template", templateId: platformProfile.titleTemplateId }],
+    summaryBlocks:
+      !ctripContactSuppression &&
+      input.sourcePayload.summaryBlocks?.some((block) => block.type === "authored") === true
+        ? input.sourcePayload.summaryBlocks
+        : [{ type: "template", templateId: platformProfile.summaryTemplateId }],
+    bodyBlocks: bodyBlocks(
+      profile.source,
+      platformProfile,
+      platformStyle,
+      platformSource,
+      input.contacts,
+      ctripContactSuppression,
+    ),
     tagTemplateIds: [...platformStyle.tagTemplateIds, ...profile.source.tagTemplateIds],
     media: validatedSource.media.filter((item) => item.platform === input.platform),
-    claims: input.sourcePayload.claims.map((claim) => ({
+    claims: platformSource.claims.map((claim) => ({
       ...claim,
       evidenceSourceIds: [...claim.evidenceSourceIds],
     })),
-    contactIds: [...input.sourcePayload.contactIds],
+    contactIds: [...platformSource.contactIds],
     tags: [],
   };
   const rendered = renderCanonicalContent({

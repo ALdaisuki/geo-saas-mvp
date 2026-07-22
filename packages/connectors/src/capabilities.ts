@@ -43,6 +43,7 @@ export interface CapabilityUpgradeEvidence {
   checkedAt: string;
   articlePublishingVerified: boolean;
   reconciliationVerified: boolean;
+  unattendedBrowserVerified?: boolean;
 }
 
 function assertTimestamp(value: string): void {
@@ -103,15 +104,25 @@ export function buildCapabilityReport(
         { platform },
       );
     }
+    const unattendedVerified =
+      evidence.unattendedBrowserVerified === true &&
+      evidence.reconciliationVerified &&
+      evidence.evidenceType === "platform_readback" &&
+      evidence.evidenceRefs.some((reference) =>
+        reference.startsWith("adapter:ctrip-community-browser-unattended-"),
+      );
     return {
       platform,
       capability: evidence.capability,
-      supportedExecutionLevels: ["dry_run", "assisted"],
+      supportedExecutionLevels: unattendedVerified
+        ? ["dry_run", "assisted", "unattended"]
+        : ["dry_run", "assisted"],
       checkedAt,
       evidenceType: evidence.evidenceType,
       evidenceRefs: [...evidence.evidenceRefs],
-      reason:
-        "Authenticated browser-assisted publishing was verified; unattended execution remains forbidden.",
+      reason: unattendedVerified
+        ? "A reviewed fixed browser adapter, one-time submit control and public readback were verified for unattended execution."
+        : "Authenticated browser-assisted publishing was verified; unattended execution remains forbidden.",
     };
   }
 
@@ -155,14 +166,10 @@ export function assertExecutionAllowed(
   report: ConnectorCapabilityReport,
   executionLevel: ExecutionLevel,
 ): void {
-  if (
-    executionLevel === "unattended" &&
-    report.capability !== "public_api" &&
-    report.capability !== "partner_api"
-  ) {
+  if (executionLevel === "unattended" && !report.supportedExecutionLevels.includes("unattended")) {
     throw new ConnectorPolicyError(
       "UNATTENDED_REQUIRES_VERIFIED_API",
-      `${report.platform} unattended publishing requires a verified public or partner API`,
+      `${report.platform} unattended publishing requires a verified API or reviewed fixed browser adapter with public readback`,
       { platform: report.platform, executionLevel },
     );
   }

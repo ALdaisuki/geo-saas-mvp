@@ -20,6 +20,7 @@ export interface CtripBridgeHandoffDraft {
   readonly variantId: string;
   readonly contentVersionId: string;
   readonly platform: "ctrip_community";
+  readonly executionLevel: "assisted" | "unattended";
   readonly state:
     | "handoff_pending"
     | "session_required"
@@ -39,7 +40,9 @@ export interface CtripBridgeHandoffDraft {
   readonly bridgePrincipalId: string;
   readonly externalDraftId: string | null;
   readonly submitOutcome: "accepted" | "uncertain" | "rejected" | null;
+  readonly submitEvidenceHash: string | null;
   readonly submitEvidenceKind: "simulation" | "browser" | null;
+  readonly submitObservedAt: string | null;
   readonly submitCandidateExternalId: string | null;
   readonly submitCandidateExternalUrl: string | null;
   readonly submitPermitConsumedAt: string | null;
@@ -57,7 +60,8 @@ export interface CtripBridgePreparedEvidence {
 }
 
 export interface CtripBridgePreparationBlocker {
-  readonly outcome: "session_required" | "challenge_required" | "adapter_drift";
+  readonly outcome: "session_required" | "challenge_required" | "adapter_drift" | "payload_invalid";
+  readonly diagnosticCode: string;
   readonly sessionEvidenceHash: string;
   readonly evidenceHash: string;
   readonly observedAt: string;
@@ -103,6 +107,24 @@ export interface CtripBridgeReadbackObservation {
 }
 
 export interface CtripBridgeControlPlane {
+  claimDraftPreparation(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+    leaseSeconds: number,
+  ): Promise<void>;
+  claimNextDraftPreparation(
+    context: CtripBridgeExecutionContext,
+    leaseSeconds: number,
+    executionLevel?: "assisted" | "unattended",
+  ): Promise<string | null>;
+  claimNextUnattendedSubmit?(
+    context: CtripBridgeExecutionContext,
+  ): Promise<{ readonly handoffId: string; readonly submitPermit: string } | null>;
+  claimNextUnattendedReadback?(context: CtripBridgeExecutionContext): Promise<string | null>;
+  claimUnattendedReadback?(
+    context: CtripBridgeExecutionContext,
+    handoffId: string,
+  ): Promise<boolean>;
   loadHandoff(
     context: CtripBridgeExecutionContext,
     handoffId: string,
@@ -160,6 +182,7 @@ export interface CtripFixedAdapter {
     draft: RenderedDraft,
     media: readonly CtripTrustedMediaAttachment[],
   ): Promise<CtripBridgePrepareResult>;
+  verifySubmit?(handoff: CtripBridgeHandoffDraft, draft: RenderedDraft): Promise<void>;
   submit(
     handoff: CtripBridgeHandoffDraft,
     draft: RenderedDraft,

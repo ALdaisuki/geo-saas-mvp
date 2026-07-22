@@ -26,6 +26,7 @@ export class CtripCommunityBrowserPreflightAdapter implements CtripFixedAdapter 
     const evidence = await this.#inspect();
     return Object.freeze({
       outcome: evidence.outcome === "reviewed_surface" ? "adapter_drift" : evidence.outcome,
+      diagnosticCode: `preflight:${evidence.outcome}`,
       sessionEvidenceHash: evidence.sessionEvidenceHash,
       evidenceHash: evidence.evidenceHash,
       observedAt: evidence.observedAt,

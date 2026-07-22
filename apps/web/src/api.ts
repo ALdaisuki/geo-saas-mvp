@@ -279,7 +279,8 @@ export interface ContentClaim {
 export type CanonicalInlineBlock =
   | { readonly type: "template"; readonly templateId: string }
   | { readonly type: "claim"; readonly claimId: string }
-  | { readonly type: "contact"; readonly contactId: string };
+  | { readonly type: "contact"; readonly contactId: string }
+  | { readonly type: "authored"; readonly text: string; readonly claimIds: readonly string[] };
 
 export type CanonicalBodyBlock =
   | { readonly type: "template"; readonly templateId: string }
@@ -287,12 +288,21 @@ export type CanonicalBodyBlock =
       readonly type: "claim";
       readonly claimId: string;
       readonly presentation: "paragraph" | "bullet";
+      readonly contactIds?: readonly string[];
     }
   | {
       readonly type: "contact";
       readonly contactId: string;
       readonly presentation: "paragraph" | "bullet";
-    };
+    }
+  | { readonly type: "authored"; readonly text: string; readonly claimIds: readonly string[] };
+
+export interface MediaSearchIntent {
+  readonly query: string;
+  readonly role: "cover" | "inline";
+  readonly rationale: string;
+  readonly claimIds: readonly string[];
+}
 
 export interface PublicationPayload {
   readonly editorialProfile?:
@@ -306,6 +316,7 @@ export interface PublicationPayload {
   readonly bodyBlocks?: readonly CanonicalBodyBlock[];
   readonly tagTemplateIds?: readonly string[];
   readonly canonicalUrl?: string;
+  readonly mediaSearchPlan?: readonly MediaSearchIntent[];
   readonly media: readonly Readonly<Record<string, unknown>>[];
   readonly claims: readonly ContentClaim[];
   readonly contactIds: readonly string[];
@@ -376,6 +387,66 @@ export interface ContentVersion {
   readonly payload: PublicationPayload;
   readonly payloadHash: string;
   readonly frozenAt: string | null;
+}
+
+export type MediaImportRights =
+  | {
+      readonly kind: "tenant_owned";
+      readonly ownershipAssertion: string;
+      readonly licenseName: string;
+    }
+  | {
+      readonly kind: "licensed_stock";
+      readonly basis: "commercial_license" | "editorial_license";
+      readonly sourceUrl: string;
+      readonly licenseName: string;
+      readonly licenseUrl: string;
+      readonly attribution?: string;
+      readonly rightsDescription: string;
+    };
+
+export interface MediaImportInput {
+  readonly platform: "toutiao" | "sohu" | "ctrip_community";
+  readonly role: "cover" | "inline";
+  readonly claimIds: readonly string[];
+  readonly idempotencyKey: string;
+  readonly bytesBase64: string;
+  readonly rights: MediaImportRights;
+}
+
+export interface MediaImportResult {
+  readonly job: {
+    readonly id: string;
+    readonly state: string;
+    readonly providerId: string;
+    readonly providerMode: string;
+  };
+  readonly asset: {
+    readonly id: string;
+    readonly contentVersionId: string;
+    readonly storageKey: string;
+    readonly reference: Readonly<Record<string, unknown>>;
+  } | null;
+  readonly wasCreated: boolean;
+  readonly contentInspectionRequired: boolean;
+}
+
+export interface MediaSearchImportResult {
+  readonly provider: "wikimedia_commons";
+  readonly sourceContentVersionId: string;
+  readonly finalContentVersionId: string;
+  readonly plannedCount: number;
+  readonly imported: readonly {
+    readonly intentIndex: number;
+    readonly query: string;
+    readonly role: "cover" | "inline";
+    readonly providerAssetId: string;
+    readonly sourceUrl: string;
+    readonly assetId: string;
+    readonly contentVersionId: string;
+  }[];
+  readonly rejectedCandidateCount: number;
+  readonly rejectionCodes: readonly string[];
 }
 
 export interface PublicationJob {
@@ -614,7 +685,7 @@ export interface PublicationRequestInput {
   readonly grantId: string;
   readonly token: string;
   readonly idempotencyKey: string;
-  readonly executionLevel: "dry_run" | "assisted";
+  readonly executionLevel: "dry_run" | "assisted" | "unattended";
   readonly scheduledFor?: string;
 }
 
@@ -834,6 +905,7 @@ export interface CreateAutomationBatchItemInput {
 export interface CreateAutomationBatchInput {
   readonly idempotencyKey: string;
   readonly name?: string;
+  readonly executionLevel?: "dry_run" | "assisted" | "unattended";
   readonly items: readonly CreateAutomationBatchItemInput[];
 }
 
@@ -842,7 +914,7 @@ export interface AutomationBatch {
   readonly campaignId: string;
   readonly name: string | null;
   readonly state: AutomationBatchState;
-  readonly executionLevel: "dry_run";
+  readonly executionLevel: "dry_run" | "assisted" | "unattended";
   readonly scheduledFor: string;
   readonly runCount: number;
   readonly completedRunCount: number;
@@ -873,6 +945,7 @@ export interface AutomationRun {
   readonly batchId: string;
   readonly campaignId: string;
   readonly brandId: string;
+  readonly executionLevel: "dry_run" | "assisted" | "unattended";
   readonly slotKey: string;
   readonly topicKey: string;
   readonly brief: string;
@@ -945,7 +1018,7 @@ export interface CustomerSetupReadiness {
   readonly governanceMode: "external" | "demo_fixture";
   readonly articleGenerationReady: boolean;
   readonly ctripSimulationReady: boolean;
-  readonly externalPublishingEnabled: false;
+  readonly externalPublishingEnabled: boolean;
   readonly checks: {
     readonly agent: boolean;
     readonly ctripAccount: boolean;
@@ -954,6 +1027,26 @@ export interface CustomerSetupReadiness {
     readonly bridgeRuntime: boolean;
     readonly prePublicationAudit: boolean;
   };
+}
+
+export interface CtripBridgeStatus {
+  readonly configured: boolean;
+  readonly reachable: boolean;
+  readonly mode:
+    | "simulator"
+    | "browser_preflight"
+    | "browser_draft"
+    | "browser_supervised"
+    | "browser_unattended"
+    | null;
+  readonly adapterVersion: string | null;
+  readonly commandCapabilities: {
+    readonly prepare: boolean;
+    readonly submit: boolean;
+    readonly readback: boolean;
+  } | null;
+  readonly operationalStatus: "ready" | "session_required" | "challenge_required" | "unavailable";
+  readonly operationalCheckedAt: string | null;
 }
 
 export interface RunAgentInput {
@@ -1072,6 +1165,7 @@ export interface GeoApi {
   }>;
   getArticleTemplates(): Promise<ArticleTemplateCatalogView>;
   getSetupReadiness(): Promise<CustomerSetupReadiness>;
+  getCtripBridgeStatus(): Promise<CtripBridgeStatus>;
   getAgentCapability(): Promise<AgentRunCapability>;
   runAgent(input: RunAgentInput): Promise<AgentRunResponse>;
   getEvidenceSources(): Promise<readonly EvidenceSource[]>;
@@ -1088,6 +1182,11 @@ export interface GeoApi {
   createContent(input: CreateContentInput): Promise<ContentItem>;
   createContentVersion(contentId: string, payload: PublicationPayload): Promise<ContentItem>;
   getContentVersion(contentVersionId: string): Promise<ContentVersion>;
+  importMedia(contentVersionId: string, input: MediaImportInput): Promise<MediaImportResult>;
+  searchAndImportMedia(
+    contentVersionId: string,
+    input: { readonly idempotencyKey: string },
+  ): Promise<MediaSearchImportResult>;
   getContentVariants(contentId: string): Promise<readonly PublicationVariant[]>;
   createContentVariant(contentId: string, input: CreateVariantInput): Promise<PublicationVariant>;
   auditVariant(variantId: string, idempotencyKey: string): Promise<AuditResult>;
@@ -1419,9 +1518,7 @@ function parseCustomerSetupReadiness(value: unknown): CustomerSetupReadiness {
   if (schemaVersion !== "geo.customer-setup-readiness.v1") {
     throw protocolError(`unsupported customer setup schema: ${schemaVersion}`);
   }
-  if (item.externalPublishingEnabled !== false) {
-    throw protocolError("customer setup cannot report external publishing as enabled");
-  }
+  const externalPublishingEnabled = booleanValue(item, "externalPublishingEnabled");
   return {
     schemaVersion,
     deploymentProfile: stringEnumValue(item, "deploymentProfile", [
@@ -1431,7 +1528,7 @@ function parseCustomerSetupReadiness(value: unknown): CustomerSetupReadiness {
     governanceMode: stringEnumValue(item, "governanceMode", ["external", "demo_fixture"] as const),
     articleGenerationReady: booleanValue(item, "articleGenerationReady"),
     ctripSimulationReady: booleanValue(item, "ctripSimulationReady"),
-    externalPublishingEnabled: false,
+    externalPublishingEnabled,
     checks: {
       agent: booleanValue(checks, "agent"),
       ctripAccount: booleanValue(checks, "ctripAccount"),
@@ -1440,6 +1537,41 @@ function parseCustomerSetupReadiness(value: unknown): CustomerSetupReadiness {
       bridgeRuntime: booleanValue(checks, "bridgeRuntime"),
       prePublicationAudit: booleanValue(checks, "prePublicationAudit"),
     },
+  };
+}
+
+function parseCtripBridgeStatus(value: unknown): CtripBridgeStatus {
+  const item = recordValue(value, "Ctrip bridge status");
+  const commandCapabilities =
+    item.commandCapabilities === null
+      ? null
+      : (() => {
+          const capabilities = recordField(item, "commandCapabilities");
+          return {
+            prepare: booleanValue(capabilities, "prepare"),
+            submit: booleanValue(capabilities, "submit"),
+            readback: booleanValue(capabilities, "readback"),
+          };
+        })();
+  return {
+    configured: booleanValue(item, "configured"),
+    reachable: booleanValue(item, "reachable"),
+    mode: nullableEnumValue(item, "mode", [
+      "simulator",
+      "browser_preflight",
+      "browser_draft",
+      "browser_supervised",
+      "browser_unattended",
+    ] as const),
+    adapterVersion: nullableStringValue(item, "adapterVersion"),
+    commandCapabilities,
+    operationalStatus: stringEnumValue(item, "operationalStatus", [
+      "ready",
+      "session_required",
+      "challenge_required",
+      "unavailable",
+    ] as const),
+    operationalCheckedAt: nullableStringValue(item, "operationalCheckedAt"),
   };
 }
 
@@ -1771,6 +1903,13 @@ function parseCanonicalInlineBlock(value: unknown): CanonicalInlineBlock {
   if (type === "template") return { type, templateId: stringValue(item, "templateId") };
   if (type === "claim") return { type, claimId: stringValue(item, "claimId") };
   if (type === "contact") return { type, contactId: stringValue(item, "contactId") };
+  if (type === "authored") {
+    return {
+      type,
+      text: stringValue(item, "text"),
+      claimIds: stringArrayValue(item, "claimIds"),
+    };
+  }
   throw protocolError(`unsupported canonical inline block type: ${type}`);
 }
 
@@ -1778,11 +1917,27 @@ function parseCanonicalBodyBlock(value: unknown): CanonicalBodyBlock {
   const item = recordValue(value, "canonical body block");
   const type = stringValue(item, "type");
   if (type === "template") return { type, templateId: stringValue(item, "templateId") };
+  if (type === "authored") {
+    return {
+      type,
+      text: stringValue(item, "text"),
+      claimIds: stringArrayValue(item, "claimIds"),
+    };
+  }
   const presentation = stringValue(item, "presentation");
   if (presentation !== "paragraph" && presentation !== "bullet") {
     throw protocolError(`unsupported canonical block presentation: ${presentation}`);
   }
-  if (type === "claim") return { type, claimId: stringValue(item, "claimId"), presentation };
+  if (type === "claim") {
+    return {
+      type,
+      claimId: stringValue(item, "claimId"),
+      presentation,
+      ...(item.contactIds === undefined
+        ? {}
+        : { contactIds: stringArrayValue(item, "contactIds") }),
+    };
+  }
   if (type === "contact") {
     return { type, contactId: stringValue(item, "contactId"), presentation };
   }
@@ -1800,6 +1955,7 @@ function parsePublicationPayload(value: unknown): PublicationPayload {
   const summaryBlocks = item.summaryBlocks;
   const bodyBlocks = item.bodyBlocks;
   const tagTemplateIds = item.tagTemplateIds;
+  const mediaSearchPlan = item.mediaSearchPlan;
   if (titleBlocks !== undefined && !Array.isArray(titleBlocks)) {
     throw protocolError("titleBlocks must be an array when present");
   }
@@ -1814,6 +1970,9 @@ function parsePublicationPayload(value: unknown): PublicationPayload {
     (!Array.isArray(tagTemplateIds) || !tagTemplateIds.every((entry) => typeof entry === "string"))
   ) {
     throw protocolError("tagTemplateIds must be a string array when present");
+  }
+  if (mediaSearchPlan !== undefined && !Array.isArray(mediaSearchPlan)) {
+    throw protocolError("mediaSearchPlan must be an array when present");
   }
   return {
     ...(editorialProfile === null
@@ -1840,6 +1999,19 @@ function parsePublicationPayload(value: unknown): PublicationPayload {
     ...(bodyBlocks === undefined ? {} : { bodyBlocks: bodyBlocks.map(parseCanonicalBodyBlock) }),
     ...(tagTemplateIds === undefined ? {} : { tagTemplateIds: [...tagTemplateIds] }),
     ...(canonicalUrl === null ? {} : { canonicalUrl }),
+    ...(mediaSearchPlan === undefined
+      ? {}
+      : {
+          mediaSearchPlan: mediaSearchPlan.map((entry) => {
+            const intent = recordValue(entry, "media search intent");
+            return {
+              query: stringValue(intent, "query"),
+              role: stringEnumValue(intent, "role", ["cover", "inline"] as const),
+              rationale: stringValue(intent, "rationale"),
+              claimIds: stringArrayValue(intent, "claimIds"),
+            };
+          }),
+        }),
     media: item.media.map((entry) => recordValue(entry, "media reference")),
     claims: item.claims.map(parseContentClaim),
     contactIds: stringArrayValue(item, "contactIds"),
@@ -1912,6 +2084,61 @@ function parseContentVersion(value: unknown): ContentVersion {
     payload: parsePublicationPayload(item.payload),
     payloadHash: stringValue(item, "payloadHash"),
     frozenAt: nullableStringValue(item, "frozenAt"),
+  };
+}
+
+function parseMediaImportResult(value: unknown): MediaImportResult {
+  const item = recordValue(value, "media import result");
+  const job = recordValue(item.job, "media import job");
+  const rawAsset = item.asset;
+  const asset = rawAsset === null ? null : recordValue(rawAsset, "media import asset");
+  return {
+    job: {
+      id: stringValue(job, "id"),
+      state: stringValue(job, "state"),
+      providerId: stringValue(job, "providerId"),
+      providerMode: stringValue(job, "providerMode"),
+    },
+    asset:
+      asset === null
+        ? null
+        : {
+            id: stringValue(asset, "id"),
+            contentVersionId: stringValue(asset, "contentVersionId"),
+            storageKey: stringValue(asset, "storageKey"),
+            reference: recordValue(asset.reference, "media reference"),
+          },
+    wasCreated: booleanValue(item, "wasCreated"),
+    contentInspectionRequired: booleanValue(item, "contentInspectionRequired"),
+  };
+}
+
+function parseMediaSearchImportResult(value: unknown): MediaSearchImportResult {
+  const item = recordValue(value, "media search import result");
+  if (!Array.isArray(item.imported)) throw protocolError("imported must be an array");
+  const provider = stringValue(item, "provider");
+  if (provider !== "wikimedia_commons") {
+    throw protocolError(`unsupported media search provider: ${provider}`);
+  }
+  return {
+    provider,
+    sourceContentVersionId: stringValue(item, "sourceContentVersionId"),
+    finalContentVersionId: stringValue(item, "finalContentVersionId"),
+    plannedCount: numberValue(item, "plannedCount"),
+    imported: item.imported.map((entry) => {
+      const imported = recordValue(entry, "media search import item");
+      return {
+        intentIndex: numberValue(imported, "intentIndex"),
+        query: stringValue(imported, "query"),
+        role: stringEnumValue(imported, "role", ["cover", "inline"] as const),
+        providerAssetId: stringValue(imported, "providerAssetId"),
+        sourceUrl: stringValue(imported, "sourceUrl"),
+        assetId: stringValue(imported, "assetId"),
+        contentVersionId: stringValue(imported, "contentVersionId"),
+      };
+    }),
+    rejectedCandidateCount: numberValue(item, "rejectedCandidateCount"),
+    rejectionCodes: stringArrayValue(item, "rejectionCodes"),
   };
 }
 
@@ -2476,10 +2703,11 @@ const AUTOMATION_PLATFORMS = ["toutiao", "sohu", "ctrip_community"] as const;
 
 function parseAutomationBatch(value: unknown): AutomationBatch {
   const item = recordValue(value, "automation batch");
-  const executionLevel = stringValue(item, "executionLevel");
-  if (executionLevel !== "dry_run") {
-    throw protocolError(`unsupported automation batch executionLevel: ${executionLevel}`);
-  }
+  const executionLevel = stringEnumValue(item, "executionLevel", [
+    "dry_run",
+    "assisted",
+    "unattended",
+  ] as const);
   return {
     id: stringValue(item, "id"),
     campaignId: stringValue(item, "campaignId"),
@@ -2522,6 +2750,11 @@ function parseAutomationRun(value: unknown): AutomationRun {
     id: stringValue(item, "id"),
     batchId: stringValue(item, "batchId"),
     campaignId: stringValue(item, "campaignId"),
+    executionLevel: stringEnumValue(item, "executionLevel", [
+      "dry_run",
+      "assisted",
+      "unattended",
+    ] as const),
     brandId: stringValue(item, "brandId"),
     slotKey: stringValue(item, "slotKey"),
     topicKey: stringValue(item, "topicKey"),
@@ -2938,6 +3171,10 @@ export class HttpGeoApi implements GeoApi {
     return parseCustomerSetupReadiness(await this.request("/api/setup/readiness"));
   }
 
+  async getCtripBridgeStatus(): Promise<CtripBridgeStatus> {
+    return parseCtripBridgeStatus(await this.request("/api/ctrip-bridge/status"));
+  }
+
   async getAgentCapability(): Promise<AgentRunCapability> {
     return parseAgentCapability(await this.request("/api/agent/capability"));
   }
@@ -3018,6 +3255,29 @@ export class HttpGeoApi implements GeoApi {
   async getContentVersion(contentVersionId: string): Promise<ContentVersion> {
     return parseContentVersion(
       await this.request(`/api/content-versions/${encodeURIComponent(contentVersionId)}`),
+    );
+  }
+
+  async importMedia(contentVersionId: string, input: MediaImportInput): Promise<MediaImportResult> {
+    return parseMediaImportResult(
+      await this.request(
+        `/api/content-versions/${encodeURIComponent(contentVersionId)}/media-imports`,
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
+    );
+  }
+
+  async searchAndImportMedia(
+    contentVersionId: string,
+    input: { readonly idempotencyKey: string },
+  ): Promise<MediaSearchImportResult> {
+    return parseMediaSearchImportResult(
+      await this.request(
+        `/api/content-versions/${encodeURIComponent(contentVersionId)}/media-search-imports`,
+        { method: "POST", body: JSON.stringify(input) },
+        true,
+      ),
     );
   }
 

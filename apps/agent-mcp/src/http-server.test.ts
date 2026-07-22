@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
 import { request as httpRequest } from "node:http";
 
@@ -13,6 +14,7 @@ import {
   listenGeoMcpHttpServer,
   type McpRequestAuthenticator,
 } from "./http-server.js";
+import type { MediaInspectionService } from "./media-inspection-runner.js";
 import { PiAgentRunError, type PiAgentRunService } from "./pi-runner.js";
 
 const tenantId = "00000000-0000-4000-8000-000000000001";
@@ -50,6 +52,7 @@ function mockApi(): InternalGeoApiClient {
     requestVisibilityRun: vi.fn(async () => ({ visibilityRunId: actorId })),
     requestMediaProduction: vi.fn(async () => ({ mediaJobId: actorId })),
     getMediaJobStatus: vi.fn(async () => ({ mediaJobId: actorId, state: "succeeded" })),
+    requestMediaSearchImport: vi.fn(async () => ({ finalContentVersionId: actorId })),
     authorizeResourceScope: vi.fn(async () => true),
   };
 }
@@ -166,6 +169,7 @@ describe("authenticated Streamable HTTP MCP server", () => {
       "geo_visibility_request",
       "geo_media_production_request",
       "geo_media_job_status",
+      "geo_media_search_import",
     ]);
     const result = await client.callTool({
       name: "geo_tenant_context",
@@ -293,6 +297,67 @@ describe("authenticated Streamable HTTP MCP server", () => {
       result: { tenantId, actorId, input },
     });
     expect(agentRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId, actorId }),
+      input,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("runs an authenticated media inspection bound to the resolved tenant principal", async () => {
+    const port = await availablePort();
+    const bytes = Buffer.from("image-byte-probe");
+    const assetSha256 = createHash("sha256").update(bytes).digest("hex");
+    const mediaInspector: MediaInspectionService = {
+      inspect: vi.fn(async (inspectionPrincipal, input) => ({
+        assetSha256,
+        status: "passed" as const,
+        evaluator: "pi-vision-inspector" as const,
+        evaluatorMode: "live" as const,
+        evaluatorVersion: "1.0.0" as const,
+        model: "vision-model",
+        responseSha256: "a".repeat(64),
+        providerRequestId: null,
+        ocrText: "",
+        labels: ["ocr:completed"],
+        principalTenantId: inspectionPrincipal.tenantId,
+        input,
+      })),
+    };
+    const server = createGeoMcpHttpServer({
+      api: mockApi(),
+      authenticator,
+      mediaInspector,
+      allowedHosts: [`127.0.0.1:${port}`],
+    });
+    await listenGeoMcpHttpServer(server, { host: "127.0.0.1", port });
+    closeCallbacks.push(
+      () =>
+        new Promise<void>((resolvePromise, rejectPromise) =>
+          server.close((error) => (error === undefined ? resolvePromise() : rejectPromise(error))),
+        ),
+    );
+    const input = {
+      assetSha256,
+      mimeType: "image/png",
+      bytesBase64: bytes.toString("base64"),
+      platform: "ctrip_community",
+      role: "cover",
+    };
+
+    const response = await fetch(`http://127.0.0.1:${port}/media/inspections`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(input),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      inspection: { assetSha256, status: "passed", principalTenantId: tenantId, input },
+    });
+    expect(mediaInspector.inspect).toHaveBeenCalledWith(
       expect.objectContaining({ tenantId, actorId }),
       input,
       expect.any(AbortSignal),

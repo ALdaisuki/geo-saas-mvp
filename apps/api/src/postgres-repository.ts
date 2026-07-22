@@ -2945,26 +2945,34 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
         if (job.state !== "running") {
           throw new RepositoryConflictError("Media job is not ready for completion");
         }
+        const generatedProvenanceMatches =
+          reference.provenance.kind !== "generated" ||
+          (reference.provenance.jobId === input.jobId &&
+            reference.provenance.attemptId === input.attemptId &&
+            reference.provenance.provider === job.provider_id &&
+            reference.provenance.providerMode === job.provider_mode);
+        const importedProvenanceMatches =
+          reference.provenance.kind === "generated" ||
+          ((job.provider_id === "customer-upload" ||
+            job.provider_id === "wikimedia-commons-search") &&
+            job.provider_mode === "live");
         if (
           reference.platform !== job.platform ||
           reference.role !== job.role ||
           reference.visualBriefHash !== job.visual_brief_hash ||
-          reference.provenance.kind !== "generated" ||
-          reference.provenance.jobId !== input.jobId ||
-          reference.provenance.provider !== job.provider_id ||
-          reference.provenance.providerMode !== job.provider_mode ||
+          !generatedProvenanceMatches ||
+          !importedProvenanceMatches ||
           reference.inspection.status !== "passed"
         ) {
           throw new RepositoryConflictError("Media asset does not match its generation job");
         }
         const successfulAttempt = await sql<{ id: string }>`
           select id from geo.media_generation_attempts
-          where id = ${reference.provenance.attemptId}
+          where id = ${input.attemptId}
             and job_id = ${input.jobId} and status = 'succeeded'
             and output_sha256 = ${reference.sha256}
-            and provider_id = ${reference.provenance.provider}
-            and provider_mode = ${reference.provenance.providerMode}
-            and model = ${reference.provenance.model}
+            and provider_id = ${job.provider_id}
+            and provider_mode = ${job.provider_mode}
           limit 1
         `.execute(transaction);
         if (successfulAttempt.rows[0] === undefined) {
@@ -3021,7 +3029,11 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
             ${input.storageKey}, ${reference.altText}, ${reference.caption},
             ${reference.factIds}::uuid[], ${jsonText(reference.visualBrief)}::jsonb,
             ${reference.visualBriefHash}, ${jsonText(reference.rights)}::jsonb,
-            ${jsonText(reference.provenance)}::jsonb, ${null}, '{}'::jsonb
+            ${jsonText(reference.provenance)}::jsonb,
+            ${
+              reference.provenance.kind === "licensed_stock" ? reference.provenance.sourceUrl : null
+            },
+            '{}'::jsonb
           )
           returning created_at
         `.execute(transaction);
@@ -3807,7 +3819,7 @@ export function createPostgresApiRepository(options: PostgresApiRepositoryOption
           was_created: boolean;
         };
         const result =
-          input.executionLevel === "assisted"
+          input.executionLevel === "assisted" || input.executionLevel === "unattended"
             ? await sql<ConsumptionRow>`
                 select * from geo.consume_ctrip_assisted_publication_grant(
                   ${input.grantId}, ${input.tokenHash}, ${input.idempotencyKey},

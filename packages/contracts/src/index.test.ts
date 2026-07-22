@@ -17,10 +17,12 @@ import {
   contactCreateRequestSchema,
   contactExpireRequestSchema,
   connectorCapabilityReportSchema,
+  CTRIP_COMMUNITY_PUBLICATION_LIMITS,
   editorialProfileSchema,
   memberCreateRequestSchema,
   memberUpdateRequestSchema,
   mediaReferenceSchema,
+  mediaSearchPlanSchema,
   policyTransitionRequestSchema,
   publicationReceiptSchema,
   publicationVariantPayloadSchema,
@@ -81,6 +83,48 @@ function mediaReference(provenance: Record<string, unknown>): Record<string, unk
 }
 
 describe("publication contracts", () => {
+  it("requires four to five distinct media searches with exactly one cover", () => {
+    const intent = (query: string, role: "cover" | "inline") => ({
+      query,
+      role,
+      rationale: `Show ${query}`,
+      claimIds: [id],
+    });
+    expect(
+      mediaSearchPlanSchema.parse([
+        intent("Kyoto Kinkakuji lake panorama", "cover"),
+        intent("Kyoto Fushimi Inari torii", "inline"),
+        intent("Kyoto local food", "inline"),
+        intent("Kyoto bamboo forest", "inline"),
+        intent("Kyoto railway station", "inline"),
+      ]),
+    ).toHaveLength(5);
+    expect(() =>
+      mediaSearchPlanSchema.parse([
+        intent("Kyoto", "cover"),
+        intent("kyoto", "inline"),
+        intent("Kyoto food", "inline"),
+        intent("Kyoto rail", "inline"),
+      ]),
+    ).toThrow(/distinct/iu);
+    expect(() =>
+      mediaSearchPlanSchema.parse([
+        intent("Kyoto lake", "cover"),
+        intent("Kyoto shrine", "cover"),
+        intent("Kyoto food", "inline"),
+        intent("Kyoto rail", "inline"),
+      ]),
+    ).toThrow(/exactly one cover/iu);
+  });
+
+  it("binds Ctrip automation to a five-image target with a four-image floor", () => {
+    expect(CTRIP_COMMUNITY_PUBLICATION_LIMITS).toMatchObject({
+      minImages: 4,
+      maxImages: 5,
+      targetImages: 5,
+    });
+  });
+
   it("requires explicit brand and media snapshot hashes on audit artifacts", () => {
     const artifact = {
       id,
@@ -206,6 +250,25 @@ describe("publication contracts", () => {
     expect(payload.titleBlocks).toEqual([
       { type: "template", templateId: "generic.title.current-service" },
     ]);
+  });
+
+  it("binds a rendered claim to the current contacts represented by that fact", () => {
+    expect(
+      canonicalBodyBlockSchema.parse({
+        type: "claim",
+        claimId: id,
+        presentation: "paragraph",
+        contactIds: [id],
+      }),
+    ).toEqual({ type: "claim", claimId: id, presentation: "paragraph", contactIds: [id] });
+    expect(
+      canonicalBodyBlockSchema.safeParse({
+        type: "claim",
+        claimId: id,
+        presentation: "paragraph",
+        contactIds: [id, id],
+      }).success,
+    ).toBe(false);
   });
 
   it("keeps brand agent instructions structured, bounded, and separately attributable", () => {

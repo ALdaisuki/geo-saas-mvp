@@ -12,13 +12,17 @@ import type {
   PublicationVariantPayload,
   TenantContact,
 } from "@geo/contracts";
-import { brandAgentProfileDocumentSchema, mediaReferenceSchema } from "@geo/contracts";
+import {
+  brandAgentProfileDocumentSchema,
+  CTRIP_COMMUNITY_PUBLICATION_LIMITS,
+  mediaReferenceSchema,
+} from "@geo/contracts";
 
 import { sha256Canonical, sha256Text } from "./canonical.js";
 import { assertCompiledAuditPolicySource } from "./audit-policy-provenance.js";
 import { renderCanonicalContent } from "./content-renderer.js";
 import { invariant } from "./errors.js";
-import { mediaSnapshotHash, verifyVisualBrief } from "./media-production.js";
+import { mediaSceneSignature, mediaSnapshotHash, verifyVisualBrief } from "./media-production.js";
 import { assertSha256, assertUuid, freezeDeep, parseInstant } from "./validation.js";
 
 export interface EvidenceSource {
@@ -819,6 +823,11 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
         evaluatorMode: "fixture",
         evaluatorVersion: "1.0.0",
       },
+      {
+        evaluator: "pi-vision-inspector",
+        evaluatorMode: "live",
+        evaluatorVersion: "1.0.0",
+      },
     ],
     renditions: {
       toutiao: {
@@ -865,10 +874,10 @@ export const DEFAULT_AUDIT_POLICY: AuditPolicy = freezeDeep({
       minHeadings: 2,
     },
     ctrip_community: {
-      maxTitleCharacters: 40,
+      maxTitleCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxTitleCharacters,
       maxSummaryCharacters: 200,
       minBodyCharacters: 200,
-      maxBodyCharacters: 20_000,
+      maxBodyCharacters: CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxBodyCharacters,
       maxTags: 10,
       minHeadings: 2,
     },
@@ -1215,6 +1224,37 @@ function makeFinding(
   };
 }
 
+function normalizedText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("zh-CN");
+}
+
+function countBrandMentions(text: string, brandNames: readonly string[]): number {
+  const haystack = text.normalize("NFKC").toLocaleLowerCase("zh-CN");
+  const targets = [...new Set(brandNames.map(normalizedText).filter((name) => name.length > 0))];
+  const matches: Array<{ readonly start: number; readonly end: number }> = [];
+  for (const target of targets) {
+    let offset = 0;
+    while (offset <= haystack.length - target.length) {
+      const start = haystack.indexOf(target, offset);
+      if (start < 0) break;
+      matches.push({ start, end: start + target.length });
+      offset = start + target.length;
+    }
+  }
+  matches.sort((left, right) => left.start - right.start || right.end - left.end);
+  let count = 0;
+  let coveredUntil = -1;
+  for (const match of matches) {
+    if (match.start < coveredUntil) continue;
+    count += 1;
+    coveredUntil = match.end;
+  }
+  return count;
+}
+
+const CTRIP_HARD_PROMOTION_PATTERN =
+  /(?:立即|马上)(?:咨询|联系|预订|下单)|加(?:我)?微信|拨打(?:电话|热线)|扫码(?:咨询|联系|下单|预订)?|限时(?:抢购|优惠)|名额有限/u;
+
 function sortFindings(findings: AuditFinding[]): AuditFinding[] {
   return findings.sort((left, right) => {
     const leftKey = `${left.ruleId}\u0000${left.path ?? ""}\u0000${left.message}\u0000${left.evidence.join("\u0000")}`;
@@ -1293,6 +1333,8 @@ function auditMediaReferences(input: {
   readonly findings: AuditFinding[];
 }): void {
   const mediaIds = new Set<string>();
+  const mediaHashes = new Set<string>();
+  const sceneSignatures = new Set<string>();
   const claimIds = new Set(input.payload.claims.map((claim) => claim.id));
 
   for (const [index, media] of input.payload.media.entries()) {
@@ -1324,6 +1366,46 @@ function auditMediaReferences(input: {
       );
     }
     mediaIds.add(media.id);
+
+    if (mediaHashes.has(media.sha256)) {
+      input.findings.push(
+        makeFinding(
+          input.policy,
+          "media.sha256.duplicate",
+          "Image bytes must be unique in the final payload",
+          `${path}.sha256`,
+          [media.sha256],
+        ),
+      );
+    }
+    mediaHashes.add(media.sha256);
+
+    if (input.platform === "ctrip_community") {
+      const sceneSignature =
+        media.inspection === undefined ? null : mediaSceneSignature(media.inspection.labels);
+      if (sceneSignature === null) {
+        input.findings.push(
+          makeFinding(
+            input.policy,
+            "media.scene.missing",
+            "Ctrip images require one live scene signature",
+            `${path}.inspection.labels`,
+          ),
+        );
+      } else if (sceneSignatures.has(sceneSignature)) {
+        input.findings.push(
+          makeFinding(
+            input.policy,
+            "media.scene.duplicate",
+            "Ctrip images must use visually distinct scenes and compositions",
+            `${path}.inspection.labels`,
+            [sceneSignature],
+          ),
+        );
+      } else {
+        sceneSignatures.add(sceneSignature);
+      }
+    }
 
     if (media.platform !== input.platform) {
       input.findings.push(
@@ -1632,6 +1714,49 @@ export function evaluatePublicationVariant(
   });
   const activeContactIds = new Set(activeContacts.map((contact) => contact.id));
   const content = `${input.payload.title}\n${input.payload.summary}\n${input.payload.bodyMarkdown}`;
+  if (input.platform === "ctrip_community") {
+    const brandNames = [
+      input.brandSnapshot.canonicalName,
+      input.brandSnapshot.displayName,
+      ...input.brandSnapshot.aliases,
+    ];
+    const brandMentions = countBrandMentions(content, brandNames);
+    const bodyBrandMentions = countBrandMentions(input.payload.bodyMarkdown, brandNames);
+    if (bodyBrandMentions === 0) {
+      findings.push(
+        makeFinding(
+          input.policy,
+          "platform.brand.missing",
+          "Ctrip Community body must mention the selected travel-service brand naturally",
+          "payload.bodyMarkdown",
+          ["min=1", "actual=0"],
+        ),
+      );
+    }
+    if (brandMentions > 2) {
+      findings.push(
+        makeFinding(
+          input.policy,
+          "platform.brand.repetition",
+          "Ctrip Community variants should mention the travel-service brand no more than twice",
+          "payload",
+          [`max=2`, `actual=${brandMentions}`],
+        ),
+      );
+    }
+    const hardPromotion = normalizedText(content).match(CTRIP_HARD_PROMOTION_PATTERN)?.[0];
+    if (hardPromotion !== undefined) {
+      findings.push(
+        makeFinding(
+          input.policy,
+          "platform.brand.hard_promotion",
+          "Ctrip Community variants must use soft brand attribution instead of a hard-sell CTA",
+          "payload",
+          [hardPromotion],
+        ),
+      );
+    }
+  }
   const phoneCandidates = extractPhoneCandidates(content);
   const wechatCandidates = extractWechatCandidates(content);
   const approvedPhones = new Set(
@@ -2063,14 +2188,53 @@ export function evaluatePublicationVariant(
   const titleLength = codePointLength(input.payload.title);
   const summaryLength = codePointLength(input.payload.summary);
   const bodyLength = codePointLength(input.payload.bodyMarkdown);
-  if (titleLength > limits.maxTitleCharacters) {
+  const titleMaximum =
+    input.platform === "ctrip_community"
+      ? Math.min(limits.maxTitleCharacters, CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxTitleCharacters)
+      : limits.maxTitleCharacters;
+  const bodyMaximum =
+    input.platform === "ctrip_community"
+      ? Math.min(limits.maxBodyCharacters, CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxBodyCharacters)
+      : limits.maxBodyCharacters;
+  if (
+    input.platform === "ctrip_community" &&
+    titleLength < CTRIP_COMMUNITY_PUBLICATION_LIMITS.minTitleCharacters
+  ) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "platform.title.too_short",
+        "Title is shorter than the fixed Ctrip publication boundary",
+        "payload.title",
+        [`limit=${CTRIP_COMMUNITY_PUBLICATION_LIMITS.minTitleCharacters}`, `actual=${titleLength}`],
+      ),
+    );
+  }
+  if (
+    input.platform === "ctrip_community" &&
+    input.payload.media.filter((media) => media.role === "cover").length !== 1
+  ) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "platform.media.cover_count_invalid",
+        "Ctrip publication requires exactly one cover image",
+        "payload.media",
+        [
+          "expected=1",
+          `actual=${input.payload.media.filter((media) => media.role === "cover").length}`,
+        ],
+      ),
+    );
+  }
+  if (titleLength > titleMaximum) {
     findings.push(
       makeFinding(
         input.policy,
         "platform.title.too_long",
         "Title exceeds the versioned platform policy",
         "payload.title",
-        [`limit=${limits.maxTitleCharacters}`, `actual=${titleLength}`],
+        [`limit=${titleMaximum}`, `actual=${titleLength}`],
       ),
     );
   }
@@ -2096,14 +2260,33 @@ export function evaluatePublicationVariant(
       ),
     );
   }
-  if (bodyLength > limits.maxBodyCharacters) {
+  if (bodyLength > bodyMaximum) {
     findings.push(
       makeFinding(
         input.policy,
         "platform.body.too_long",
         "Body exceeds the versioned platform policy",
         "payload.bodyMarkdown",
-        [`limit=${limits.maxBodyCharacters}`, `actual=${bodyLength}`],
+        [`limit=${bodyMaximum}`, `actual=${bodyLength}`],
+      ),
+    );
+  }
+  if (
+    input.platform === "ctrip_community" &&
+    (input.payload.media.length < CTRIP_COMMUNITY_PUBLICATION_LIMITS.minImages ||
+      input.payload.media.length > CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxImages)
+  ) {
+    findings.push(
+      makeFinding(
+        input.policy,
+        "platform.media.count_invalid",
+        "Image count is outside the fixed Ctrip publication boundary",
+        "payload.media",
+        [
+          `min=${CTRIP_COMMUNITY_PUBLICATION_LIMITS.minImages}`,
+          `max=${CTRIP_COMMUNITY_PUBLICATION_LIMITS.maxImages}`,
+          `actual=${input.payload.media.length}`,
+        ],
       ),
     );
   }

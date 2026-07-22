@@ -8,7 +8,8 @@
 
 全部 `unattended` 和非携程 `assisted` 发布请求会在治理评估或创建 job 前被确定性拒绝。合格的携程 `assisted` 请求会经过 Plastic Promise、数据库账号证据、审计、控制面和熔断器复核，再由 Worker 生成确定性预览并创建 durable handoff；handoff 不是回执或发布确认。passed 且未过期的审计仍可导出独立人工发布包；该包固定标记 `requiresManualAction=true`、`publicationStatus=not_published`，不会触发外部发送。
 
-图片生产默认由 `GEO_MEDIA_PROVIDER=disabled` 关闭；唯一可启用的 `fixture` provider 只生成确定性 PNG，用于验证 VisualBrief、事实绑定、OCR/版权/来源审计、内容寻址存储和 successor 内容版本，不是可投放的生产图片，也不访问网络。带图的人工发布包会附带 `media-manifest.json` 和逐字节校验的 base64 附件；真实生图 provider 仍未实现，`live` 配置会在启动时被拒绝。
+图片生产默认由 `GEO_MEDIA_PROVIDER=disabled` 关闭；唯一可启用的 `fixture` provider 只生成确定性 PNG，用于验证 VisualBrief、事实绑定、OCR/版权/来源审计、内容寻址存储和 successor 内容版本，不是可投放的生产图片，也不访问网络。`fixture` 仅允许客户演示环境，外部/服务器部署会在启动时拒绝它。带图的人工发布包会附带 `media-manifest.json` 和逐字节校验的 base64 附件；真实生图 provider 仍未实现，未知 provider 配置会被 schema 拒绝。
+携程个人号变体遵循平台表达边界：正文和图片不放电话、微信、二维码等联系方式，联系方式只在其他平台变体或站内客户资料中使用；携程正文对品牌名做低频约束，最多出现两次，避免免费社区账号的重复推广感。该规则在变体渲染、Pi 提示词和发布前审计三处同时生效。
 
 Compose 中的 `agent-mcp` 进程同时提供认证的 `POST /agent/runs` 和可显式启用的后台自动化 Producer。Producer 按租户身份轮询持久化批次，使用租约、心跳和断点恢复执行“生成 -> 确定性审计 -> Dry-run 预演 -> 回执回读”；一个租户身份失败不会阻塞其他租户。默认 `AGENT_PROVIDER=fixture` 使用确定性的 `FixturePiAgentRunService`；Pi 注册表中的 provider/model，或显式配置为 `openai-compatible` 且实现 OpenAI Responses 协议的 HTTPS 端点，在 secret 注入 `AGENT_API_KEY` 后可启动 `RealPiAgentRunService`。真实 Pi 只改变模型编排方式，仍受静态 GEO/治理工具白名单、租户权限和确定性发布门禁约束，不会凭空获得头条/搜狐/携程发文 API 或豆包/千问真实搜索 API。
 
@@ -63,15 +64,15 @@ docker compose ps --all
 
 Plastic Promise MCP 是 API 与 `agent-mcp` 的必需外部治理依赖。两者在绑定端口前分别建立连接；端点不可达或握手失败时对应进程不会提供服务并由 Compose 重启，发布时治理调用失败也会 fail closed。非 loopback 端点必须使用 HTTPS，可选授权头只通过 `PLASTIC_PROMISE_MCP_AUTHORIZATION` secret 注入。
 
-启动链为 `Plastic Promise(外部) + postgres -> db-migrate -> db-bootstrap -> api/worker -> agent-mcp/web`。`db-seed` 属于显式 `fixture-seed` profile，不在生产重启链中；它会写入示例租户并重置示例自动化控制，只能在全新演示数据库上按需执行：`docker compose --profile fixture-seed run --rm db-seed`。默认只绑定 `127.0.0.1`：web `4173`、API `4100`、MCP `9021`。生产 API 强制 Secure Cookie，必须由外部 TLS 入口访问；直接 HTTP 端口只用于本机健康诊断，不能作为登录入口。
+启动链为 `Plastic Promise(外部) + postgres -> db-migrate -> db-bootstrap -> api/worker -> agent-mcp/web`。`db-seed` 属于显式 `fixture-seed` profile，不在生产重启链中；它会写入示例租户并重置示例自动化控制，只能在全新演示数据库上按需执行：`docker compose --profile fixture-seed run --rm db-seed`。客户演示默认只绑定 `127.0.0.1` 的 `10000+` 宿主机端口：web `10003`、API `10004`、Agent MCP `10001`；容器内部仍使用 web `8080`、API `4100`、MCP `9021`，这些内部端口不会对宿主机暴露。生产 API 强制 Secure Cookie，必须由外部 TLS 入口访问；直接 HTTP 端口只用于本机健康诊断，不能作为登录入口。
 
 携程 bridge 默认不启动，API 也不配置 gateway。仅本地仿真时，先在 `.env` 同时设置 `CTRIP_BRIDGE_GATEWAY_URL`、`CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON` 与 `CTRIP_BRIDGE_TENANTS_JSON`，确保两个 JSON 使用同一租户 token 和已激活的 `ctrip_bridge` principal，再显式运行 `docker compose --profile ctrip-simulator up -d --build`。该 profile 只加载 `ctrip-community-simulator-v1`，与 API 共享 loopback 网络命名空间，没有真实携程适配器或外部发布能力；仿真 readback 只能进入 `needs_review`。
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:4100/health/live
-Invoke-RestMethod http://127.0.0.1:4100/health/ready
-Invoke-RestMethod http://127.0.0.1:9021/health/live
-Invoke-WebRequest http://127.0.0.1:4173/healthz
+Invoke-RestMethod http://127.0.0.1:10004/health/live
+Invoke-RestMethod http://127.0.0.1:10004/health/ready
+Invoke-RestMethod http://127.0.0.1:10001/health/live
+Invoke-WebRequest http://127.0.0.1:10003/healthz
 ```
 
 Redis 和 MinIO 不在 Compose 中，因为当前源码没有消费它们。只有在限流/队列或对象存储适配器落地并有契约测试后，才应作为可选 profile 引入。

@@ -1,5 +1,6 @@
 import { createCustomerDemoGovernanceClient } from "@geo/agent";
 import { connectPlasticPromiseStreamableHttp } from "@geo/agent/plastic-promise-transport";
+import type { ThinkingLevel } from "@geo/agent/pi";
 
 import { readAutomationProducerConfig } from "./automation-config.js";
 import { createGeoAutomationProducerDependencies } from "./automation-producer-adapter.js";
@@ -10,6 +11,10 @@ import {
   parseMcpPrincipalCredentials,
 } from "./http-api-client.js";
 import { createGeoMcpHttpServer, listenGeoMcpHttpServer } from "./http-server.js";
+import {
+  PiVisionMediaInspectionService,
+  type MediaInspectionService,
+} from "./media-inspection-runner.js";
 import { resolvePiAgentModel } from "./model-config.js";
 import {
   FixturePiAgentRunService,
@@ -43,6 +48,16 @@ function durationEnvironment(name: string, fallback: number): number {
   return value;
 }
 
+function positiveIntegerEnvironment(name: string, fallback: number, minimum = 1): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${name} must be an integer greater than or equal to ${minimum}`);
+  }
+  return value;
+}
+
 function commaSeparated(name: string, fallback: readonly string[]): string[] {
   const raw = process.env[name];
   const values = (raw === undefined ? fallback : raw.split(","))
@@ -52,8 +67,16 @@ function commaSeparated(name: string, fallback: readonly string[]): string[] {
   return values;
 }
 
+function thinkingLevelEnvironment(name: string, fallback: ThinkingLevel): ThinkingLevel {
+  const value = (process.env[name] ?? fallback).trim();
+  if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(value)) {
+    throw new Error(`${name} must be off, minimal, low, medium, high, or xhigh`);
+  }
+  return value as ThinkingLevel;
+}
+
 const host = process.env.MCP_HOST ?? "127.0.0.1";
-const port = integerEnvironment("MCP_PORT", 9021);
+const port = integerEnvironment("MCP_PORT", 10001);
 const sessions = new GeoApiSessionRegistry({
   baseUrl: requiredEnvironment("GEO_API_BASE_URL"),
   credentials: parseMcpPrincipalCredentials(requiredEnvironment("MCP_PRINCIPALS_JSON")),
@@ -78,6 +101,7 @@ const governance =
         return connectPlasticPromiseStreamableHttp({
           endpoint: governanceEndpoint.href,
           allowedOrigins: [governanceEndpoint.origin],
+          allowDockerHost: process.env.GEO_DEPLOYMENT_PROFILE === "customer_demo",
           ...(governanceAuthorization === undefined || governanceAuthorization.length === 0
             ? {}
             : { authorizationHeader: governanceAuthorization }),
@@ -85,7 +109,12 @@ const governance =
       })();
 const agentProvider = process.env.AGENT_PROVIDER ?? "fixture";
 const agentModel = process.env.AGENT_MODEL ?? "fixture-geo-writer-v1";
+const configuredAgentApi = process.env.AGENT_API?.trim();
+const maxPiToolCalls = positiveIntegerEnvironment("AGENT_MAX_TOOL_CALLS", 64);
+const maxRepeatedPiToolCalls = positiveIntegerEnvironment("AGENT_MAX_REPEATED_TOOL_CALLS", 3, 2);
+const agentThinkingLevel = thinkingLevelEnvironment("AGENT_REASONING_EFFORT", "off");
 let agentRunner: PiAgentRunService;
+let mediaInspector: MediaInspectionService | undefined;
 if (agentProvider === "fixture") {
   agentRunner = new FixturePiAgentRunService({ api, governance, model: agentModel });
 } else {
@@ -93,14 +122,26 @@ if (agentProvider === "fixture") {
     provider: agentProvider,
     modelId: agentModel,
     ...(process.env.AGENT_BASE_URL === undefined ? {} : { baseUrl: process.env.AGENT_BASE_URL }),
+    ...(configuredAgentApi === undefined || configuredAgentApi.length === 0
+      ? {}
+      : { api: configuredAgentApi }),
   });
+  const apiKey = requiredEnvironment("AGENT_API_KEY");
   agentRunner = new RealPiAgentRunService({
     api,
     governance,
     provider: resolvedModel.provider,
     model: resolvedModel.model,
     modelId: agentModel,
-    apiKey: requiredEnvironment("AGENT_API_KEY"),
+    apiKey,
+    thinkingLevel: agentThinkingLevel,
+    maxToolCalls: maxPiToolCalls,
+    maxRepeatedToolCalls: maxRepeatedPiToolCalls,
+  });
+  mediaInspector = new PiVisionMediaInspectionService({
+    model: resolvedModel.model,
+    modelId: agentModel,
+    apiKey,
   });
 }
 const automationConfig = readAutomationProducerConfig();
@@ -109,6 +150,7 @@ const automationProducer = new AutomationProducer(
     sessions,
     api,
     governance,
+    agentRunner,
     deliveryPollIntervalMs: automationConfig.deliveryPollIntervalMs,
   }),
   {
@@ -124,6 +166,7 @@ const server = createGeoMcpHttpServer({
   api,
   authenticator: sessions,
   agentRunner,
+  ...(mediaInspector === undefined ? {} : { mediaInspector }),
   agentRunTimeoutMs: durationEnvironment("AGENT_RUN_TIMEOUT_MS", 120_000),
   automationProducer,
   allowedHosts: commaSeparated("MCP_ALLOWED_HOSTS", [`127.0.0.1:${port}`, `localhost:${port}`]),

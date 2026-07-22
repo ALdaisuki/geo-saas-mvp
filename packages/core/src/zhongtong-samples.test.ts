@@ -150,7 +150,7 @@ function wechatCandidates(bodyMarkdown: string): string[] {
 describe("Zhongtong governed article samples", () => {
   it("renders five editorial profiles for all three MVP platforms without contact drift", () => {
     const auditPolicy = policy();
-    const samples = EDITORIAL_PROFILES.flatMap((editorialProfile, profileIndex) => {
+    const renderedSamples = EDITORIAL_PROFILES.flatMap((editorialProfile, profileIndex) => {
       const source = renderEditorialSourcePayload({
         editorialProfile,
         policy: auditPolicy,
@@ -163,26 +163,34 @@ describe("Zhongtong governed article samples", () => {
           mediaReference(editorialProfile, platform, profileIndex * 10 + platformIndex + 1),
         ),
       };
-      return platforms.map((platform) =>
-        renderPlatformPublicationVariant({
+      return platforms.map((platform) => ({
+        platform,
+        sample: renderPlatformPublicationVariant({
           sourcePayload: sourceWithMedia,
           platform,
           policy: auditPolicy,
           factSnapshot: snapshot,
           contacts,
         }),
-      );
+      }));
     });
+    const samples = renderedSamples.map(({ sample }) => sample);
 
     expect(samples).toHaveLength(15);
     expect(new Set(samples.map((sample) => sha256Canonical(sample))).size).toBe(15);
     expect(new Set(samples.map((sample) => sample.title)).size).toBe(15);
 
-    for (const sample of samples) {
+    for (const { platform, sample } of renderedSamples) {
       expect(sample.bodyMarkdown).toContain(snapshot.facts[0]?.text);
-      expect(new Set(phoneCandidates(sample.bodyMarkdown))).toEqual(approvedPhones);
-      expect(new Set(wechatCandidates(sample.bodyMarkdown))).toEqual(approvedWechatIds);
-      expect(sample.contactIds).toEqual(contacts.map((contact) => contact.id));
+      if (platform === "ctrip_community") {
+        expect(new Set(phoneCandidates(sample.bodyMarkdown))).toEqual(new Set());
+        expect(new Set(wechatCandidates(sample.bodyMarkdown))).toEqual(new Set());
+        expect(sample.contactIds).toEqual([]);
+      } else {
+        expect(new Set(phoneCandidates(sample.bodyMarkdown))).toEqual(approvedPhones);
+        expect(new Set(wechatCandidates(sample.bodyMarkdown))).toEqual(approvedWechatIds);
+        expect(sample.contactIds).toEqual(contacts.map((contact) => contact.id));
+      }
       expect(sample.media).toHaveLength(1);
       for (const media of sample.media) {
         expect(media.provenance.kind).toBe("generated");

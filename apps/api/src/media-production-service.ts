@@ -305,11 +305,17 @@ export class MediaProductionService implements MediaProductionController {
     const attemptNo = job.attemptCount + 1;
     const startedAt = capturedAt.toISOString();
     let successfulAttemptRecorded = false;
+    let failureStage:
+      | "provider.generate"
+      | "object_store.put"
+      | "attempt.record"
+      | "job.complete" = "provider.generate";
     let asset: MediaAssetView;
     try {
       const generated = await this.#provider.generate({ visualBrief, expectedInputHash });
       assertFixtureResult(generated, expectedInputHash);
       const outputSha256 = sha256Bytes(generated.bytes);
+      failureStage = "object_store.put";
       const stored = await this.#objectStore.put({
         tenantId: context.tenantId,
         sha256: outputSha256,
@@ -335,6 +341,7 @@ export class MediaProductionService implements MediaProductionController {
         height: generated.height,
         metadata: generated.metadata,
       });
+      failureStage = "attempt.record";
       await this.#repository.recordMediaAttempt(context, {
         attemptId,
         jobId: job.id,
@@ -412,8 +419,10 @@ export class MediaProductionService implements MediaProductionController {
         ...source.payload,
         media: [...source.payload.media, reference],
       };
+      failureStage = "job.complete";
       asset = await this.#repository.completeMediaJob(context, {
         jobId: job.id,
+        attemptId,
         assetId,
         inspectionId: this.#uuid(),
         bindingId: this.#uuid(),
@@ -424,7 +433,24 @@ export class MediaProductionService implements MediaProductionController {
         successorPayloadHash: sha256Canonical(successorPayload),
         completedAt: finishedAt,
       });
-    } catch {
+    } catch (error) {
+      const errorCode =
+        typeof error === "object" && error !== null && "code" in error &&
+        typeof error.code === "string"
+          ? error.code
+          : undefined;
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "geo_api.media_production_failed",
+          tenantId: context.tenantId,
+          jobId: job.id,
+          contentVersionId: input.contentVersionId,
+          stage: failureStage,
+          errorType: error instanceof Error ? error.name : "UnknownError",
+          ...(errorCode === undefined ? {} : { errorCode }),
+        }),
+      );
       const completedAt = this.#now().toISOString();
       if (!successfulAttemptRecorded) {
         await this.#repository

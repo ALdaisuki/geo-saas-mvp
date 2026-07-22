@@ -62,6 +62,7 @@ const optionalSecretSchema = z.preprocess(
   (value) => (value === "" ? undefined : value),
   z.string().min(1).optional(),
 );
+const agentApiSchema = z.enum(["openai-responses", "openai-completions"]);
 
 function validateGovernanceEnvironment(
   environment: {
@@ -69,6 +70,8 @@ function validateGovernanceEnvironment(
     readonly AGENT_PROVIDER: string;
     readonly GEO_DEPLOYMENT_PROFILE: "standard" | "customer_demo";
     readonly GEO_GOVERNANCE_MODE: "external" | "demo_fixture";
+    readonly GEO_MEDIA_PROVIDER: "disabled" | "fixture";
+    readonly GEO_MEDIA_SEARCH_PROVIDER: "disabled" | "wikimedia_commons";
     readonly PLASTIC_PROMISE_MCP_URL?: string | undefined;
   },
   context: z.RefinementCtx,
@@ -84,16 +87,6 @@ function validateGovernanceEnvironment(
     });
   }
   if (
-    environment.GEO_DEPLOYMENT_PROFILE === "customer_demo" &&
-    environment.GEO_GOVERNANCE_MODE !== "demo_fixture"
-  ) {
-    context.addIssue({
-      code: "custom",
-      message: "The customer demo profile requires demo_fixture governance",
-      path: ["GEO_DEPLOYMENT_PROFILE"],
-    });
-  }
-  if (
     environment.GEO_GOVERNANCE_MODE === "demo_fixture" &&
     environment.AGENT_PROVIDER !== "fixture"
   ) {
@@ -101,6 +94,17 @@ function validateGovernanceEnvironment(
       code: "custom",
       message: "Demo governance can only run with the fixture Pi provider",
       path: ["AGENT_PROVIDER"],
+    });
+  }
+  if (
+    environment.GEO_MEDIA_PROVIDER === "fixture" &&
+    environment.GEO_GOVERNANCE_MODE !== "demo_fixture"
+  ) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "Fixture media production is restricted to GEO_GOVERNANCE_MODE=demo_fixture; production must use GEO_MEDIA_PROVIDER=disabled",
+      path: ["GEO_MEDIA_PROVIDER"],
     });
   }
   if (
@@ -141,6 +145,7 @@ const agentBaseUrlSchema = z
 
 interface AgentEnvironment {
   readonly AGENT_PROVIDER: string;
+  readonly AGENT_API?: "openai-responses" | "openai-completions" | undefined;
   readonly AGENT_API_KEY?: string | undefined;
   readonly AGENT_BASE_URL?: string | undefined;
 }
@@ -161,6 +166,13 @@ function validateAgentEnvironment(environment: AgentEnvironment, context: z.Refi
       path: ["AGENT_BASE_URL"],
     });
   }
+  if (!compatible && environment.AGENT_API !== undefined) {
+    context.addIssue({
+      code: "custom",
+      message: "AGENT_API is only supported by AGENT_PROVIDER=openai-compatible",
+      path: ["AGENT_API"],
+    });
+  }
   if (environment.AGENT_PROVIDER !== "fixture" && environment.AGENT_API_KEY === undefined) {
     context.addIssue({
       code: "custom",
@@ -173,8 +185,8 @@ function validateAgentEnvironment(environment: AgentEnvironment, context: z.Refi
 const serverEnvBaseSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("127.0.0.1"),
-  API_PORT: z.coerce.number().int().min(1).max(65_535).default(4100),
-  MCP_PORT: z.coerce.number().int().min(1).max(65_535).default(9021),
+  API_PORT: z.coerce.number().int().min(1).max(65_535).default(10004),
+  MCP_PORT: z.coerce.number().int().min(1).max(65_535).default(10001),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   DATABASE_URL: z.string().url(),
   DATABASE_ADMIN_URL: z.string().url().optional(),
@@ -188,13 +200,21 @@ const serverEnvBaseSchema = z.object({
   PLASTIC_PROMISE_MCP_AUTHORIZATION: optionalSecretSchema,
   EVIDENCE_STORAGE_DIR: z.string().min(1).default(".data/evidence"),
   GEO_MEDIA_PROVIDER: z.enum(["disabled", "fixture"]).default("disabled"),
+  GEO_MEDIA_SEARCH_PROVIDER: z.enum(["disabled", "wikimedia_commons"]).default("disabled"),
   GEO_MEDIA_OBJECT_ROOT: z.string().min(1).default(".data/media"),
   AGENT_PROVIDER: z.string().min(1).default("fixture"),
   AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
+  AGENT_API: agentApiSchema.optional(),
   AGENT_BASE_URL: agentBaseUrlSchema.optional(),
   AGENT_API_KEY: z.string().min(1).optional(),
   AGENT_GATEWAY_URL: z.string().url().optional(),
   AGENT_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
+  AGENT_GATEWAY_RUN_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(16 * 60_000)
+    .default(130_000),
   CTRIP_BRIDGE_GATEWAY_URL: z.string().url().optional(),
   CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: z.string().min(1).optional(),
   DOUBAO_ADAPTER: z.literal("fixture").default("fixture"),
@@ -288,6 +308,11 @@ export const productionDeploymentEnvSchema = z
     AGENT_GATEWAY_CREDENTIALS_JSON: productionSecretSchema,
     AGENT_PROVIDER: z.string().min(1).default("fixture"),
     AGENT_MODEL: z.string().min(1).default("fixture-geo-writer-v1"),
+    GEO_MEDIA_PROVIDER: z.enum(["disabled", "fixture"]).default("disabled"),
+    GEO_MEDIA_SEARCH_PROVIDER: z
+      .enum(["disabled", "wikimedia_commons"])
+      .default("disabled"),
+    AGENT_API: agentApiSchema.optional(),
     AGENT_BASE_URL: agentBaseUrlSchema.optional(),
     AGENT_API_KEY: productionSecretSchema.optional(),
     GEO_BOOTSTRAP_PASSWORD: productionSecretSchema.optional(),
@@ -322,7 +347,7 @@ export function loadProductionDeploymentEnv(
 }
 
 export const webEnvSchema = z.object({
-  VITE_API_BASE_URL: z.string().url().default("http://127.0.0.1:4100"),
+  VITE_API_BASE_URL: z.string().url().default("http://127.0.0.1:10004"),
 });
 
 export type WebEnv = z.infer<typeof webEnvSchema>;

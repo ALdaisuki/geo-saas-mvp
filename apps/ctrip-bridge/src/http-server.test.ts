@@ -54,6 +54,7 @@ function runtime() {
     variantId,
     contentVersionId,
     platform: "ctrip_community",
+    executionLevel: "assisted",
     state: "handoff_pending",
     previewHash: "",
     payloadHash: "a".repeat(64),
@@ -61,7 +62,9 @@ function runtime() {
     bridgePrincipalId,
     externalDraftId: null,
     submitOutcome: null,
+    submitEvidenceHash: null,
     submitEvidenceKind: null,
+    submitObservedAt: null,
     submitCandidateExternalId: null,
     submitCandidateExternalUrl: null,
     submitPermitConsumedAt: null,
@@ -72,6 +75,8 @@ function runtime() {
   });
   const current = { value: handoff };
   const port: CtripBridgeControlPlane = {
+    claimDraftPreparation: vi.fn(async () => undefined),
+    claimNextDraftPreparation: vi.fn(async () => null),
     loadHandoff: vi.fn(async () => current.value),
     loadPreparedMediaAssets: vi.fn(async () => []),
     recordPrepared: vi.fn(async () => {
@@ -118,10 +123,18 @@ async function startedServer() {
   });
   const port = await availablePort();
   const server = createCtripBridgeHttpServer({
-    tenants: [{ tenantId, bridgePrincipalId, accessToken, service, simulator: state.simulator }],
+    tenants: [{
+      tenantId,
+      bridgePrincipalId,
+      accessToken,
+      service,
+      simulator: state.simulator,
+      readiness: null,
+    }],
     allowedHosts: [`127.0.0.1:${port}`],
     mode: "simulator",
     adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
+    commandCapabilities: state.simulator.commandCapabilities,
   });
   await listenCtripBridgeHttpServer(server, { host: "127.0.0.1", port });
   closeCallbacks.push(
@@ -152,6 +165,7 @@ describe("Ctrip bridge HTTP server", () => {
       service: "geo-ctrip-bridge",
       mode: "simulator",
       adapterVersion: CTRIP_SIMULATOR_ADAPTER_VERSION,
+      commandCapabilities: { prepare: true, submit: true, readback: true },
     });
   });
 
@@ -166,10 +180,25 @@ describe("Ctrip bridge HTTP server", () => {
     });
     const port = await availablePort();
     const server = createCtripBridgeHttpServer({
-      tenants: [{ tenantId, bridgePrincipalId, accessToken, service, simulator: null }],
+      tenants: [{
+        tenantId,
+        bridgePrincipalId,
+        accessToken,
+        service,
+        simulator: null,
+        readiness: async () => ({
+          schemaVersion: "geo.ctrip-operational-readiness.v1",
+          status: "session_required",
+          observedAt: "2026-07-16T12:00:00.000Z",
+          manifestVersion: "ctrip-community-surface-review-v2",
+          sessionEvidenceHash: "a".repeat(64),
+          evidenceHash: "b".repeat(64),
+        }),
+      }],
       allowedHosts: [`127.0.0.1:${port}`],
       mode: "browser_preflight",
       adapterVersion: "ctrip-community-browser-preflight-v1",
+      commandCapabilities: { prepare: true, submit: false, readback: false },
     });
     await listenCtripBridgeHttpServer(server, { host: "127.0.0.1", port });
     closeCallbacks.push(
@@ -187,11 +216,38 @@ describe("Ctrip bridge HTTP server", () => {
       service: "geo-ctrip-bridge",
       mode: "browser_preflight",
       adapterVersion: "ctrip-community-browser-preflight-v1",
+      commandCapabilities: { prepare: true, submit: false, readback: false },
     });
     const simulator = await fetch(`${origin}/simulator`, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     expect(simulator.status).toBe(404);
+    const unauthenticatedReady = await fetch(`${origin}/health/ready`);
+    expect(unauthenticatedReady.status).toBe(401);
+    const ready = await fetch(`${origin}/health/ready`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toMatchObject({
+      schemaVersion: "geo.ctrip-operational-readiness.v1",
+      status: "session_required",
+      mode: "browser_preflight",
+    });
+    for (const command of ["submit", "readback"] as const) {
+      const response = await fetch(`${origin}/commands/${command}`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          ...prepareCommand(),
+          command,
+          ...(command === "submit" ? { submitPermit: "a".repeat(64) } : {}),
+        }),
+      });
+      expect(response.status).toBe(404);
+    }
   });
 
   it("requires the tenant bearer and exact command route", async () => {

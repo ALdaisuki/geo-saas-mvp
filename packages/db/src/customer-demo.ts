@@ -7,6 +7,13 @@ import { SEED_IDS } from "./seed.js";
 import type { Database } from "./types.js";
 
 export async function configureCustomerDemo(database: Kysely<Database>): Promise<void> {
+  const adapterVersion = process.env.CTRIP_CUSTOMER_ADAPTER_VERSION ?? "ctrip-community-simulator-v1";
+  const unattended = adapterVersion === "ctrip-community-browser-unattended-v1";
+  const executionLevels = unattended ? ["dry_run", "assisted", "unattended"] : ["dry_run", "assisted"];
+  const evidenceType = unattended ? "platform_readback" : "preview";
+  const evidenceRefs = unattended
+    ? ["adapter:ctrip-community-browser-unattended-v1", "customer-demo:ctrip-browser-unattended-v1"]
+    : ["customer-demo:ctrip-simulator-v1"];
   await withTenantTransaction(
     database,
     {
@@ -35,9 +42,9 @@ export async function configureCustomerDemo(database: Kysely<Database>): Promise
         update geo.channel_accounts set
           display_name = '中通国旅-携程社区-本地演示',
           capability = 'browser_assisted',
-          supported_execution_levels = ARRAY['dry_run', 'assisted']::text[],
-          capability_evidence_type = 'preview',
-          capability_evidence_refs = '["customer-demo:ctrip-simulator-v1"]'::jsonb,
+          supported_execution_levels = ${executionLevels}::text[],
+          capability_evidence_type = ${evidenceType},
+          capability_evidence_refs = ${JSON.stringify(evidenceRefs)}::jsonb,
           status = 'active',
           last_verified_at = clock_timestamp(),
           updated_at = clock_timestamp()
@@ -49,12 +56,31 @@ export async function configureCustomerDemo(database: Kysely<Database>): Promise
         throw new Error("Seeded Ctrip account was not found for customer demo configuration");
       }
 
+      const automationControl = await sql<{ id: string }>`
+        update geo.automation_controls set
+          mode = ${unattended ? "unattended" : "supervised"},
+          kill_switch_enabled = false,
+          reason = ${unattended
+            ? "Customer demo enables reviewed Ctrip unattended browser publication with one-time submit and public readback gates"
+            : "Customer demo permits governed assisted handoffs; final submit remains operator-confirmed"},
+          updated_at = clock_timestamp()
+        where tenant_id = ${SEED_IDS.zhongtong.tenant}
+          and scope_type = 'tenant'
+          and scope_key = '*'
+        returning id
+      `.execute(transaction);
+      if (automationControl.rows.length !== 1) {
+        throw new Error("Seeded tenant automation control was not found for customer demo configuration");
+      }
+
       const after = {
         deploymentProfile: "customer_demo",
         accountId: SEED_IDS.zhongtong.ctrip,
         bridgePrincipalId: SEED_IDS.zhongtong.ctripBridgePrincipal,
-        executionLevels: ["dry_run", "assisted"],
-        externalPublishingEnabled: false,
+        executionLevels,
+        automationMode: unattended ? "unattended" : "supervised",
+        externalPublishingEnabled: unattended,
+        adapterVersion,
       };
       await sql`
         insert into geo.audit_log (

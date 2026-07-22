@@ -43,12 +43,13 @@ function mockApi(): InternalGeoApiClient {
     requestVisibilityRun: vi.fn(async () => ({ visibilityRunId: variantId })),
     requestMediaProduction: vi.fn(async () => ({ mediaJobId: variantId })),
     getMediaJobStatus: vi.fn(async () => ({ mediaJobId: variantId, state: "succeeded" })),
+    requestMediaSearchImport: vi.fn(async () => ({ finalContentVersionId: variantId })),
     authorizeResourceScope: vi.fn(async () => true),
   };
 }
 
 describe("GEO MCP schemas", () => {
-  it("publishes exactly eleven bounded application tools", () => {
+  it("publishes exactly twelve bounded application tools", () => {
     expect(GEO_MCP_TOOL_NAMES).toEqual([
       "geo_tenant_context",
       "geo_template_catalog",
@@ -61,6 +62,7 @@ describe("GEO MCP schemas", () => {
       "geo_visibility_request",
       "geo_media_production_request",
       "geo_media_job_status",
+      "geo_media_search_import",
     ]);
     expect(GEO_MCP_TOOL_NAMES.join(" ")).not.toMatch(
       /(?:^|_)(?:grant|connector|browser|http|file|shell)(?:_|$)/i,
@@ -77,10 +79,70 @@ describe("GEO MCP schemas", () => {
         brandId,
         campaignId: variantId,
         brief: "比较旅行方案",
+        targetPlatform: "ctrip_community",
         articleTemplateId: "comparison-matrix",
         idempotencyKey: "draft-1",
       }).success,
     ).toBe(true);
+    expect(
+      geoMcpToolSchemas.geo_draft_proposal.safeParse({
+        tenantId,
+        brandId,
+        campaignId: variantId,
+        brief: "原创出发前指南",
+        articleTemplateId: "step-by-step-guide",
+        idempotencyKey: "draft-authored-1",
+        authoredDraft: {
+          title: "出发前先核对这项材料",
+          titleClaimIds: [brandId],
+          summary: "按已核验资料整理检查顺序。",
+          summaryClaimIds: [brandId],
+          body: [{ text: "先核对材料，再联系旅行社确认。", claimIds: [brandId] }],
+          mediaSearchPlan: [
+            {
+              query: "京都 金阁寺 Kinkakuji",
+              role: "cover",
+              rationale: "封面对应京都主题",
+              claimIds: [brandId],
+            },
+            {
+              query: "京都 伏见稻荷 Fushimi Inari",
+              role: "inline",
+              rationale: "正文景点段落",
+              claimIds: [brandId],
+            },
+            {
+              query: "京都 岚山 Arashiyama",
+              role: "inline",
+              rationale: "正文路线段落",
+              claimIds: [brandId],
+            },
+            {
+              query: "京都 锦市场 Nishiki Market",
+              role: "inline",
+              rationale: "正文餐饮段落",
+              claimIds: [brandId],
+            },
+          ],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      geoMcpToolSchemas.geo_draft_proposal.safeParse({
+        tenantId,
+        brandId,
+        campaignId: variantId,
+        brief: "原创出发前指南",
+        idempotencyKey: "draft-authored-2",
+        authoredDraft: {
+          title: "无证据标题",
+          titleClaimIds: [],
+          summary: "无证据摘要",
+          summaryClaimIds: [],
+          body: [{ text: "无证据正文", claimIds: [] }],
+        },
+      }).success,
+    ).toBe(false);
     expect(
       geoMcpToolSchemas.geo_draft_proposal.safeParse({
         tenantId,
@@ -250,6 +312,7 @@ describe("authenticated internal API mapping", () => {
         brandId,
         campaignId: variantId,
         brief: "比较旅行方案",
+        targetPlatform: "ctrip_community",
         articleTemplateId: "comparison-matrix",
         idempotencyKey: "draft-1",
       },
@@ -262,6 +325,7 @@ describe("authenticated internal API mapping", () => {
       brandId,
       campaignId: variantId,
       brief: "比较旅行方案",
+      targetPlatform: "ctrip_community",
       articleTemplateId: "comparison-matrix",
       idempotencyKey: "draft-1",
     });
@@ -298,6 +362,25 @@ describe("authenticated internal API mapping", () => {
       idempotencyKey: "media-1",
     });
     expect(api.getMediaJobStatus).toHaveBeenCalledWith(principal, { mediaJobId: variantId });
+  });
+
+  it("maps licensed image search to the tenant-scoped content version only", async () => {
+    const api = mockApi();
+    await invokeGeoMcpTool({
+      toolName: "geo_media_search_import",
+      args: {
+        tenantId,
+        contentVersionId: variantId,
+        idempotencyKey: "media-search-1",
+      },
+      principal,
+      api,
+      authorizeScope: () => true,
+    });
+    expect(api.requestMediaSearchImport).toHaveBeenCalledWith(principal, {
+      contentVersionId: variantId,
+      idempotencyKey: "media-search-1",
+    });
   });
 
   it("denies arbitrary tools before API access", async () => {

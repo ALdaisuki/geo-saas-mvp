@@ -7,117 +7,149 @@ import {
   type PlaywrightCtripReadPage,
 } from "./playwright-surface-reader.js";
 
-interface FakeElement {
-  readonly visible: boolean;
-  readonly attributes?: Readonly<Record<string, string | null>>;
-  readonly text?: string | null;
-}
-
-class FakeLocator implements PlaywrightCtripReadLocator {
-  readonly #elements: readonly FakeElement[];
-  readonly #index: number | null;
-
-  constructor(elements: readonly FakeElement[], index: number | null = null) {
-    this.#elements = elements;
-    this.#index = index;
-  }
-
-  count(): Promise<number> {
-    return Promise.resolve(this.#elements.length);
-  }
-
-  nth(index: number): PlaywrightCtripReadLocator {
-    return new FakeLocator(this.#elements, index);
-  }
-
-  first(): PlaywrightCtripReadLocator {
-    return this.nth(0);
-  }
-
-  isVisible(): Promise<boolean> {
-    return Promise.resolve(this.#element()?.visible ?? false);
-  }
-
-  getAttribute(name: string): Promise<string | null> {
-    return Promise.resolve(this.#element()?.attributes?.[name] ?? null);
-  }
-
-  textContent(): Promise<string | null> {
-    return Promise.resolve(this.#element()?.text ?? null);
-  }
-
-  #element(): FakeElement | undefined {
-    return this.#index === null ? this.#elements[0] : this.#elements[this.#index];
-  }
-}
+const emptyLocator: PlaywrightCtripReadLocator = {
+  count: async () => 0,
+  nth: () => emptyLocator,
+  first: () => emptyLocator,
+  isVisible: async () => false,
+  getAttribute: async () => null,
+  textContent: async () => null,
+};
 
 describe("Playwright Ctrip read-only page adapter", () => {
-  it("reads fixed probes without reading editor content or input values", async () => {
-    const selectors: string[] = [];
-    const attributeReads: string[] = [];
+  it("reads all fixed probes in one snapshot without editor content or input values", async () => {
+    const snapshots: unknown[] = [];
     const page: PlaywrightCtripReadPage = {
-      url: () => "https://you.ctrip.com/write?secret=value",
-      locator: (selector) => {
-        selectors.push(selector);
-        if (selector.includes("textarea")) {
-          return new FakeLocator([
+      url: () => "https://we.ctrip.com/publish/publishPictureText",
+      locator: () => emptyLocator,
+      evaluate: async <Result, Argument>(
+        _pageFunction: (argument: Argument) => Result,
+        argument: Argument,
+      ) => {
+        snapshots.push(argument);
+        return {
+          controls: [
             {
-              visible: true,
-              text: "PRIVATE ARTICLE BODY",
-              attributes: { contenteditable: "true", value: "PRIVATE INPUT VALUE" },
+              probeId: "action",
+              rawLabel: "Publish",
+              rawAttributes: [{ name: "data-testid", rawValue: "publish" }],
             },
-          ]);
-        }
-        if (selector.includes("iframe")) {
-          return new FakeLocator([{ visible: true }]);
-        }
-        if (selector.includes("button")) {
-          return new FakeLocator([
-            { visible: true, text: "Publish", attributes: { "data-testid": "publish" } },
-          ]);
-        }
-        return new FakeLocator([]);
+            {
+              probeId: "editor",
+              rawLabel: "editor",
+              rawAttributes: [{ name: "contenteditable", rawValue: "true" }],
+            },
+          ],
+          challengeSignals: ["captcha_frame"],
+        } as Result;
       },
     };
     const reviewPage = createPlaywrightCtripSurfaceReviewPage(page);
-    const originalGetAttribute = FakeLocator.prototype.getAttribute;
-    FakeLocator.prototype.getAttribute = function (name: string): Promise<string | null> {
-      attributeReads.push(name);
-      return originalGetAttribute.call(this, name);
-    };
 
-    try {
-      await expect(
+    const [controls, signals] = await Promise.all([
+      reviewPage.readControls(
+        CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+        CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+        40,
+      ),
+      reviewPage.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
+    ]);
+
+    expect(controls).toEqual([
+      {
+        probeId: "action",
+        rawLabel: "Publish",
+        rawAttributes: [{ name: "data-testid", rawValue: "publish" }],
+      },
+      {
+        probeId: "editor",
+        rawLabel: "editor",
+        rawAttributes: [{ name: "contenteditable", rawValue: "true" }],
+      },
+    ]);
+    expect(signals).toEqual(["captcha_frame"]);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      attributeNames: CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+      controlProbes: CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+      challengeProbes: CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes,
+      maximum: 40,
+    });
+    expect(JSON.stringify(snapshots[0])).not.toContain('"value"');
+  });
+
+  it("does not use chained locator reads that can become stale during a rerender", async () => {
+    let legacyReadCount = 0;
+    const staleLocator: PlaywrightCtripReadLocator = {
+      count: async () => {
+        legacyReadCount += 1;
+        throw new Error("dynamic locator became stale");
+      },
+      nth: () => staleLocator,
+      first: () => staleLocator,
+      isVisible: async () => {
+        legacyReadCount += 1;
+        throw new Error("dynamic locator became stale");
+      },
+      getAttribute: async () => {
+        legacyReadCount += 1;
+        throw new Error("dynamic locator became stale");
+      },
+      textContent: async () => {
+        legacyReadCount += 1;
+        throw new Error("dynamic locator became stale");
+      },
+    };
+    const page: PlaywrightCtripReadPage = {
+      url: () => "https://we.ctrip.com/publish/publishPictureText",
+      locator: () => staleLocator,
+      evaluate: async <Result>() => ({ controls: [], challengeSignals: [] }) as Result,
+    };
+    const reviewPage = createPlaywrightCtripSurfaceReviewPage(page);
+
+    await expect(
+      Promise.all([
         reviewPage.readControls(
           CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
           CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
           40,
         ),
-      ).resolves.toEqual([
-        {
-          probeId: "action",
-          rawLabel: "Publish",
-          rawAttributes: [{ name: "data-testid", rawValue: "publish" }],
-        },
-        {
-          probeId: "editor",
-          rawLabel: "editor",
-          rawAttributes: [{ name: "contenteditable", rawValue: "true" }],
-        },
-      ]);
-    } finally {
-      FakeLocator.prototype.getAttribute = originalGetAttribute;
-    }
+        reviewPage.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
+      ]),
+    ).resolves.toEqual([[], []]);
+    expect(legacyReadCount).toBe(0);
+  });
+
+  it("clears a failed snapshot so a later readiness check can recover", async () => {
+    let attempts = 0;
+    const page: PlaywrightCtripReadPage = {
+      url: () => "https://we.ctrip.com/publish/publishPictureText",
+      locator: () => emptyLocator,
+      evaluate: async <Result>() => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("temporary CDP read failure");
+        return { controls: [], challengeSignals: [] } as Result;
+      },
+    };
+    const reviewPage = createPlaywrightCtripSurfaceReviewPage(page);
+
     await expect(
-      reviewPage.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
-    ).resolves.toContain("captcha_frame");
-    expect(selectors).toEqual([
-      ...CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes.map((probe) => probe.selector),
-      ...CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes.map((probe) => probe.selector),
-    ]);
-    expect(new Set(attributeReads)).toEqual(
-      new Set(CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames),
-    );
-    expect(attributeReads).not.toContain("value");
+      Promise.all([
+        reviewPage.readControls(
+          CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+          CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+          40,
+        ),
+        reviewPage.detectChallengeSignals(CTRIP_SURFACE_REVIEW_MANIFEST.challengeProbes),
+      ]),
+    ).rejects.toThrow(/temporary CDP/iu);
+    await expect(
+      reviewPage.readControls(
+        CTRIP_SURFACE_REVIEW_MANIFEST.controlProbes,
+        CTRIP_SURFACE_REVIEW_MANIFEST.controlAttributeNames,
+        40,
+      ),
+    ).resolves.toEqual([]);
+    expect(attempts).toBe(2);
   });
 });

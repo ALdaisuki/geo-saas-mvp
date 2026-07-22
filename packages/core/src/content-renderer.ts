@@ -38,6 +38,10 @@ function presented(value: string, presentation: "paragraph" | "bullet"): string 
   return presentation === "paragraph" ? value : `- ${value.replaceAll("\n", "\n  ")}`;
 }
 
+function normalizedContactText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replaceAll(/\s+/gu, "");
+}
+
 export function renderCanonicalContent(
   input: RenderCanonicalContentInput,
 ): Readonly<RenderedCanonicalContent> {
@@ -90,9 +94,28 @@ export function renderCanonicalContent(
     return value;
   };
 
-  const claim = (claimId: string, path: string): string => {
+  const referenceContact = (contactId: string, path: string): TenantContact | undefined => {
+    duplicate("contact", contactId, path);
+    if (!contactIds.includes(contactId)) contactIds.push(contactId);
+    const value = contacts.get(contactId);
+    if (value === undefined) {
+      issues.push({
+        ruleId: "content.contact.unknown",
+        message: "Canonical content references a contact outside the tenant snapshot",
+        path,
+        evidence: [contactId],
+      });
+    }
+    return value;
+  };
+
+  const claim = (
+    claimId: string,
+    path: string,
+    supportingContactIds: readonly string[] = [],
+  ): string => {
     duplicate("claim", claimId, path);
-    claimIds.push(claimId);
+    if (!claimIds.includes(claimId)) claimIds.push(claimId);
     const fact = facts.get(claimId);
     if (fact === undefined) {
       issues.push({
@@ -103,22 +126,52 @@ export function renderCanonicalContent(
       });
       return "";
     }
+    supportingContactIds.forEach((contactId, index) => {
+      const contactPath = `${path}.contactIds[${index}]`;
+      const contactValue = referenceContact(contactId, contactPath);
+      if (
+        contactValue !== undefined &&
+        !normalizedContactText(fact.text).includes(normalizedContactText(contactValue.value))
+      ) {
+        issues.push({
+          ruleId: "content.claim.contact_mismatch",
+          message: "Verified claim text does not contain the bound contact value",
+          path: contactPath,
+          evidence: [claimId, contactId],
+        });
+      }
+    });
     return fact.text;
   };
 
-  const contact = (contactId: string, path: string): string => {
-    duplicate("contact", contactId, path);
-    contactIds.push(contactId);
-    const value = contacts.get(contactId);
-    if (value === undefined) {
+  const authored = (text: string, supportingClaimIds: readonly string[], path: string): string => {
+    if (text.trim().length === 0) {
       issues.push({
-        ruleId: "content.contact.unknown",
-        message: "Canonical content references a contact outside the tenant snapshot",
+        ruleId: "content.authored.empty",
+        message: "Authored content must not be empty",
         path,
-        evidence: [contactId],
+        evidence: [],
       });
-      return "";
     }
+    supportingClaimIds.forEach((claimId, index) => {
+      const fact = facts.get(claimId);
+      if (fact === undefined) {
+        issues.push({
+          ruleId: "content.authored.claim.unknown",
+          message: "Authored content references a claim outside the verified fact snapshot",
+          path: `${path}.claimIds[${index}]`,
+          evidence: [claimId],
+        });
+        return;
+      }
+      if (!claimIds.includes(fact.id)) claimIds.push(fact.id);
+    });
+    return text.trim();
+  };
+
+  const contact = (contactId: string, path: string): string => {
+    const value = referenceContact(contactId, path);
+    if (value === undefined) return "";
     return `${value.label}: ${value.value}`;
   };
 
@@ -134,6 +187,9 @@ export function renderCanonicalContent(
           return template(category, block.templateId, `${basePath}.templateId`);
         }
         if (block.type === "claim") return claim(block.claimId, `${basePath}.claimId`);
+        if (block.type === "authored") {
+          return authored(block.text, block.claimIds, basePath);
+        }
         return contact(block.contactId, `${basePath}.contactId`);
       })
       .filter((value) => value.length > 0)
@@ -149,8 +205,11 @@ export function renderCanonicalContent(
           return template("body", block.templateId, `${basePath}.templateId`);
         }
         if (block.type === "claim") {
-          const value = claim(block.claimId, `${basePath}.claimId`);
+          const value = claim(block.claimId, `${basePath}.claimId`, block.contactIds ?? []);
           return value.length === 0 ? "" : presented(value, block.presentation);
+        }
+        if (block.type === "authored") {
+          return authored(block.text, block.claimIds, basePath);
         }
         const value = contact(block.contactId, `${basePath}.contactId`);
         return value.length === 0 ? "" : presented(value, block.presentation);

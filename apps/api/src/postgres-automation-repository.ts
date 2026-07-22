@@ -28,7 +28,7 @@ interface AutomationBatchRow {
   readonly campaign_id: string;
   readonly name: string | null;
   readonly state: AutomationBatchView["state"];
-  readonly execution_level: "dry_run";
+  readonly execution_level: AutomationBatchView["executionLevel"];
   readonly scheduled_for: Date;
   readonly run_count: number;
   readonly completed_run_count: number;
@@ -42,6 +42,7 @@ interface AutomationRunRow {
   readonly batch_id: string;
   readonly campaign_id: string;
   readonly brand_id: string;
+  readonly execution_level: AutomationRunView["executionLevel"];
   readonly slot_key: string;
   readonly topic_key: string;
   readonly brief: unknown;
@@ -160,6 +161,7 @@ function runView(
     batchId: row.batch_id,
     campaignId: row.campaign_id,
     brandId: row.brand_id,
+    executionLevel: row.execution_level,
     slotKey: row.slot_key,
     topicKey: row.topic_key,
     brief: briefText(row.brief),
@@ -240,6 +242,7 @@ async function selectRuns(
       : sql`run.id in (${sql.join(input.runIds.map((runId) => sql`${runId}::uuid`))})`;
   const result = await sql<AutomationRunRow>`
     select run.id, run.batch_id, run.campaign_id, campaign.brand_id,
+           batch.execution_level,
            run.slot_key, run.topic_key, run.brief, run.state, run.stage,
            run.available_at, run.attempt_count, run.max_attempts,
            run.lease_owner, run.lease_expires_at, run.heartbeat_at,
@@ -247,6 +250,8 @@ async function selectRuns(
            run.last_error_code, run.last_error_message, run.completed_at,
            run.created_at, run.updated_at
     from geo.automation_runs as run
+    join geo.automation_batches as batch
+      on batch.tenant_id = run.tenant_id and batch.id = run.batch_id
     join geo.campaigns as campaign
       on campaign.tenant_id = run.tenant_id and campaign.id = run.campaign_id
     where ${runIds}
@@ -338,10 +343,10 @@ export function createPostgresAutomationRepository(
           if (
             account === undefined ||
             account.status !== "active" ||
-            !account.supported_execution_levels.includes("dry_run")
+            !account.supported_execution_levels.includes(input.executionLevel)
           ) {
             throw new RepositoryConflictError(
-              "Automation target account is unavailable or does not support dry-run",
+              "Automation target account is unavailable or does not support the requested execution level",
             );
           }
         }
@@ -358,7 +363,7 @@ export function createPostgresAutomationRepository(
             state, execution_level, scheduled_for, configuration, created_by_actor_id
           ) values (
             ${context.tenantId}::uuid, ${input.batchId}::uuid, ${input.campaignId}::uuid,
-            ${input.idempotencyKey}, ${input.requestHash}, 'scheduled', 'dry_run',
+            ${input.idempotencyKey}, ${input.requestHash}, 'scheduled', ${input.executionLevel},
             ${scheduledFor}::timestamptz,
             ${JSON.stringify({ name: input.name })}::jsonb, ${context.actorId}::uuid
           )

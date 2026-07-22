@@ -7,6 +7,7 @@ import { CtripBridgeServiceError } from "./service.js";
 import type { CtripBridgeCommandService } from "./service.js";
 import type { CtripCommunitySimulator } from "./simulator.js";
 import type { CtripBridgeMode } from "./config.js";
+import type { CtripOperationalReadiness } from "./authenticated-surface-review.js";
 
 const MAX_COMMAND_BYTES = 128 * 1024;
 
@@ -16,6 +17,7 @@ export interface CtripBridgeTenantRuntime {
   readonly accessToken: string;
   readonly service: CtripBridgeCommandService;
   readonly simulator: CtripCommunitySimulator | null;
+  readonly readiness: (() => Promise<CtripOperationalReadiness>) | null;
 }
 
 export interface CtripBridgeHttpServerOptions {
@@ -24,6 +26,11 @@ export interface CtripBridgeHttpServerOptions {
   readonly allowedOrigins?: readonly string[];
   readonly mode: CtripBridgeMode;
   readonly adapterVersion: string;
+  readonly commandCapabilities: Readonly<{
+    prepare: boolean;
+    submit: boolean;
+    readback: boolean;
+  }>;
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {
@@ -76,12 +83,24 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
     tokenHash: tokenHash(runtime.accessToken),
   }));
   if (runtimes.length === 0) throw new TypeError("At least one Ctrip bridge tenant is required");
+  const expectedCapabilities =
+    options.mode === "simulator"
+      ? { prepare: true, submit: true, readback: true }
+      : options.mode === "browser_supervised"
+        ? { prepare: true, submit: true, readback: false }
+        : options.mode === "browser_unattended"
+          ? { prepare: true, submit: true, readback: true }
+        : { prepare: true, submit: false, readback: false };
   if (
     options.adapterVersion.trim().length === 0 ||
     options.adapterVersion.length > 100 ||
     (options.mode === "simulator" && runtimes.some(({ runtime }) => runtime.simulator === null)) ||
-    (options.mode === "browser_preflight" &&
-      runtimes.some(({ runtime }) => runtime.simulator !== null))
+    (options.mode !== "simulator" && runtimes.some(({ runtime }) => runtime.simulator !== null)) ||
+    Object.entries(expectedCapabilities).some(
+      ([command, supported]) =>
+        options.commandCapabilities[command as keyof typeof options.commandCapabilities] !==
+        supported,
+    )
   ) {
     throw new TypeError("Ctrip bridge runtime mode is inconsistent");
   }
@@ -118,6 +137,7 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
           service: "geo-ctrip-bridge",
           mode: options.mode,
           adapterVersion: options.adapterVersion,
+          commandCapabilities: options.commandCapabilities,
         });
         return;
       }
@@ -158,8 +178,30 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
         return;
       }
 
+      if (requestUrl.pathname === "/health/ready" && request.method === "GET") {
+        if (runtime.readiness === null) {
+          writeJson(response, 200, {
+            schemaVersion: "geo.ctrip-operational-readiness.v1",
+            status: "ready",
+            mode: options.mode,
+          });
+          return;
+        }
+        const readiness = await runtime.readiness();
+        writeJson(response, readiness.status === "ready" ? 200 : 503, {
+          ...readiness,
+          mode: options.mode,
+        });
+        return;
+      }
+
       const routeMatch = /^\/commands\/(prepare|submit|readback)$/u.exec(requestUrl.pathname);
       if (routeMatch === null) {
+        writeJson(response, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
+        return;
+      }
+      const command = routeMatch[1] as "prepare" | "submit" | "readback";
+      if (!options.commandCapabilities[command]) {
         writeJson(response, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
         return;
       }
@@ -191,7 +233,7 @@ export function createCtripBridgeHttpServer(options: CtripBridgeHttpServerOption
       ) {
         throw new CtripBridgeServiceError(403, "CTRIP_BRIDGE_SCOPE_MISMATCH", "Scope mismatch");
       }
-      if (result.command !== routeMatch[1]) {
+      if (result.command !== command) {
         writeJson(response, 400, {
           error: { code: "COMMAND_ROUTE_MISMATCH", message: "Command route mismatch" },
         });

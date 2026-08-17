@@ -1,0 +1,37 @@
+services:
+  # The base preflight validates production-only invariants. The sandbox keeps
+  # that service ordering but validates its isolated customer_demo environment.
+  config-preflight:
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |-
+        import { loadServerEnv } from "@geo/config";
+        loadServerEnv();
+        console.info("Pi automation sandbox configuration passed");
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${GEO_API_DB_USER:-geo_api}:${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      DATABASE_IDENTITY_URL: postgresql://${GEO_IDENTITY_DB_USER:-geo_identity_login}:${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-geo_saas}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET to at least 32 bytes}
+      APP_ORIGIN: ${APP_ORIGIN:?set APP_ORIGIN to the loopback sandbox origin}
+      GEO_OPERATOR_ORIGIN: ${GEO_OPERATOR_ORIGIN:?set GEO_OPERATOR_ORIGIN to the loopback sandbox origin}
+      GEO_DEPLOYMENT_PROFILE: customer_demo
+      GEO_GOVERNANCE_MODE: demo_fixture
+      GEO_ALLOW_REAL_PI_IN_DEMO: ${GEO_ALLOW_REAL_PI_IN_DEMO:?set GEO_ALLOW_REAL_PI_IN_DEMO=true explicitly}
+      GEO_CONTEXT_RETRIEVAL_ENABLED: "false"
+      AGENT_GATEWAY_URL: http://127.0.0.1:9021
+      AGENT_GATEWAY_CREDENTIALS_JSON: ${AGENT_GATEWAY_CREDENTIALS_JSON:?set sandbox agent gateway credentials}
+      CTRIP_BRIDGE_GATEWAY_URL: http://ctrip-bridge:9030
+      CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: ${CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON:?set sandbox Ctrip Bridge credentials}
+      GEO_MEDIA_PROVIDER: disabled
+      GEO_MEDIA_SEARCH_PROVIDER: ${GEO_MEDIA_SEARCH_PROVIDER:?set the sandbox licensed-search provider}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:?set a real Pi provider}
+      AGENT_MODEL: ${AGENT_MODEL:?set the matching Pi model}
+      AGENT_API: ${AGENT_API:-}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-}
+      AGENT_API_KEY: ${AGENT_API_KEY:?set the server-side Pi API key}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-high}
+      AUTOMATION_PRODUCER_ENABLED: "true"

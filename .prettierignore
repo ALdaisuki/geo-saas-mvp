@@ -1,0 +1,6 @@
+node_modules
+dist
+coverage
+.worktrees
+pnpm-lock.yaml
+deploy/seccomp/geo-saas-browser-host.json

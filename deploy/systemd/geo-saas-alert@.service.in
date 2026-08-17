@@ -1,0 +1,18 @@
+[Unit]
+Description=Deliver a GEO SaaS operations alert for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@DEPLOY_USER@@
+Group=@@DEPLOY_GROUP@@
+EnvironmentFile=/srv/geo-saas/secrets/operations-alert.env
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/srv/geo-saas/app/current/scripts/send-operations-alert.sh %i
+UMask=0077
+TimeoutStartSec=30s
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/geo-saas

@@ -1,0 +1,46 @@
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.61.1-noble@sha256:cf0daee9b994042e011bc29f20cdff1a9f682a039b43fcd738f7d8a9d3bcd9d6
+ARG GEO_IMAGE_REVISION=local
+FROM ${PLAYWRIGHT_IMAGE}
+
+USER root
+RUN timeout --signal=TERM --kill-after=15s 1200s \
+    sh -ec 'apt-get \
+      -o Acquire::Retries=3 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      update \
+    && DEBIAN_FRONTEND=noninteractive apt-get \
+      -o Acquire::Retries=3 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      install --yes --no-install-recommends \
+      curl \
+      novnc \
+      tini \
+      websockify \
+      x11vnc \
+      xvfb' \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 geo-browser \
+  && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
+    --shell /usr/sbin/nologin geo-browser \
+  && install -d -o 10001 -g 10001 -m 0500 /run/secrets \
+  && install -d -o 10001 -g 10001 -m 0700 \
+    /var/lib/geo/browser-profile \
+    /var/lib/geo/browser-downloads \
+    /var/lib/geo/browser-artifacts
+
+COPY --chown=root:root scripts/browser-host-entrypoint.sh scripts/browser-host-health.sh scripts/browser-host-account-manager.mjs /usr/local/bin/
+RUN chmod 0555 /usr/local/bin/browser-host-entrypoint.sh /usr/local/bin/browser-host-health.sh /usr/local/bin/browser-host-account-manager.mjs
+
+ARG GEO_IMAGE_REVISION
+LABEL org.opencontainers.image.revision="${GEO_IMAGE_REVISION}"
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+USER 10001:10001
+EXPOSE 10005 10007
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=8 \
+  CMD ["/usr/local/bin/browser-host-health.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/browser-host-entrypoint.sh"]

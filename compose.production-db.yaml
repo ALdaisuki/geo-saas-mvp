@@ -1,0 +1,197 @@
+name: ${COMPOSE_PROJECT_NAME:-geo-saas}
+
+x-postgres-image: &postgres-image postgres:16.9-bookworm@sha256:253815cf7579ffa05e1673d92e78d37273e61be0e4414e9a1449337d7925be94
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-db-tools: &db-tools
+  image: ${GEO_IMAGE_PREFIX:-geo-saas}-db-tools-commissioning:${GEO_IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: db-tools
+    args:
+      - GEO_IMAGE_REVISION
+      - NODE_IMAGE
+      - NPM_REGISTRY
+  restart: "no"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+  pids_limit: 128
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - backend
+  logging: *default-logging
+
+services:
+  postgres:
+    image: *postgres-image
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in the commissioning env file}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER in the commissioning env file}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in the commissioning env file}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --quiet --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    logging: *default-logging
+
+  db-migrate:
+    <<: *db-tools
+    profiles:
+      - database-commissioning
+    command:
+      - node
+      - dist/cli/migrate.js
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  db-bootstrap:
+    image: *postgres-image
+    profiles:
+      - database-commissioning
+    restart: "no"
+    entrypoint:
+      - /bin/bash
+      - /bootstrap/bootstrap-login-roles.sh
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:?set POSTGRES_DB}
+      PGUSER: ${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}
+      GEO_API_DB_USER: ${GEO_API_DB_USER:?set GEO_API_DB_USER}
+      GEO_API_DB_PASSWORD: ${GEO_API_DB_PASSWORD:?set GEO_API_DB_PASSWORD}
+      GEO_WORKER_DB_USER: ${GEO_WORKER_DB_USER:?set GEO_WORKER_DB_USER}
+      GEO_WORKER_DB_PASSWORD: ${GEO_WORKER_DB_PASSWORD:?set GEO_WORKER_DB_PASSWORD}
+      GEO_IDENTITY_DB_USER: ${GEO_IDENTITY_DB_USER:?set GEO_IDENTITY_DB_USER}
+      GEO_IDENTITY_DB_PASSWORD: ${GEO_IDENTITY_DB_PASSWORD:?set GEO_IDENTITY_DB_PASSWORD}
+    volumes:
+      - ./docs/ops/postgres/bootstrap-login-roles.sh:/bootstrap/bootstrap-login-roles.sh:ro
+      - ./docs/ops/postgres/ensure-application-roles.sql:/bootstrap/ensure-application-roles.sql:ro
+      - ./docs/ops/postgres/reconcile-application-acls.sql:/bootstrap/reconcile-application-acls.sql:ro
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+    logging: *default-logging
+
+  db-provision-tenant:
+    <<: *db-tools
+    profiles:
+      - tenant-provisioning
+    command:
+      - node
+      - dist/cli/provision-tenant.js
+    environment:
+      DATABASE_ADMIN_URL: postgresql://${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      GEO_PROVISION_IDEMPOTENCY_KEY: ${GEO_PROVISION_IDEMPOTENCY_KEY:-}
+      GEO_PROVISION_TENANT_SLUG: ${GEO_PROVISION_TENANT_SLUG:-}
+      GEO_PROVISION_LEGAL_NAME: ${GEO_PROVISION_LEGAL_NAME:-}
+      GEO_PROVISION_DISPLAY_NAME: ${GEO_PROVISION_DISPLAY_NAME:-}
+      GEO_PROVISION_INDUSTRY: ${GEO_PROVISION_INDUSTRY:-}
+      GEO_PROVISION_DEFAULT_LOCALE: ${GEO_PROVISION_DEFAULT_LOCALE:-}
+      GEO_PROVISION_BRAND_CANONICAL_NAME: ${GEO_PROVISION_BRAND_CANONICAL_NAME:-}
+      GEO_PROVISION_BRAND_DISPLAY_NAME: ${GEO_PROVISION_BRAND_DISPLAY_NAME:-}
+      GEO_PROVISION_CONTACTS_JSON: ${GEO_PROVISION_CONTACTS_JSON:-}
+      GEO_PROVISION_WORKER_NAME: ${GEO_PROVISION_WORKER_NAME:-}
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+  db-bootstrap-operator:
+    <<: *db-tools
+    profiles:
+      - operator-bootstrap
+    command:
+      - node
+      - dist/cli/bootstrap-operator.js
+    environment:
+      DATABASE_ADMIN_URL: postgresql://${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      GEO_BOOTSTRAP_TENANT_SLUG: ${GEO_BOOTSTRAP_TENANT_SLUG:-}
+      GEO_BOOTSTRAP_EMAIL: ${GEO_BOOTSTRAP_EMAIL:-}
+      GEO_BOOTSTRAP_DISPLAY_NAME: ${GEO_BOOTSTRAP_DISPLAY_NAME:-}
+      GEO_BOOTSTRAP_PASSWORD: ${GEO_BOOTSTRAP_PASSWORD:-}
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+
+  db-commission-ctrip-bridge:
+    <<: *db-tools
+    profiles:
+      - ctrip-bridge-commissioning
+    command:
+      - node
+      - dist/cli/commission-ctrip-bridge.js
+    environment:
+      DATABASE_ADMIN_URL: postgresql://${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      GEO_CTRIP_BRIDGE_TENANT_SLUG: ${GEO_CTRIP_BRIDGE_TENANT_SLUG:-}
+      GEO_CTRIP_BRIDGE_OPERATOR_EMAIL: ${GEO_CTRIP_BRIDGE_OPERATOR_EMAIL:-}
+      GEO_CTRIP_BRIDGE_IDEMPOTENCY_KEY: ${GEO_CTRIP_BRIDGE_IDEMPOTENCY_KEY:-}
+      GEO_CTRIP_BRIDGE_PRINCIPAL_NAME: ${GEO_CTRIP_BRIDGE_PRINCIPAL_NAME:-}
+    depends_on:
+      db-bootstrap-operator:
+        condition: service_completed_successfully
+
+  db-bind-historical-publication:
+    <<: *db-tools
+    profiles:
+      - historical-publication-binding
+    command:
+      - node
+      - dist/cli/bind-historical-publication.js
+      - /dev/stdin
+    environment:
+      DATABASE_ADMIN_URL: postgresql://${POSTGRES_ADMIN_USER:?set POSTGRES_ADMIN_USER}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+    depends_on:
+      db-bootstrap-operator:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+    name: ${COMPOSE_PROJECT_NAME:-geo-saas}-postgres-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/postgres
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+          gateway: 172.30.10.1

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run GEO SaaS production health verification every two minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=geo-saas-health.service
+
+[Install]
+WantedBy=timers.target

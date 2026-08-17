@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "paths": {
+      "@geo/connectors": ["../../packages/connectors/dist/index.d.ts"],
+      "@geo/contracts": ["../../packages/contracts/dist/index.d.ts"],
+      "@geo/db": ["../../packages/db/dist/index.d.ts"],
+      "kysely": ["../../packages/db/node_modules/kysely/dist/esm/index.d.ts"]
+    },
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run GEO SaaS attested local runtime recovery every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Persistent=true
+Unit=geo-saas-local-health.service
+
+[Install]
+WantedBy=timers.target

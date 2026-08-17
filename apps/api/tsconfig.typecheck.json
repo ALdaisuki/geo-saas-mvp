@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@geo/agent": ["../../packages/agent/src/index.ts"],
+      "@geo/agent/plastic-promise-transport": [
+        "../../packages/agent/src/plastic-promise-transport.ts"
+      ],
+      "@geo/authz": ["../../packages/authz/src/index.ts"],
+      "@geo/config": ["../../packages/config/src/index.ts"],
+      "@geo/connectors": ["../../packages/connectors/src/index.ts"],
+      "@geo/contracts": ["../../packages/contracts/src/index.ts"],
+      "@geo/core": ["../../packages/core/src/index.ts"],
+      "@geo/db": ["../../packages/db/src/index.ts"],
+      "@geo/media": ["../../packages/media/src/index.ts"],
+      "@geo/visibility": ["../../packages/visibility/src/index.ts"],
+      "kysely": ["../../packages/db/node_modules/kysely/dist/esm/index.d.ts"],
+      "zod": ["../../packages/contracts/node_modules/zod/index.d.cts"]
+    },
+    "rootDir": "../.."
+  },
+  "exclude": []
+}

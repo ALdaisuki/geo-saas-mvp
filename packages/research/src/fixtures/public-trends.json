@@ -1,0 +1,139 @@
+{
+  "toutiao": {
+    "data": [
+      {
+        "Title": "A股热点观察",
+        "Url": "https://www.toutiao.com/trending/1001/?event_type=hot_board",
+        "HotValue": "9937585"
+      },
+      {
+        "Title": "新能源汽车销量变化",
+        "Url": "https://www.toutiao.com/trending/1002/",
+        "HotValue": "8991899"
+      }
+    ]
+  },
+  "baidu": {
+    "success": true,
+    "data": {
+      "cards": [
+        {
+          "component": "tabTextList",
+          "content": [
+            {
+              "content": [
+                {
+                  "index": 1,
+                  "url": "https://m.baidu.com/s?word=DeepSeek",
+                  "word": "DeepSeek 产业进展"
+                },
+                {
+                  "index": 2,
+                  "url": "https://m.baidu.com/s?word=smart-city",
+                  "word": "智慧城市建设提速"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "weibo": {
+    "ok": 1,
+    "data": {
+      "band_list": [
+        {
+          "category": "互联网",
+          "onboard_time": 1767225600,
+          "word": "智慧城市建设",
+          "word_scheme": "#智慧城市建设#",
+          "note": "智慧城市建设",
+          "num": 1252697,
+          "realpos": 1
+        },
+        {
+          "category": "社会新闻",
+          "onboard_time": 1767225660,
+          "word": "公共服务新举措",
+          "word_scheme": "#公共服务新举措#",
+          "note": "公共服务新举措",
+          "num": 849708,
+          "realpos": 2
+        }
+      ]
+    }
+  },
+  "zhihu": {
+    "data": [
+      {
+        "target": {
+          "title_area": {
+            "text": "住房公积金条例修订有哪些变化？"
+          },
+          "excerpt_area": {
+            "text": "修订拓宽提取和使用范围，并扩大制度覆盖面。"
+          },
+          "metrics_area": {
+            "text": "946 万热度"
+          },
+          "link": {
+            "url": "https://www.zhihu.com/question/100001"
+          }
+        }
+      },
+      {
+        "target": {
+          "title_area": {
+            "text": "人工智能如何影响内容产业？"
+          },
+          "excerpt_area": {
+            "text": "行业正在探索新的生产与分发方式。"
+          },
+          "metrics_area": {
+            "text": "1.2 亿热度"
+          },
+          "link": {
+            "url": "https://www.zhihu.com/question/100002"
+          }
+        }
+      }
+    ]
+  },
+  "sohu-news": [
+    {
+      "id": 1058220115,
+      "authorId": 100136517,
+      "authorName": "搜狐新闻",
+      "title": "区域消费市场持续回暖",
+      "publicTime": "2026-08-03T16:02:02.000+00:00"
+    },
+    {
+      "id": 1058366021,
+      "authorId": 122014422,
+      "authorName": "财经观察",
+      "title": "新产业带动就业增长",
+      "publicTime": "2026-08-03T16:03:02.000+00:00"
+    }
+  ],
+  "netease-news": {
+    "code": 200,
+    "msg": "success",
+    "data": {
+      "list": [
+        {
+          "title": "城市更新项目发布新进展",
+          "publishTime": "2026-08-03 23:02:58",
+          "source": "城市频道",
+          "url": "https://m.163.com/news/article/TEST0001.html"
+        },
+        {
+          "title": "制造业景气度稳步提升",
+          "publishTime": "2026-08-03 22:38:19",
+          "source": "财经频道",
+          "url": "https://m.163.com/news/article/TEST0002.html"
+        }
+      ]
+    }
+  }
+}

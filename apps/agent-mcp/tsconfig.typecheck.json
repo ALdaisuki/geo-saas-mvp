@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@geo/agent": ["../../packages/agent/src/index.ts"],
+      "@geo/agent/pi": ["../../packages/agent/src/pi-runtime.ts"],
+      "@geo/agent/plastic-promise-transport": [
+        "../../packages/agent/src/plastic-promise-transport.ts"
+      ]
+    },
+    "rootDir": "../.."
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

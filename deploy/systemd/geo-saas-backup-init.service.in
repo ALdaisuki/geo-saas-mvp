@@ -1,0 +1,18 @@
+[Unit]
+Description=Initialize or verify the GEO SaaS encrypted offsite backup repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@@DEPLOY_USER@@
+Group=@@DEPLOY_GROUP@@
+EnvironmentFile=/srv/geo-saas/secrets/operations-backup.env
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/srv/geo-saas/app/current/scripts/initialize-production-backup-repository.sh
+UMask=0077
+TimeoutStartSec=10min
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+ReadOnlyPaths=/srv/geo-saas

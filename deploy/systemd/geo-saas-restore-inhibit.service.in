@@ -1,0 +1,26 @@
+[Unit]
+Description=Hold the persistent GEO SaaS incident-restore inhibit
+After=local-fs.target
+ConditionPathIsDirectory=/srv/geo-saas/secrets
+
+[Service]
+Type=notify
+NotifyAccess=all
+User=@@DEPLOY_USER@@
+Group=@@DEPLOY_GROUP@@
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/srv/geo-saas/app/current/scripts/hold-production-restore-inhibit.sh
+UMask=0077
+TimeoutStartSec=2min
+TimeoutStopSec=1min
+Restart=no
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/geo-saas/secrets
+NoNewPrivileges=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true

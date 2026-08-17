@@ -1,0 +1,28 @@
+stateDiagram-v2
+    [*] --> Observed
+    Observed --> Clustered: normalize and fingerprint
+    Clustered --> Candidate: fresh and campaign-relevant
+    Clustered --> Expired: freshness exhausted
+    Candidate --> EvidenceReady: fact snapshot available
+    EvidenceReady --> Drafted: model authors master draft
+    Drafted --> VariantReady: platform and account adaptation
+    VariantReady --> Reviewing
+    Reviewing --> VariantReady: rewrite required, attempts remain
+    Reviewing --> Blocked: unfixable or rewrite budget exhausted
+    Reviewing --> Queued: passed
+    Queued --> Claimed: account lease acquired
+    Claimed --> Submitted: external submit observed
+    Claimed --> Queued: pre-submit retryable failure
+    Submitted --> Reconciling: result uncertain
+    Submitted --> AwaitingApproval: platform accepted request
+    Reconciling --> AwaitingApproval: matching platform record found
+    Reconciling --> Failed: definitive absence or mismatch
+    AwaitingApproval --> Rejected: platform rejects content
+    AwaitingApproval --> PublicReadback: platform approves
+    Rejected --> Candidate: correctable replacement work
+    PublicReadback --> Confirmed: public identity matches
+    PublicReadback --> Failed: missing or mismatched public content
+    Confirmed --> [*]
+    Expired --> [*]
+    Blocked --> [*]
+    Failed --> [*]

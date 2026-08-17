@@ -1,0 +1,11 @@
+[Unit]
+Description=Create a verified GEO SaaS server-local recovery set daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Asia/Shanghai
+RandomizedDelaySec=30min
+Persistent=true
+Unit=geo-saas-local-backup.service
+
+[Install]
+WantedBy=timers.target

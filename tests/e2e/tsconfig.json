@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@geo/agent": ["../../packages/agent/src/index.ts"],
+      "@geo/agent/pi": ["../../packages/agent/src/pi-runtime.ts"],
+      "@geo/agent/plastic-promise-transport": [
+        "../../packages/agent/src/plastic-promise-transport.ts"
+      ],
+      "@geo/core": ["../../packages/core/src/index.ts"],
+      "@geo/visibility": ["../../packages/visibility/src/index.ts"]
+    },
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts"]
+}

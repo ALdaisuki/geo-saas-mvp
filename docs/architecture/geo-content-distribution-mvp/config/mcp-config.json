@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "geo-agent": {
+      "command": "node",
+      "args": ["apps/agent-mcp/dist/cli.js"],
+      "env": {
+        "API_BASE_URL": "${API_BASE_URL}",
+        "AGENT_PROVIDER": "${AGENT_PROVIDER}",
+        "AGENT_MODEL": "${AGENT_MODEL}",
+        "AGENT_API_KEY": "${AGENT_API_KEY}"
+      },
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  },
+  "notes": {
+    "evidence": "The MVP uses the tenant-scoped immutable fact snapshot; RAG and knowledge-base retrieval are deferred.",
+    "authority": "The agent can draft and request operations but cannot issue publication grants or control platform browsers."
+  }
+}

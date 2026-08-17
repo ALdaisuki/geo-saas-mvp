@@ -1,0 +1,492 @@
+services:
+  # Production is server-owned.  No Codex desktop process, local login session,
+  # or fixture provider is part of this topology.
+  config-preflight:
+    environment:
+      GEO_PUBLIC_DOMAIN: ${GEO_PUBLIC_DOMAIN:?set the production public domain}
+      APP_ORIGIN: ${APP_ORIGIN:?set the external HTTPS origin}
+      WEB_PORT: ${WEB_PORT:-10003}
+      GEO_OPERATOR_ORIGIN: ${GEO_OPERATOR_ORIGIN:-}
+      GEO_DEPLOYMENT_PROFILE: standard
+      GEO_GOVERNANCE_MODE: external
+      GEO_CONTEXT_RETRIEVAL_ENABLED: ${GEO_CONTEXT_RETRIEVAL_ENABLED:-false}
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set production MCP principals}
+      AGENT_GATEWAY_CREDENTIALS_JSON: ${AGENT_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Agent gateway credentials}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:?set a server-side Pi provider}
+      AGENT_MODEL: ${AGENT_MODEL:?set the approved server-side Pi model}
+      AGENT_API_KEY: ${AGENT_API_KEY:?inject the Pi key from the server secret store}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-high}
+      MEDIA_INSPECTION_PROVIDER: ${MEDIA_INSPECTION_PROVIDER:?set the approved vision provider}
+      MEDIA_INSPECTION_MODEL: ${MEDIA_INSPECTION_MODEL:?set the approved vision model}
+      MEDIA_INSPECTION_API: ${MEDIA_INSPECTION_API:-}
+      MEDIA_INSPECTION_COMPLETIONS_MODE: ${MEDIA_INSPECTION_COMPLETIONS_MODE:-stream}
+      MEDIA_INSPECTION_BASE_URL: ${MEDIA_INSPECTION_BASE_URL:-}
+      MEDIA_INSPECTION_API_KEY: ${MEDIA_INSPECTION_API_KEY:?inject the vision key from the server secret store}
+      GEO_MEDIA_PROVIDER: ${GEO_MEDIA_PROVIDER:-disabled}
+      GEO_MEDIA_SEARCH_PROVIDER: ${GEO_MEDIA_SEARCH_PROVIDER:-disabled}
+      GEO_MEDIA_HTTPS_PROXY_URL: ${GEO_MEDIA_HTTPS_PROXY_URL:-}
+      PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+      AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:-false}
+      TREND_COLLECTION_ENABLED: ${TREND_COLLECTION_ENABLED:-false}
+      TREND_COLLECTION_TENANT_ACTORS_JSON: ${TREND_COLLECTION_TENANT_ACTORS_JSON:-}
+      TREND_COLLECTION_INTERVAL_MS: ${TREND_COLLECTION_INTERVAL_MS:-600000}
+      TREND_COLLECTION_LIMIT_PER_SOURCE: ${TREND_COLLECTION_LIMIT_PER_SOURCE:-20}
+      TREND_AUTOMATION_ENABLED: ${TREND_AUTOMATION_ENABLED:-false}
+      TREND_AUTOMATION_PIPELINES_JSON: ${TREND_AUTOMATION_PIPELINES_JSON:-}
+      TREND_AUTOMATION_INTERVAL_MS: ${TREND_AUTOMATION_INTERVAL_MS:-600000}
+      AUTOMATION_PLAN_ENABLED: ${AUTOMATION_PLAN_ENABLED:-false}
+      AUTOMATION_PLAN_INTERVAL_MS: ${AUTOMATION_PLAN_INTERVAL_MS:-60000}
+      AUTOMATION_PLAN_MAX_PLANS_PER_RUN: ${AUTOMATION_PLAN_MAX_PLANS_PER_RUN:-100}
+      CTRIP_BRIDGE_GATEWAY_URL: http://ctrip-bridge:9030
+      CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: ${CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Ctrip Bridge credentials}
+      CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:?set server-side Ctrip Bridge tenant principals}
+      CTRIP_BRIDGE_MODE: ${CTRIP_BRIDGE_MODE:-browser_draft}
+      CTRIP_BROWSER_TRANSPORT: linux_service
+      CTRIP_BROWSER_TENANT_ID: ${CTRIP_BROWSER_TENANT_ID:?set the browser tenant UUID}
+      GEO_CTRIP_BROWSER_LOGIN_BASE_URL: ${GEO_CTRIP_BROWSER_LOGIN_BASE_URL:?set the loopback noVNC login URL}
+      CTRIP_NOVNC_HOST_PORT: ${CTRIP_NOVNC_HOST_PORT:-10007}
+      CTRIP_REVIEW_CDP_ENDPOINT: http://browser-host:10005
+      GEO_RUNTIME_TMP_ROOT: ${GEO_RUNTIME_TMP_ROOT:?set a non-system server runtime directory}
+      GEO_CTRIP_RUNTIME_ROOT: ${GEO_CTRIP_RUNTIME_ROOT:?set the persistent Ctrip runtime root}
+      GEO_BROWSER_PROFILE_ROOT: ${GEO_BROWSER_PROFILE_ROOT:?set the browser profile root}
+      GEO_BROWSER_DOWNLOAD_ROOT: ${GEO_BROWSER_DOWNLOAD_ROOT:?set the browser download root}
+      GEO_BROWSER_ARTIFACT_ROOT: ${GEO_BROWSER_ARTIFACT_ROOT:?set the browser artifact root}
+      CTRIP_VNC_PASSWORD_FILE: ${CTRIP_VNC_PASSWORD_FILE:?set the server-only x11vnc password file}
+
+  # Plastic Promise remains host-owned and loopback-only. The host-network stage can reach only
+  # its loopback listener and exposes a private Unix socket shared with the GEO network stage.
+  plastic-promise-host-proxy:
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-db-tools:${GEO_IMAGE_TAG:-local}
+    profiles:
+      - production
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |-
+        import { chmodSync, lstatSync, unlinkSync } from "node:fs";
+        import { createConnection, createServer } from "node:net";
+        const socketPath = "/run/geo-governance/plastic-promise.sock";
+        const targetHost = "127.0.0.1";
+        const targetPort = Number(process.env.PLASTIC_PROMISE_HOST_PORT);
+        if (!Number.isSafeInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+          throw new Error("PLASTIC_PROMISE_HOST_PORT must be a valid TCP port");
+        }
+        try {
+          if (!lstatSync(socketPath).isSocket()) {
+            throw new Error("Plastic Promise proxy path exists and is not a socket");
+          }
+          unlinkSync(socketPath);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+        }
+        const server = createServer((downstream) => {
+          const upstream = createConnection({ host: targetHost, port: targetPort });
+          const close = () => {
+            downstream.destroy();
+            upstream.destroy();
+          };
+          downstream.on("error", close);
+          downstream.on("close", () => upstream.destroy());
+          upstream.on("error", close);
+          upstream.on("connect", () => {
+            upstream.setTimeout(0);
+            downstream.pipe(upstream);
+            upstream.pipe(downstream);
+          });
+          upstream.on("close", () => downstream.destroy());
+          upstream.setTimeout(10000, close);
+        });
+        server.maxConnections = 128;
+        server.on("error", (error) => {
+          console.error("Plastic Promise TCP proxy failed", error.name);
+          process.exit(1);
+        });
+        server.listen(socketPath, () => chmodSync(socketPath, 0o600));
+        const shutdown = () => server.close(() => {
+          try { unlinkSync(socketPath); } catch (error) {
+            if (error?.code !== "ENOENT") console.error("Plastic Promise socket cleanup failed", error.name);
+          }
+          process.exit(0);
+        });
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+    environment:
+      PLASTIC_PROMISE_HOST_PORT: ${PLASTIC_PROMISE_HOST_PORT:-9020}
+    read_only: true
+    volumes:
+      - type: bind
+        source: /srv/geo-saas/data/governance-proxy
+        target: /run/geo-governance
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - --input-type=module
+        - --eval
+        - |-
+          try {
+            const { request } = await import("node:http");
+            const response = await new Promise((resolve, reject) => {
+              const requestHandle = request({
+                socketPath: "/run/geo-governance/plastic-promise.sock",
+                path: "/mcp",
+                method: "POST",
+                headers: {
+                  accept: "application/json, text/event-stream",
+                  "content-type": "application/json",
+                },
+                timeout: 3000,
+              }, resolve);
+              requestHandle.on("timeout", () => requestHandle.destroy(new Error("timeout")));
+              requestHandle.on("error", reject);
+              requestHandle.end("{}");
+            });
+            let body = "";
+            for await (const chunk of response) body += chunk;
+            if (response.statusCode !== 400 || JSON.parse(body)?.jsonrpc !== "2.0") process.exit(1);
+          } catch {
+            process.exit(1);
+          }
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      config-preflight:
+        condition: service_completed_successfully
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  # This stage is the only TCP listener. It is reachable only at the fixed address on the
+  # internal governance network and forwards through the shared Unix socket to the host stage.
+  plastic-promise-proxy:
+    image: ${GEO_IMAGE_PREFIX:-geo-saas}-db-tools:${GEO_IMAGE_TAG:-local}
+    profiles:
+      - production
+    restart: unless-stopped
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |-
+        import { createConnection, createServer } from "node:net";
+        const socketPath = "/run/geo-governance/plastic-promise.sock";
+        const server = createServer((downstream) => {
+          const upstream = createConnection({ path: socketPath });
+          const close = () => {
+            downstream.destroy();
+            upstream.destroy();
+          };
+          downstream.on("error", close);
+          downstream.on("close", () => upstream.destroy());
+          upstream.on("error", close);
+          upstream.on("connect", () => {
+            upstream.setTimeout(0);
+            downstream.pipe(upstream);
+            upstream.pipe(downstream);
+          });
+          upstream.on("close", () => downstream.destroy());
+          upstream.setTimeout(10000, close);
+        });
+        server.maxConnections = 128;
+        server.on("error", (error) => {
+          console.error("Plastic Promise network proxy failed", error.name);
+          process.exit(1);
+        });
+        server.listen(10002, "0.0.0.0");
+        const shutdown = () => server.close(() => process.exit(0));
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+    read_only: true
+    volumes:
+      - type: bind
+        source: /srv/geo-saas/data/governance-proxy
+        target: /run/geo-governance
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    pids_limit: 64
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - --input-type=module
+        - --eval
+        - |-
+          try {
+            const response = await fetch("http://127.0.0.1:10002/mcp", {
+              method: "POST",
+              headers: {
+                accept: "application/json, text/event-stream",
+                "content-type": "application/json",
+              },
+              body: "{}",
+              signal: AbortSignal.timeout(3000),
+            });
+            const body = await response.json();
+            if (response.status !== 400 || body?.jsonrpc !== "2.0") process.exit(1);
+          } catch {
+            process.exit(1);
+          }
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      plastic-promise-host-proxy:
+        condition: service_healthy
+    networks:
+      governance-host:
+        ipv4_address: 172.30.11.2
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  api:
+    mem_limit: ${GEO_API_MEM_LIMIT:-1g}
+    cpus: ${GEO_API_CPU_LIMIT:-1.0}
+    environment:
+      GEO_DEPLOYMENT_PROFILE: standard
+      GEO_GOVERNANCE_MODE: external
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      CTRIP_BRIDGE_GATEWAY_URL: http://ctrip-bridge:9030
+      CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON: ${CTRIP_BRIDGE_GATEWAY_CREDENTIALS_JSON:?set tenant-scoped Ctrip Bridge credentials}
+      GEO_CTRIP_BROWSER_LOGIN_BASE_URL: ${GEO_CTRIP_BROWSER_LOGIN_BASE_URL:?set the loopback noVNC login URL}
+      GEO_MEDIA_PROVIDER: ${GEO_MEDIA_PROVIDER:-disabled}
+      TREND_COLLECTION_ENABLED: ${TREND_COLLECTION_ENABLED:-false}
+      TREND_COLLECTION_TENANT_ACTORS_JSON: ${TREND_COLLECTION_TENANT_ACTORS_JSON:-}
+      TREND_COLLECTION_INTERVAL_MS: ${TREND_COLLECTION_INTERVAL_MS:-600000}
+      TREND_COLLECTION_LIMIT_PER_SOURCE: ${TREND_COLLECTION_LIMIT_PER_SOURCE:-20}
+      TREND_AUTOMATION_ENABLED: ${TREND_AUTOMATION_ENABLED:-false}
+      TREND_AUTOMATION_PIPELINES_JSON: ${TREND_AUTOMATION_PIPELINES_JSON:-}
+      TREND_AUTOMATION_INTERVAL_MS: ${TREND_AUTOMATION_INTERVAL_MS:-600000}
+      AUTOMATION_PLAN_ENABLED: ${AUTOMATION_PLAN_ENABLED:-false}
+      AUTOMATION_PLAN_INTERVAL_MS: ${AUTOMATION_PLAN_INTERVAL_MS:-60000}
+      AUTOMATION_PLAN_MAX_PLANS_PER_RUN: ${AUTOMATION_PLAN_MAX_PLANS_PER_RUN:-100}
+      DOUBAO_ADAPTER: ${DOUBAO_ADAPTER:-fixture}
+      QWEN_ADAPTER: ${QWEN_ADAPTER:-fixture}
+    depends_on:
+      plastic-promise-proxy:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+      - bridge-api
+      - governance-host
+
+  agent-mcp:
+    mem_limit: ${GEO_AGENT_MCP_MEM_LIMIT:-768m}
+    cpus: ${GEO_AGENT_MCP_CPU_LIMIT:-1.0}
+    environment:
+      GEO_DEPLOYMENT_PROFILE: standard
+      GEO_GOVERNANCE_MODE: external
+      PLASTIC_PROMISE_MCP_URL: ${PLASTIC_PROMISE_MCP_URL:?set the production Plastic Promise MCP URL}
+      MCP_PRINCIPALS_JSON: ${MCP_PRINCIPALS_JSON:?set production MCP principals}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:?set a server-side Pi provider}
+      AGENT_MODEL: ${AGENT_MODEL:?set the approved server-side Pi model}
+      AGENT_API_KEY: ${AGENT_API_KEY:?inject the Pi key from the server secret store}
+      AGENT_REASONING_EFFORT: ${AGENT_REASONING_EFFORT:-high}
+      MEDIA_INSPECTION_PROVIDER: ${MEDIA_INSPECTION_PROVIDER:?set the approved vision provider}
+      MEDIA_INSPECTION_MODEL: ${MEDIA_INSPECTION_MODEL:?set the approved vision model}
+      MEDIA_INSPECTION_API: ${MEDIA_INSPECTION_API:-}
+      MEDIA_INSPECTION_COMPLETIONS_MODE: ${MEDIA_INSPECTION_COMPLETIONS_MODE:-stream}
+      MEDIA_INSPECTION_BASE_URL: ${MEDIA_INSPECTION_BASE_URL:-}
+      MEDIA_INSPECTION_API_KEY: ${MEDIA_INSPECTION_API_KEY:?inject the vision key from the server secret store}
+      AUTOMATION_PRODUCER_ENABLED: ${AUTOMATION_PRODUCER_ENABLED:-false}
+
+  ctrip-bridge:
+    profiles:
+      - production
+    mem_limit: ${GEO_CTRIP_BRIDGE_MEM_LIMIT:-1g}
+    cpus: ${GEO_CTRIP_BRIDGE_CPU_LIMIT:-1.0}
+    environment:
+      # browser_draft can prepare the reviewed surface but has no submit capability.
+      CTRIP_BRIDGE_MODE: ${CTRIP_BRIDGE_MODE:-browser_draft}
+      CTRIP_BRIDGE_TENANTS_JSON: ${CTRIP_BRIDGE_TENANTS_JSON:?set server-side Ctrip Bridge tenant principals}
+      CTRIP_BROWSER_TRANSPORT: linux_service
+      CTRIP_BROWSER_TENANT_ID: ${CTRIP_BROWSER_TENANT_ID:?set the browser tenant UUID}
+      CTRIP_BROWSER_MAX_ACTIVE_SESSIONS: ${CTRIP_BROWSER_MAX_ACTIVE_SESSIONS:-6}
+      # Four-core production hosts: keep worker concurrency demand-driven and
+      # scale down before the browser-host CPU watermark pauses claims.
+      CTRIP_BRIDGE_ACCOUNT_CONCURRENCY_CAP: ${CTRIP_BRIDGE_ACCOUNT_CONCURRENCY_CAP:-4}
+      CTRIP_BRIDGE_ACCOUNT_CONCURRENCY: ${CTRIP_BRIDGE_ACCOUNT_CONCURRENCY:-}
+      CTRIP_BROWSER_CPU_PAUSE_PERCENT: ${CTRIP_BROWSER_CPU_PAUSE_PERCENT:-75}
+      CTRIP_REVIEW_CDP_ENDPOINT: http://browser-host:10005
+      GEO_RUNTIME_TMP_ROOT: ${GEO_RUNTIME_TMP_ROOT:?set a non-system server runtime directory}
+    volumes:
+      - type: bind
+        source: ${GEO_CTRIP_RUNTIME_ROOT:?set GEO_CTRIP_RUNTIME_ROOT}
+        target: /var/lib/geo/runtime
+        bind:
+          create_host_path: false
+    depends_on:
+      browser-host:
+        condition: service_healthy
+
+  browser-host:
+    mem_limit: ${GEO_BROWSER_HOST_MEM_LIMIT:-4g}
+    cpus: ${GEO_BROWSER_HOST_CPU_LIMIT:-6.0}
+    environment:
+      CTRIP_BROWSER_TENANT_ID: ${CTRIP_BROWSER_TENANT_ID:?set the browser tenant UUID}
+      CTRIP_BROWSER_MAX_ACTIVE_SESSIONS: ${CTRIP_BROWSER_MAX_ACTIVE_SESSIONS:-6}
+      CTRIP_BROWSER_IDLE_TTL_MS: ${CTRIP_BROWSER_IDLE_TTL_MS:-180000}
+      CTRIP_BROWSER_PROCESS_LIMIT: ${CTRIP_BROWSER_PROCESS_LIMIT:-256}
+      CTRIP_BROWSER_TASK_LIMIT: ${CTRIP_BROWSER_TASK_LIMIT:-1536}
+    security_opt:
+      - apparmor=geo-saas-browser-host
+    volumes:
+      - type: bind
+        source: ${GEO_BROWSER_PROFILE_ROOT:?set GEO_BROWSER_PROFILE_ROOT}/${CTRIP_BROWSER_TENANT_ID:?set CTRIP_BROWSER_TENANT_ID}/ctrip
+        target: /var/lib/geo/browser-profile
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GEO_BROWSER_DOWNLOAD_ROOT:?set GEO_BROWSER_DOWNLOAD_ROOT}/${CTRIP_BROWSER_TENANT_ID:?set CTRIP_BROWSER_TENANT_ID}
+        target: /var/lib/geo/browser-downloads
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${GEO_BROWSER_ARTIFACT_ROOT:?set GEO_BROWSER_ARTIFACT_ROOT}/${CTRIP_BROWSER_TENANT_ID:?set CTRIP_BROWSER_TENANT_ID}
+        target: /var/lib/geo/browser-artifacts
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CTRIP_VNC_PASSWORD_FILE:?set CTRIP_VNC_PASSWORD_FILE to the server-only x11vnc password file}
+        target: /run/secrets/ctrip-vnc.passwd
+        read_only: true
+        bind:
+          create_host_path: false
+
+  worker:
+    mem_limit: ${GEO_WORKER_MEM_LIMIT:-512m}
+    cpus: ${GEO_WORKER_CPU_LIMIT:-0.5}
+
+  # The edge is the only public listener. noVNC remains loopback-bound on the host and is also
+  # available through the authenticated, account-scoped HTTPS route on the private browser-vnc net.
+  edge:
+    image: ${CADDY_IMAGE:?set the digest-pinned production Caddy image}
+    profiles:
+      - production
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    environment:
+      GEO_PUBLIC_DOMAIN: ${GEO_PUBLIC_DOMAIN:?set the production public domain}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - 0.0.0.0:80:80/tcp
+      - 0.0.0.0:443:443/tcp
+      - 0.0.0.0:443:443/udp
+    volumes:
+      - type: bind
+        source: ./deploy/caddy/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O /dev/null http://127.0.0.1:2018/healthz &&
+          wget -q -O /dev/null http://api:4100/health/ready &&
+          wget -q -O /dev/null http://web:8080/healthz &&
+          wget -q -O /dev/null http://browser-host:10007/vnc.html
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    depends_on:
+      web:
+        condition: service_healthy
+      browser-host:
+        condition: service_healthy
+    networks:
+      - frontend
+      - browser-vnc
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  postgres-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/postgres
+  evidence-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/evidence
+  media-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/media
+  caddy-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/caddy-data
+  caddy-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /srv/geo-saas/data/caddy-config
+
+networks:
+  backend:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+          gateway: 172.30.10.1
+  # Only the API and the network stage of the Plastic Promise proxy attach here. The host stage
+  # exchanges traffic through a private Unix socket, so this bridge remains internal.
+  governance-host:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.11.0/29
+          gateway: 172.30.11.1

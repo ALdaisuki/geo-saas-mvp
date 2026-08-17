@@ -1,0 +1,80 @@
+{
+	admin off
+	servers {
+		strict_sni_host on
+	}
+}
+
+http://127.0.0.1:2018 {
+	respond /healthz "ok" 200
+}
+
+http:// {
+	@canonical host {$GEO_PUBLIC_DOMAIN}
+	handle @canonical {
+		redir https://{$GEO_PUBLIC_DOMAIN}{uri} 308
+	}
+
+	respond 421
+}
+
+https://{$GEO_PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), geolocation=(), microphone=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+	}
+
+	@nonCtripVncFramePolicy not path /ctrip-vnc/*
+	header @nonCtripVncFramePolicy {
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; connect-src 'self'; img-src 'self' data: https://images.unsplash.com; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; manifest-src 'self'; upgrade-insecure-requests"
+	}
+
+	@readiness path /healthz
+	handle @readiness {
+		rewrite * /health/ready
+		reverse_proxy api:4100 {
+			health_uri /health/ready
+		}
+	}
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy api:4100 {
+			health_uri /health/ready
+		}
+	}
+
+	@ctripVnc path_regexp ctripVncRoute ^/ctrip-vnc/accounts/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(/.*)$
+	handle @ctripVnc {
+		forward_auth api:4100 {
+			uri /api/internal/ctrip-vnc-authorization
+			header_up X-Geo-Ctrip-Account-Id {re.ctripVncRoute.1}
+			header_up X-Geo-Ctrip-Route {re.ctripVncRoute.2}
+		}
+		header {
+			X-Frame-Options "SAMEORIGIN"
+			Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'self'; form-action 'none'; object-src 'none'; connect-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'"
+		}
+		rewrite * {re.ctripVncRoute.2}
+		reverse_proxy browser-host:10007
+	}
+
+	@invalidCtripVnc path /ctrip-vnc/*
+	handle @invalidCtripVnc {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy web:8080 {
+			health_uri /healthz
+		}
+	}
+}

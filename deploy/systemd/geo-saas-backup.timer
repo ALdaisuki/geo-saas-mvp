@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the GEO SaaS encrypted offsite backup cycle daily
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 Asia/Shanghai
+RandomizedDelaySec=30min
+Persistent=true
+Unit=geo-saas-backup.service
+
+[Install]
+WantedBy=timers.target
